@@ -358,7 +358,7 @@ func TestDifferentTopicsDoNotReplaceEachOther(t *testing.T) {
 
 func TestNewMigratesLegacyObservationIDSchema(t *testing.T) {
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "engram.db")
+	dbPath := filepath.Join(dataDir, "ohara.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -453,7 +453,7 @@ func TestNewMigratesLegacyObservationIDSchema(t *testing.T) {
 
 func TestNewMigratesLegacyUserPromptsSyncIDSchema(t *testing.T) {
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "engram.db")
+	dbPath := filepath.Join(dataDir, "ohara.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -3186,7 +3186,7 @@ func TestEnrollProjectBackfillIsIdempotentAndSkipsExistingMutations(t *testing.T
 
 func TestNewRepairsAlreadyEnrolledProjectsMissingHistoricalSyncMutations(t *testing.T) {
 	dataDir := t.TempDir()
-	dbPath := filepath.Join(dataDir, "engram.db")
+	dbPath := filepath.Join(dataDir, "ohara.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {

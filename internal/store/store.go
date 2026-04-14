@@ -249,6 +249,146 @@ type ExportData struct {
 	Prompts      []Prompt      `json:"prompts"`
 }
 
+// ─── Memory Items (Ohara v2 spec) ──────────────────────────────────────────────
+// Memory items are the curated, typed, versioned memory records defined in the
+// Ohara v2 spec. They coexist alongside the existing observations system and
+// are the primary target for future migration.
+
+const (
+	// MemoryKind values — the 10 typed categories from the spec.
+	MemoryKindIdentity       = "identity"
+	MemoryKindUserPreference = "user_preference"
+	MemoryKindGlossary       = "glossary"
+	MemoryKindDecision       = "decision"
+	MemoryKindPattern        = "pattern"
+	MemoryKindBugfix         = "bugfix"
+	MemoryKindDiscovery      = "discovery"
+	MemoryKindProcedure      = "procedure"
+	MemoryKindConfig         = "config"
+	MemoryKindPostmortem     = "postmortem"
+)
+
+// ValidMemoryKinds is the set of all valid memory kind values.
+var ValidMemoryKinds = map[string]bool{
+	MemoryKindIdentity:       true,
+	MemoryKindUserPreference: true,
+	MemoryKindGlossary:       true,
+	MemoryKindDecision:       true,
+	MemoryKindPattern:        true,
+	MemoryKindBugfix:         true,
+	MemoryKindDiscovery:      true,
+	MemoryKindProcedure:      true,
+	MemoryKindConfig:         true,
+	MemoryKindPostmortem:     true,
+}
+
+// MemoryScope values — global or project-scoped.
+const (
+	MemoryScopeGlobal  = "global"
+	MemoryScopeProject = "project"
+)
+
+// MemoryStatus values.
+const (
+	MemoryStatusActive     = "active"
+	MemoryStatusArchived   = "archived"
+	MemoryStatusSuperseded = "superseded"
+)
+
+// MemoryItem represents a curated, typed, versioned memory record.
+// This is the primary memory type in the Ohara v2 spec.
+type MemoryItem struct {
+	ID           int64    `json:"id"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+	ProjectID    string   `json:"project_id"`
+	ActorID      string   `json:"actor_id"`
+	Kind         string   `json:"kind"`
+	Scope        string   `json:"scope"`
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	Tags         []string `json:"tags"`
+	Source       string   `json:"source"`
+	Status       string   `json:"status"`
+	SupersededBy *int64   `json:"superseded_by,omitempty"`
+	ExpiresAt    *string  `json:"expires_at,omitempty"`
+}
+
+// MemoryRevision represents an append-only version history entry for a memory item.
+// Tracks individual field changes with reason.
+type MemoryRevision struct {
+	ID       int64   `json:"id"`
+	MemoryID int64   `json:"memory_id"`
+	TS       string  `json:"ts"`
+	ActorID  string  `json:"actor_id"`
+	Field    string  `json:"field"`
+	OldValue *string `json:"old_value,omitempty"`
+	NewValue *string `json:"new_value,omitempty"`
+	Reason   *string `json:"reason,omitempty"`
+}
+
+// MemoryItemStatus constants for body size limits per kind (spec-defined).
+var memoryBodyLimits = map[string]int{
+	MemoryKindIdentity:       500,
+	MemoryKindUserPreference: 300,
+	MemoryKindGlossary:       200,
+	MemoryKindDecision:       1000,
+	MemoryKindPattern:        500,
+	MemoryKindBugfix:         1000,
+	MemoryKindDiscovery:      500,
+	MemoryKindProcedure:      2000,
+	MemoryKindConfig:         500,
+	MemoryKindPostmortem:     2000,
+}
+
+// MemoryBodyLimit returns the max body length for a given kind, or 0 if unlimited.
+func MemoryBodyLimit(kind string) int {
+	if limit, ok := memoryBodyLimits[kind]; ok {
+		return limit
+	}
+	return 0
+}
+
+// PackResult is the output of building a context pack.
+type PackResult struct {
+	Pack         string       `json:"pack"`
+	TokenCount   int          `json:"token_count"`
+	Truncated    bool         `json:"truncated"`
+	ItemCount    int          `json:"item_count"`
+	MemoryItems  []MemoryItem `json:"memory_items,omitempty"`
+	BudgetTokens int          `json:"budget_tokens"`
+}
+
+// PackParams holds the parameters for building a context pack.
+type PackParams struct {
+	ProjectID    string `json:"project_id"`
+	SessionID    string `json:"session_id,omitempty"`
+	BudgetTokens int    `json:"budget_tokens"`
+}
+
+// AddMemoryParams holds the parameters for creating a new memory item.
+type AddMemoryParams struct {
+	ProjectID string   `json:"project_id"`
+	Kind      string   `json:"kind"`
+	Scope     string   `json:"scope"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Tags      []string `json:"tags"`
+	Source    string   `json:"source"`
+	ActorID   string   `json:"actor_id"`
+}
+
+// UpdateMemoryParams holds the parameters for updating a memory item.
+type UpdateMemoryParams struct {
+	Title        *string  `json:"title,omitempty"`
+	Body         *string  `json:"body,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	Status       *string  `json:"status,omitempty"`
+	SupersededBy *int64   `json:"superseded_by,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	ActorID      string   `json:"actor_id"`
+}
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
@@ -706,6 +846,99 @@ func (s *Store) migrate() error {
 			END;
 		`
 		if _, err := s.execHook(s.db, promptTriggers); err != nil {
+			return err
+		}
+	}
+
+	// ── Memory Items schema (Ohara v2 spec) ─────────────────────────────────
+	// These tables coexist alongside the observations system.
+	if _, err := s.execHook(s.db, `
+		CREATE TABLE IF NOT EXISTS memory_items (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			project_id      TEXT NOT NULL,
+			actor_id        TEXT NOT NULL DEFAULT 'agent',
+			kind            TEXT NOT NULL,
+			scope           TEXT NOT NULL DEFAULT 'project',
+			title           TEXT NOT NULL,
+			body            TEXT NOT NULL,
+			tags            TEXT NOT NULL DEFAULT '[]',
+			source          TEXT NOT NULL DEFAULT 'agent',
+			status          TEXT NOT NULL DEFAULT 'active',
+			superseded_by   INTEGER REFERENCES memory_items(id),
+			expires_at      TEXT
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_mem_project ON memory_items(project_id, status);
+		CREATE INDEX IF NOT EXISTS idx_mem_kind ON memory_items(kind, status);
+		CREATE INDEX IF NOT EXISTS idx_mem_scope ON memory_items(scope, status);
+		CREATE INDEX IF NOT EXISTS idx_mem_updated ON memory_items(updated_at);
+
+		CREATE TABLE IF NOT EXISTS memory_revisions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id   INTEGER NOT NULL REFERENCES memory_items(id),
+			ts          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			actor_id    TEXT NOT NULL,
+			field       TEXT NOT NULL,
+			old_value   TEXT,
+			new_value   TEXT,
+			reason      TEXT
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_rev_memory ON memory_revisions(memory_id, ts);
+	`); err != nil {
+		return err
+	}
+
+	// Backfill: ensure existing memory_items rows have valid scope
+	if _, err := s.execHook(s.db, `UPDATE memory_items SET scope = 'project' WHERE scope IS NULL OR scope = ''`); err != nil {
+		return err
+	}
+	if _, err := s.execHook(s.db, `UPDATE memory_items SET status = 'active' WHERE status IS NULL OR status = ''`); err != nil {
+		return err
+	}
+	if _, err := s.execHook(s.db, `UPDATE memory_items SET source = 'agent' WHERE source IS NULL OR source = ''`); err != nil {
+		return err
+	}
+	if _, err := s.execHook(s.db, `UPDATE memory_items SET actor_id = 'agent' WHERE actor_id IS NULL OR actor_id = ''`); err != nil {
+		return err
+	}
+
+	// Create FTS5 virtual table for memory_items (idempotent check)
+	var memFTSTrigger string
+	err = s.db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='trigger' AND name='mem_fts_insert'",
+	).Scan(&memFTSTrigger)
+
+	if err == sql.ErrNoRows {
+		if _, err := s.execHook(s.db, `
+			CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+				title,
+				body,
+				tags,
+				content='memory_items',
+				content_rowid='id',
+				tokenize='porter unicode61'
+			);
+
+			CREATE TRIGGER mem_fts_insert AFTER INSERT ON memory_items BEGIN
+				INSERT INTO memory_items_fts(rowid, title, body, tags)
+				VALUES (new.id, new.title, new.body, new.tags);
+			END;
+
+			CREATE TRIGGER mem_fts_delete AFTER DELETE ON memory_items BEGIN
+				INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags)
+				VALUES ('delete', old.id, old.title, old.body, old.tags);
+			END;
+
+			CREATE TRIGGER mem_fts_update AFTER UPDATE ON memory_items BEGIN
+				INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags)
+				VALUES ('delete', old.id, old.title, old.body, old.tags);
+				INSERT INTO memory_items_fts(rowid, title, body, tags)
+				VALUES (new.id, new.title, new.body, new.tags);
+			END;
+		`); err != nil {
 			return err
 		}
 	}
