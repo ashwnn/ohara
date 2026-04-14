@@ -94,6 +94,9 @@ func stubRuntimeHooks(t *testing.T) {
 	oldSyncImport := syncImport
 	oldSyncExport := syncExport
 	oldCheckForUpdates := checkForUpdates
+	oldNewTUIModel := newTUIModel
+	oldNewTeaProgram := newTeaProgram
+	oldRunTeaProgram := runTeaProgram
 
 	storeNew = store.New
 	newHTTPServer = func(s *store.Store, _ int) *oharasrv.Server { return oharasrv.New(s, 0) }
@@ -258,13 +261,13 @@ func TestCmdMCPAndTUIBranches(t *testing.T) {
 		t.Fatalf("unexpected panic on successful mcp: %v", recovered)
 	}
 
-	runTeaProgram = func(*tea.Program) (tea.Model, error) { return nil, errors.New("tui failed") }
+	runTeaProgram = func(p interface{}) (interface{}, error) { return nil, errors.New("tui failed") }
 	_, tuiErr, recovered := captureOutputAndRecover(t, func() { cmdTUI(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(tuiErr, "tui failed") {
 		t.Fatalf("expected tui fatal, got panic=%v stderr=%q", recovered, tuiErr)
 	}
 
-	runTeaProgram = func(*tea.Program) (tea.Model, error) { return nil, nil }
+	runTeaProgram = func(p interface{}) (interface{}, error) { return nil, nil }
 	_, _, recovered = captureOutputAndRecover(t, func() { cmdTUI(cfg) })
 	if recovered != nil {
 		t.Fatalf("unexpected panic on successful tui: %v", recovered)
@@ -272,6 +275,7 @@ func TestCmdMCPAndTUIBranches(t *testing.T) {
 }
 
 func TestCmdSetupDirectAndInteractive(t *testing.T) {
+	cfg := testConfig(t)
 	stubRuntimeHooks(t)
 	stubExitWithPanic(t)
 
@@ -282,8 +286,16 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		return &setup.Result{Agent: agent, Destination: "/tmp/dest", Files: 2}, nil
 	}
 
+	// Override supported agents to include codex so direct install check passes.
+	setupSupportedAgents = func() []setup.Agent {
+		return []setup.Agent{
+			{Name: "codex", Description: "Codex", InstallDir: "/tmp/codex"},
+			{Name: "broken", Description: "Broken", InstallDir: "/tmp/broken"},
+		}
+	}
+
 	withArgs(t, "ohara", "setup", "codex")
-	out, errOut, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
+	out, errOut, recovered := captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if recovered != nil || errOut != "" {
 		t.Fatalf("direct setup should succeed, panic=%v stderr=%q", recovered, errOut)
 	}
@@ -292,7 +304,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 	}
 
 	withArgs(t, "ohara", "setup", "broken")
-	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "install failed") {
 		t.Fatalf("expected direct setup fatal, panic=%v stderr=%q", recovered, errOut)
 	}
@@ -307,7 +319,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 	}
 
 	withArgs(t, "ohara", "setup")
-	out, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
+	out, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if recovered != nil || errOut != "" {
 		t.Fatalf("interactive setup should succeed, panic=%v stderr=%q", recovered, errOut)
 	}
@@ -321,7 +333,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		return 1, nil
 	}
 	withArgs(t, "ohara", "setup")
-	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "Invalid choice") {
 		t.Fatalf("expected invalid choice exit, panic=%v stderr=%q", recovered, errOut)
 	}
@@ -509,6 +521,9 @@ func TestMainDispatchRemainingCommands(t *testing.T) {
 	setupInstallAgent = func(agent string) (*setup.Result, error) {
 		return &setup.Result{Agent: agent, Destination: "/tmp/dest", Files: 1}, nil
 	}
+	setupSupportedAgents = func() []setup.Agent {
+		return []setup.Agent{{Name: "codex", Description: "Codex", InstallDir: "/tmp/codex"}}
+	}
 
 	tests := []struct {
 		name string
@@ -540,6 +555,7 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 	stubExitWithPanic(t)
 
 	t.Run("all projects empty export message", func(t *testing.T) {
+		stubRuntimeHooks(t)
 		workDir := t.TempDir()
 		withCwd(t, workDir)
 		cfg := testConfig(t)
@@ -555,6 +571,7 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 	})
 
 	t.Run("status parse error", func(t *testing.T) {
+		stubRuntimeHooks(t)
 		workDir := t.TempDir()
 		withCwd(t, workDir)
 		cfg := testConfig(t)
@@ -577,6 +594,7 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 	})
 
 	t.Run("import parse error", func(t *testing.T) {
+		stubRuntimeHooks(t)
 		workDir := t.TempDir()
 		withCwd(t, workDir)
 		cfg := testConfig(t)
@@ -599,6 +617,7 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 	})
 
 	t.Run("export parse error", func(t *testing.T) {
+		stubRuntimeHooks(t)
 		workDir := t.TempDir()
 		withCwd(t, workDir)
 		cfg := testConfig(t)
@@ -670,6 +689,7 @@ func TestCmdSearchAndSaveDanglingFlags(t *testing.T) {
 }
 
 func TestCmdSetupHyphenArgFallsBackToInteractive(t *testing.T) {
+	cfg := testConfig(t)
 	stubRuntimeHooks(t)
 	stubExitWithPanic(t)
 
@@ -677,7 +697,7 @@ func TestCmdSetupHyphenArgFallsBackToInteractive(t *testing.T) {
 		return []setup.Agent{{Name: "codex", Description: "Codex", InstallDir: "/tmp/codex"}}
 	}
 	setupInstallAgent = func(agent string) (*setup.Result, error) {
-		return &setup.Result{Agent: agent, Destination: "/tmp/codex", Files: 1}, nil
+		return &setup.Result{Agent: agent, Destination: "/tmp/dest", Files: 1}, nil
 	}
 	scanInputLine = func(a ...any) (int, error) {
 		p := a[0].(*string)
@@ -686,7 +706,7 @@ func TestCmdSetupHyphenArgFallsBackToInteractive(t *testing.T) {
 	}
 
 	withArgs(t, "ohara", "setup", "--not-an-agent")
-	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
+	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("setup interactive fallback failed: panic=%v stderr=%q", recovered, stderr)
 	}
@@ -747,6 +767,7 @@ func TestCmdSyncImportEmptyAndMixedChunks(t *testing.T) {
 	})
 
 	t.Run("import new plus skipped chunk", func(t *testing.T) {
+		stubRuntimeHooks(t)
 		workDir := t.TempDir()
 		withCwd(t, workDir)
 
@@ -910,7 +931,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 		}
 
 		withArgs(t, "ohara", "setup")
-		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
+		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 		assertFatal(t, stderr, recovered, "forced setup error")
 	})
 }
