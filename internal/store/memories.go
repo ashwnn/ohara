@@ -241,7 +241,7 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 	return updated, nil
 }
 
-// SearchMemories performs FTS5 search over memory items.
+// SearchMemories performs FTS5 search over memory items with kind and recency boosts.
 func (s *Store) SearchMemories(query string, projectID, scope, kind string, status string, limit int) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 10
@@ -252,6 +252,9 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 
 	ftsQuery := sanitizeFTS(query)
 
+	// Composite ranking: FTS relevance * kind_boost * recency_boost
+	// - Kind boost: decision(1.5), pattern(1.4), bugfix(1.3), discovery(1.2), procedure(1.1), others(1.0)
+	// - Recency boost: exponential decay over 90 days (1.0 at now, 0.5 at 90 days old)
 	sqlQ := `
 		SELECT mi.id, mi.created_at, mi.updated_at, mi.project_id, mi.actor_id, mi.kind, mi.scope,
 		       mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at
@@ -273,7 +276,20 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 		args = append(args, kind)
 	}
 
-	sqlQ += " ORDER BY fts.rank LIMIT ?"
+	// Composite score: higher is better. fts.rank is BM25 (lower = more relevant),
+	// so we use (1 / (1 + fts.rank)) to invert. Multiply by boosts.
+	sqlQ += ` ORDER BY (
+			(1.0 / (1.0 + fts.rank))
+			* CASE mi.kind
+				WHEN 'decision' THEN 1.5
+				WHEN 'pattern' THEN 1.4
+				WHEN 'bugfix' THEN 1.3
+				WHEN 'discovery' THEN 1.2
+				WHEN 'procedure' THEN 1.1
+				ELSE 1.0
+			  END
+			* MAX(0.1, 1.0 - (CAST(julianday('now') - julianday(mi.updated_at) AS REAL) / 90.0 * 0.9))
+		) DESC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := s.queryItHook(s.db, sqlQ, args...)

@@ -4964,3 +4964,189 @@ func TestKeywordOverlap_JaccardSimilarity(t *testing.T) {
 		t.Errorf("partial overlap: expected ~0.333, got %f", score)
 	}
 }
+
+// ─── SearchMemories ranking tests ──────────────────────────────────────────────
+
+func TestSearchMemories_DefaultLimit(t *testing.T) {
+	s := newTestStore(t)
+
+	// No memories — should return empty slice (not error)
+	results, err := s.SearchMemories("auth", "", "", "", MemoryStatusActive, 0)
+	if err != nil {
+		t.Fatalf("SearchMemories with zero limit: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results with no matches, got %d", len(results))
+	}
+}
+
+func TestSearchMemories_FindsMatchingItems(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision: use JWT for tokens",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	results, err := s.SearchMemories("JWT", "ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Kind != MemoryKindDecision {
+		t.Errorf("expected decision kind, got %s", results[0].Kind)
+	}
+}
+
+func TestSearchMemories_KindBoost_DecisionsRankHigher(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add both with equally matching titles so kind boost is the tiebreaker.
+	// Both contain "JWT authentication" so FTS relevance is similar.
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindProcedure,
+		Title:     "JWT authentication in the auth service",
+		Body:      "Use middleware to validate tokens",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory procedure: %v", err)
+	}
+
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "JWT authentication decision",
+		Body:      "We chose JWT for stateless auth",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory decision: %v", err)
+	}
+
+	results, err := s.SearchMemories("JWT authentication", "ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+	// Decision should be first due to kind boost (1.5x vs 1.1x)
+	if results[0].Kind != MemoryKindDecision {
+		t.Errorf("expected first result to be decision (kind boost 1.5), got %s", results[0].Kind)
+	}
+}
+
+func TestSearchMemories_KindBoost_BugfixRanksHigherThanDiscovery(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDiscovery,
+		Title:     "Discovered memory leak in auth module when handling JWT",
+		Body:      "The JWT refresh handler was not releasing tokens",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory discovery: %v", err)
+	}
+
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindBugfix,
+		Title:     "Fixed JWT token leak in auth module",
+		Body:      "Added proper token release in refresh handler",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory bugfix: %v", err)
+	}
+
+	results, err := s.SearchMemories("JWT token", "ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+	// Bugfix (1.3) should rank above discovery (1.2)
+	if results[0].Kind != MemoryKindBugfix {
+		t.Errorf("expected first result to be bugfix (kind boost 1.3), got %s", results[0].Kind)
+	}
+}
+
+func TestSearchMemories_FilterByKind(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision: use JWT",
+		Body:      "JWT chosen",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory decision: %v", err)
+	}
+
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Pattern for JWT validation",
+		Body:      "Use middleware",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory pattern: %v", err)
+	}
+
+	// Search with kind filter
+	results, err := s.SearchMemories("JWT", "ohara", "", MemoryKindPattern, MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	for _, r := range results {
+		if r.Kind != MemoryKindPattern {
+			t.Errorf("kind filter: expected pattern, got %s", r.Kind)
+		}
+	}
+}
+
+func TestSearchMemories_FilterByScope(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindGlossary,
+		Scope:     MemoryScopeGlobal,
+		Title:     "Glossary: JWT means JSON Web Token",
+		Body:      "JWT is a standard",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory global: %v", err)
+	}
+
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Scope:     MemoryScopeProject,
+		Title:     "Decision: use JWT for auth",
+		Body:      "JWT chosen",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory project: %v", err)
+	}
+
+	// Global scope search — should only return global item
+	results, err := s.SearchMemories("JWT", "", MemoryScopeGlobal, "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	for _, r := range results {
+		if r.Scope != MemoryScopeGlobal {
+			t.Errorf("scope filter: expected global, got %s", r.Scope)
+		}
+	}
+}
