@@ -687,12 +687,13 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 
 	s.notifyWrite()
 
-	resp := map[string]any{"id": id, "status": "saved"}
+	resp := map[string]any{"id": id}
 	if conflictWarning != nil {
-		resp["warning"] = map[string]any{
-			"type":     "contradiction_detected",
-			"conflict": conflictWarning,
-			"message":  "a conflicting memory was found; review it and update or supersede if needed",
+		resp["conflict"] = map[string]any{
+			"existing_id":    conflictWarning.ExistingMemory.ID,
+			"existing_title": conflictWarning.ExistingMemory.Title,
+			"similarity":     conflictWarning.OverlapScore,
+			"message":        conflictWarning.Message,
 		}
 	}
 	jsonResponse(w, http.StatusCreated, resp)

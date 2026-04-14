@@ -556,13 +556,13 @@ func TestHandleAddMemory_NoConflict_ReturnsCreated(t *testing.T) {
 	}
 }
 
-func TestHandleAddMemory_Conflict_ReturnsCreatedWithWarning(t *testing.T) {
+func TestHandleAddMemory_Conflict_ReturnsCreatedWithConflict(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
 
 	// Seed an existing decision memory
-	_, err := st.AddMemory(store.AddMemoryParams{
+	existingID, err := st.AddMemory(store.AddMemoryParams{
 		ProjectID: "ohara",
 		Kind:      store.MemoryKindDecision,
 		Title:     "Auth decision: Use JWT for session management",
@@ -572,7 +572,7 @@ func TestHandleAddMemory_Conflict_ReturnsCreatedWithWarning(t *testing.T) {
 		t.Fatalf("seed memory: %v", err)
 	}
 
-	// Attempt to add a conflicting decision memory — save still succeeds with warning
+	// Attempt to add a conflicting decision memory — save still succeeds with conflict metadata
 	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
 	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -582,7 +582,7 @@ func TestHandleAddMemory_Conflict_ReturnsCreatedWithWarning(t *testing.T) {
 		t.Fatalf("expected 201 for conflicting memory (save succeeds), got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify response body contains conflict warning (not a blocking error)
+	// Verify response body contains top-level conflict metadata (spec-compliant shape)
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
@@ -590,18 +590,26 @@ func TestHandleAddMemory_Conflict_ReturnsCreatedWithWarning(t *testing.T) {
 	if resp["id"] == nil {
 		t.Error("expected id in response")
 	}
-	if resp["status"] != "saved" {
-		t.Errorf("expected status 'saved', got %v", resp["status"])
-	}
-	warning, ok := resp["warning"].(map[string]any)
+	conflict, ok := resp["conflict"].(map[string]any)
 	if !ok {
-		t.Fatal("expected warning field in response for conflict")
+		t.Fatal("expected top-level conflict field in response for conflict")
 	}
-	if warning["type"] != "contradiction_detected" {
-		t.Errorf("expected warning type 'contradiction_detected', got %v", warning["type"])
+	// Verify spec-compliant field names
+	if conflict["existing_id"] == nil {
+		t.Error("expected existing_id in conflict metadata")
 	}
-	if warning["conflict"] == nil {
-		t.Error("expected conflict info in warning")
+	if conflict["existing_title"] == nil {
+		t.Error("expected existing_title in conflict metadata")
+	}
+	if conflict["similarity"] == nil {
+		t.Error("expected similarity in conflict metadata")
+	}
+	if conflict["message"] == nil {
+		t.Error("expected message in conflict metadata")
+	}
+	// Verify the existing memory ID is correct
+	if conflict["existing_id"].(float64) != float64(existingID) {
+		t.Errorf("expected existing_id %d, got %v", existingID, conflict["existing_id"])
 	}
 }
 
@@ -692,7 +700,7 @@ func TestHandleAddMemory_BugfixKind_BypassesConflict(t *testing.T) {
 	}
 }
 
-func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithWarning(t *testing.T) {
+func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithConflict(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
@@ -708,7 +716,7 @@ func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithWarning(t *testing.T)
 		t.Fatalf("seed memory: %v", err)
 	}
 
-	// Conflicting pattern — save succeeds with warning
+	// Conflicting pattern — save succeeds with conflict metadata
 	body := `{"project_id":"ohara","kind":"pattern","title":"Error handling: retry pattern for API requests","body":"Use exponential backoff"}`
 	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -722,12 +730,12 @@ func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithWarning(t *testing.T)
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp["warning"] == nil {
-		t.Fatal("expected warning field for conflicting pattern")
+	if resp["conflict"] == nil {
+		t.Fatal("expected top-level conflict field for conflicting pattern")
 	}
 }
 
-func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithWarning(t *testing.T) {
+func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithConflict(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
@@ -743,7 +751,7 @@ func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithWarning(t *testing.T) 
 		t.Fatalf("seed memory: %v", err)
 	}
 
-	// Conflicting config — save succeeds with warning
+	// Conflicting config — save succeeds with conflict metadata
 	body := `{"project_id":"ohara","kind":"config","title":"Database config: PostgreSQL for production settings","body":"Pool size 10"}`
 	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -757,8 +765,8 @@ func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithWarning(t *testing.T) 
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp["warning"] == nil {
-		t.Fatal("expected warning field for conflicting config")
+	if resp["conflict"] == nil {
+		t.Fatal("expected top-level conflict field for conflicting config")
 	}
 }
 
