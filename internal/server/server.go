@@ -139,6 +139,19 @@ func (s *Server) routes() {
 
 	// Sync status (degraded-state visibility for autosync)
 	s.mux.HandleFunc("GET /sync/status", s.handleSyncStatus)
+
+	// ── Memory Items (Ohara v2 spec) ─────────────────────────────────────────
+	// These are the spec-aligned aliases for the typed memory system.
+	s.mux.HandleFunc("POST /memories", s.handleAddMemory)
+	s.mux.HandleFunc("GET /memories", s.handleGetMemories)
+	s.mux.HandleFunc("GET /memories/search", s.handleSearchMemories)
+	s.mux.HandleFunc("GET /memories/{id}", s.handleGetMemory)
+	s.mux.HandleFunc("PATCH /memories/{id}", s.handleUpdateMemory)
+	s.mux.HandleFunc("GET /memories/{id}/timeline", s.handleMemoryTimeline)
+	s.mux.HandleFunc("GET /memories/{id}/revisions", s.handleMemoryRevisions)
+
+	// Pack (context pack assembly)
+	s.mux.HandleFunc("POST /pack", s.handlePack)
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -607,6 +620,205 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		"sessions":     result.SessionsUpdated,
 		"prompts":      result.PromptsUpdated,
 	})
+}
+
+// ─── Memory Items (Ohara v2 spec) ───────────────────────────────────────────
+
+func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
+	var body store.AddMemoryParams
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.ProjectID == "" || body.Kind == "" || body.Title == "" || body.Body == "" {
+		jsonError(w, http.StatusBadRequest, "project_id, kind, title, and body are required")
+		return
+	}
+	if !store.ValidMemoryKinds[body.Kind] {
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid kind: must be one of identity, user_preference, glossary, decision, pattern, bugfix, discovery, procedure, config, postmortem"))
+		return
+	}
+
+	id, err := s.store.AddMemory(body)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.notifyWrite()
+	jsonResponse(w, http.StatusCreated, map[string]any{"id": id, "status": "saved"})
+}
+
+func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {
+	projectID := r.URL.Query().Get("project_id")
+	scope := r.URL.Query().Get("scope")
+	kind := r.URL.Query().Get("kind")
+	status := r.URL.Query().Get("status")
+	limit := queryInt(r, "limit", 20)
+
+	items, err := s.store.GetMemories(projectID, scope, kind, status, limit)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if items == nil {
+		items = []store.MemoryItem{}
+	}
+	jsonResponse(w, http.StatusOK, items)
+}
+
+func (s *Server) handleSearchMemories(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		jsonError(w, http.StatusBadRequest, "q parameter is required")
+		return
+	}
+
+	projectID := r.URL.Query().Get("project_id")
+	scope := r.URL.Query().Get("scope")
+	kind := r.URL.Query().Get("kind")
+	status := r.URL.Query().Get("status")
+	limit := queryInt(r, "limit", 10)
+
+	items, err := s.store.SearchMemories(query, projectID, scope, kind, status, limit)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if items == nil {
+		items = []store.MemoryItem{}
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"results": items,
+		"method":  "fts5",
+	})
+}
+
+func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	item, err := s.store.GetMemory(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, item)
+}
+
+func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	var body store.UpdateMemoryParams
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.Title == nil && body.Body == nil && body.Tags == nil && body.Status == nil && body.SupersededBy == nil {
+		jsonError(w, http.StatusBadRequest, "at least one field is required")
+		return
+	}
+
+	// Validate status if provided
+	if body.Status != nil {
+		switch *body.Status {
+		case store.MemoryStatusActive, store.MemoryStatusArchived, store.MemoryStatusSuperseded:
+			// Valid
+		default:
+			jsonError(w, http.StatusBadRequest, "status must be active, archived, or superseded")
+			return
+		}
+	}
+
+	updated, err := s.store.UpdateMemory(id, body)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	s.notifyWrite()
+	jsonResponse(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleMemoryTimeline(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	count := queryInt(r, "count", 3)
+
+	result, err := s.store.MemoryTimeline(id, count)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMemoryRevisions(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	// First check the memory exists
+	_, err = s.store.GetMemory(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+
+	revisions, err := s.store.GetMemoryRevisions(id)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if revisions == nil {
+		revisions = []store.MemoryRevision{}
+	}
+	jsonResponse(w, http.StatusOK, revisions)
+}
+
+func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
+	var body store.PackParams
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.ProjectID == "" {
+		jsonError(w, http.StatusBadRequest, "project_id is required")
+		return
+	}
+	if body.BudgetTokens <= 0 {
+		body.BudgetTokens = 400
+	}
+
+	result, err := s.store.BuildPack(body)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, result)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
