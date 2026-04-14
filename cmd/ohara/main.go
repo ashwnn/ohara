@@ -34,7 +34,13 @@ var checkForUpdates = versionpkg.CheckLatest
 var storeNew = store.New
 
 // newHTTPServer creates an HTTP server. Stubbed in tests.
-var newHTTPServer = func(s *store.Store, port int) *server.Server { return nil }
+// socketPath is empty when TCP mode is used.
+var newHTTPServer = func(s *store.Store, port int, socketPath string) *server.Server {
+	if socketPath != "" {
+		return server.New(s, port, server.WithSocketPath(socketPath))
+	}
+	return server.New(s, port)
+}
 
 // startHTTP starts the HTTP server. Stubbed in tests.
 var startHTTP = func(srv *server.Server) error { return nil }
@@ -195,6 +201,7 @@ func printUsage() {
 	fmt.Println("Environment:")
 	fmt.Println("  OHARA_DATA_DIR     Data directory (default ~/.ohara)")
 	fmt.Println("  OHARA_PORT         HTTP server port (default 7437)")
+	fmt.Println("  OHARA_SOCKET       Unix socket path (takes priority over port)")
 	fmt.Println("  OHARA_PROJECT     Project name for session context")
 }
 
@@ -337,6 +344,9 @@ func realCmdServe(cfg store.Config) {
 		}
 	}
 
+	// Determine socket path: OHARA_SOCKET env → --socket flag.
+	socketPath := os.Getenv("OHARA_SOCKET")
+
 	// Check for positional port argument (e.g., "ohara serve 9001").
 	if len(os.Args) >= 3 {
 		if p, err := strconv.Atoi(os.Args[2]); err == nil {
@@ -344,14 +354,17 @@ func realCmdServe(cfg store.Config) {
 		}
 	}
 
-	// Check for --port argument (overrides positional).
+	// Check for --port and --socket arguments.
 	for i, arg := range os.Args[2:] {
-		if arg == "--port" && i+1 < len(os.Args[2:]) {
+		if arg == "--socket" && i+1 < len(os.Args[2:]) {
+			socketPath = os.Args[2:][i+1]
+		} else if strings.HasPrefix(arg, "--socket=") {
+			socketPath = strings.TrimPrefix(arg, "--socket=")
+		} else if arg == "--port" && i+1 < len(os.Args[2:]) {
 			p, err := strconv.Atoi(os.Args[2:][i+1])
 			if err == nil {
 				port = p
 			}
-			break
 		}
 	}
 
@@ -361,7 +374,7 @@ func realCmdServe(cfg store.Config) {
 	}
 	defer s.Close()
 
-	srv := newHTTPServer(s, port)
+	srv := newHTTPServer(s, port, socketPath)
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())
 	}

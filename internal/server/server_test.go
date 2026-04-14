@@ -678,3 +678,134 @@ func TestHandleAddMemory_ConfigConflict_Returns409(t *testing.T) {
 		t.Fatalf("expected 409 for conflicting config, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// ─── Unix socket transport tests ────────────────────────────────────────────────
+
+func TestWithSocketPathSetsField(t *testing.T) {
+	s := New(nil, 7777)
+	if s.socketPath != "" {
+		t.Fatalf("expected empty socketPath initially, got %q", s.socketPath)
+	}
+
+	s2 := New(nil, 7777, WithSocketPath("/tmp/ohara.sock"))
+	if s2.socketPath != "/tmp/ohara.sock" {
+		t.Fatalf("expected /tmp/ohara.sock, got %q", s2.socketPath)
+	}
+}
+
+func TestStartPrefersUnixSocketWhenConfigured(t *testing.T) {
+	var gotNetwork, gotAddr string
+
+	s := New(nil, 7777, WithSocketPath("/tmp/ohara-transport-test.sock"))
+	s.listen = func(network, address string) (net.Listener, error) {
+		gotNetwork = network
+		gotAddr = address
+		// Return a real listener so we can call Close().
+		ln, err := net.Listen("unix", "/tmp/ohara-transport-test.sock")
+		return ln, err
+	}
+	s.serve = func(ln net.Listener, h http.Handler) error {
+		// Close immediately so Start returns.
+		_ = ln.Close()
+		return errors.New("serve stopped")
+	}
+
+	err := s.Start()
+	if err == nil || err.Error() != "serve stopped" {
+		t.Fatalf("expected serve stopped error, got %v", err)
+	}
+	if gotNetwork != "unix" {
+		t.Fatalf("expected network=unix, got %q", gotNetwork)
+	}
+	if gotAddr != "/tmp/ohara-transport-test.sock" {
+		t.Fatalf("expected addr=/tmp/ohara-transport-test.sock, got %q", gotAddr)
+	}
+}
+
+func TestStartFallsBackToTCPWhenSocketFails(t *testing.T) {
+	var attempts []string // "unix:<path>" or "tcp:<addr>"
+
+	s := New(nil, 7777, WithSocketPath("/nonexistent/ohara.sock"))
+	s.listen = func(network, address string) (net.Listener, error) {
+		attempts = append(attempts, network+":"+address)
+		// Unix socket fails; TCP succeeds with a stub.
+		if network == "unix" {
+			return nil, errors.New("permission denied")
+		}
+		return stubListener{}, nil
+	}
+	s.serve = func(ln net.Listener, h http.Handler) error {
+		_ = ln.Close()
+		return errors.New("serve stopped")
+	}
+
+	err := s.Start()
+	if err == nil || err.Error() != "serve stopped" {
+		t.Fatalf("expected serve stopped error, got %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 listen attempts, got %d: %v", len(attempts), attempts)
+	}
+	if attempts[0] != "unix:/nonexistent/ohara.sock" {
+		t.Fatalf("first attempt: expected unix socket, got %q", attempts[0])
+	}
+	if attempts[1] != "tcp:127.0.0.1:7777" {
+		t.Fatalf("second attempt: expected tcp, got %q", attempts[1])
+	}
+}
+
+func TestStartTCPFallbackWithSocketPathSet(t *testing.T) {
+	// Even when socket path is set, if unix socket errors, falls back to TCP.
+	var gotNetwork string
+
+	s := New(nil, 8080, WithSocketPath("/tmp/fallback-test.sock"))
+	s.listen = func(network, address string) (net.Listener, error) {
+		gotNetwork = network
+		if network == "unix" {
+			return nil, errors.New("address already in use")
+		}
+		return stubListener{}, nil
+	}
+	s.serve = func(ln net.Listener, h http.Handler) error {
+		_ = ln.Close()
+		return errors.New("serve stopped")
+	}
+
+	err := s.Start()
+	if err == nil || err.Error() != "serve stopped" {
+		t.Fatalf("expected serve stopped, got %v", err)
+	}
+	// Should have fallen back to TCP after unix failure.
+	if gotNetwork != "tcp" {
+		t.Fatalf("expected fallback to tcp after unix failure, got network=%q", gotNetwork)
+	}
+}
+
+func TestStartUsesTCPWhenSocketPathEmpty(t *testing.T) {
+	var gotNetwork string
+
+	s := New(nil, 9999) // no socket path
+	s.listen = func(network, address string) (net.Listener, error) {
+		gotNetwork = network
+		return stubListener{}, nil
+	}
+	s.serve = func(ln net.Listener, h http.Handler) error {
+		_ = ln.Close()
+		return errors.New("serve stopped")
+	}
+
+	err := s.Start()
+	if err == nil || err.Error() != "serve stopped" {
+		t.Fatalf("expected serve stopped, got %v", err)
+	}
+	if gotNetwork != "tcp" {
+		t.Fatalf("expected network=tcp when no socket path, got %q", gotNetwork)
+	}
+}
+
+func TestNewSignatureVariadic(t *testing.T) {
+	// Verify New accepts 0, 1, or many options without breaking.
+	_ = New(nil, 7777)                                                       // no options
+	_ = New(nil, 7777, WithSocketPath("/a.sock"))                            // one option
+	_ = New(nil, 7777, WithSocketPath("/a.sock"), WithSocketPath("/b.sock")) // last wins
+}

@@ -100,7 +100,7 @@ func stubRuntimeHooks(t *testing.T) {
 	oldStoreConsolidate := storeConsolidate
 
 	storeNew = store.New
-	newHTTPServer = func(s *store.Store, _ int) *oharasrv.Server { return oharasrv.New(s, 0) }
+	newHTTPServer = func(s *store.Store, _ int, _ string) *oharasrv.Server { return oharasrv.New(s, 0) }
 	startHTTP = func(_ *oharasrv.Server) error { return nil }
 	newMCPServer = func(s *store.Store) *mcpserver.MCPServer {
 		return mcpserver.NewMCPServer("test", "0", mcpserver.WithRecovery())
@@ -220,7 +220,7 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 			withArgs(t, args...)
 
 			seenPort := -1
-			newHTTPServer = func(s *store.Store, port int) *oharasrv.Server {
+			newHTTPServer = func(s *store.Store, port int, _ string) *oharasrv.Server {
 				seenPort = port
 				return oharasrv.New(s, 0)
 			}

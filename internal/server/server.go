@@ -37,18 +37,32 @@ type SyncStatus struct {
 	LastSyncAt          *time.Time `json:"last_sync_at,omitempty"`
 }
 
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithSocketPath sets a unix socket path for the server to listen on.
+// When set, the server attempts to listen on the unix socket first;
+// if that fails it falls back to the TCP port.
+func WithSocketPath(path string) ServerOption {
+	return func(s *Server) { s.socketPath = path }
+}
+
 type Server struct {
 	store      *store.Store
 	mux        *http.ServeMux
 	port       int
+	socketPath string
 	listen     func(network, address string) (net.Listener, error)
 	serve      func(net.Listener, http.Handler) error
 	onWrite    func() // called after successful local writes (for autosync notification)
 	syncStatus SyncStatusProvider
 }
 
-func New(s *store.Store, port int) *Server {
+func New(s *store.Store, port int, opts ...ServerOption) *Server {
 	srv := &Server{store: s, port: port, listen: net.Listen, serve: http.Serve}
+	for _, o := range opts {
+		o(srv)
+	}
 	srv.mux = http.NewServeMux()
 	srv.routes()
 	return srv
@@ -73,7 +87,6 @@ func (s *Server) notifyWrite() {
 }
 
 func (s *Server) Start() error {
-	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
 	listenFn := s.listen
 	if listenFn == nil {
 		listenFn = net.Listen
@@ -83,7 +96,23 @@ func (s *Server) Start() error {
 		serveFn = http.Serve
 	}
 
-	ln, err := listenFn("tcp", addr)
+	var ln net.Listener
+	var err error
+
+	// Unix socket first if configured.
+	if s.socketPath != "" {
+		ln, err = listenFn("unix", s.socketPath)
+		if err == nil {
+			log.Printf("[ohara] HTTP server listening on unix socket %s", s.socketPath)
+			return serveFn(ln, s.mux)
+		}
+		// Socket failed; log and fall through to TCP.
+		log.Printf("[ohara] unix socket %s: %v — falling back to TCP", s.socketPath, err)
+	}
+
+	// TCP fallback.
+	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	ln, err = listenFn("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("ohara server: listen %s: %w", addr, err)
 	}
