@@ -51,12 +51,15 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 		}
 	}
 
+	// Auto-assign expires_at for discovery and postmortem memory kinds.
+	expiresAt := MemoryExpiresAt(p.Kind)
+
 	var memoryID int64
 	err := s.withTx(func(tx *sql.Tx) error {
 		res, err := s.execHook(tx,
-			`INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, tags, source, status)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			projectID, p.ActorID, p.Kind, scope, p.Title, body, tagsJSON, p.Source, MemoryStatusActive,
+			`INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, tags, source, status, expires_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			projectID, p.ActorID, p.Kind, scope, p.Title, body, tagsJSON, p.Source, MemoryStatusActive, expiresAt,
 		)
 		if err != nil {
 			return err
@@ -102,6 +105,8 @@ func (s *Store) GetMemory(id int64) (*MemoryItem, error) {
 }
 
 // GetMemories retrieves memory items matching the given filters.
+// It automatically excludes items that have expired (expires_at < now),
+// regardless of their status, unless an explicit status filter is provided.
 func (s *Store) GetMemories(projectID, scope, kind, status string, limit int) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 20
@@ -114,7 +119,7 @@ func (s *Store) GetMemories(projectID, scope, kind, status string, limit int) ([
 		SELECT id, created_at, updated_at, project_id, actor_id, kind, scope, title, body, tags,
 		       source, status, superseded_by, expires_at
 		FROM memory_items
-		WHERE status = ?`
+		WHERE status = ? AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now'))`
 	args := []any{status}
 
 	if projectID != "" {
@@ -242,6 +247,7 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 }
 
 // SearchMemories performs FTS5 search over memory items with kind and recency boosts.
+// It automatically excludes items that have expired (expires_at < now).
 func (s *Store) SearchMemories(query string, projectID, scope, kind string, status string, limit int) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 10
@@ -260,7 +266,7 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 		       mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at
 		FROM memory_items_fts fts
 		JOIN memory_items mi ON mi.id = fts.rowid
-		WHERE memory_items_fts MATCH ? AND mi.status = ?`
+		WHERE memory_items_fts MATCH ? AND mi.status = ? AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))`
 	args := []any{ftsQuery, status}
 
 	if projectID != "" {

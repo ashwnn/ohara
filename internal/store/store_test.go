@@ -5150,3 +5150,321 @@ func TestSearchMemories_FilterByScope(t *testing.T) {
 		}
 	}
 }
+
+// ─── Memory Expiry Lifecycle Tests ──────────────────────────────────────────────
+
+func TestAddMemory_AutoExpiryDiscovery(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDiscovery,
+		Title:     "Discovered SQLite quirk",
+		Body:      "SQLite ignores TRIM() in certain contexts",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory discovery: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.ExpiresAt == nil {
+		t.Fatal("discovery memory should have expires_at set")
+	}
+	if *mem.ExpiresAt == "" {
+		t.Fatal("discovery memory expires_at should not be empty")
+	}
+	// Verify it's approximately 90 days in the future
+	expiresTime, err := time.Parse(time.RFC3339, *mem.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expires_at: %v", err)
+	}
+	expectedMin := time.Now().UTC().AddDate(0, 0, 89)
+	expectedMax := time.Now().UTC().AddDate(0, 0, 91)
+	if expiresTime.Before(expectedMin) || expiresTime.After(expectedMax) {
+		t.Fatalf("discovery TTL should be ~90 days, got %v (expected between %v and %v)", expiresTime, expectedMin, expectedMax)
+	}
+}
+
+func TestAddMemory_AutoExpiryPostmortem(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPostmortem,
+		Title:     "Incident postmortem",
+		Body:      "Root cause was a race condition",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory postmortem: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.ExpiresAt == nil {
+		t.Fatal("postmortem memory should have expires_at set")
+	}
+	if *mem.ExpiresAt == "" {
+		t.Fatal("postmortem memory expires_at should not be empty")
+	}
+	// Verify it's approximately 30 days in the future
+	expiresTime, err := time.Parse(time.RFC3339, *mem.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expires_at: %v", err)
+	}
+	expectedMin := time.Now().UTC().AddDate(0, 0, 29)
+	expectedMax := time.Now().UTC().AddDate(0, 0, 31)
+	if expiresTime.Before(expectedMin) || expiresTime.After(expectedMax) {
+		t.Fatalf("postmortem TTL should be ~30 days, got %v (expected between %v and %v)", expiresTime, expectedMin, expectedMax)
+	}
+}
+
+func TestAddMemory_NoExpiryOtherKinds(t *testing.T) {
+	s := newTestStore(t)
+
+	// Test that non-expiry kinds don't get expires_at
+	nonExpiryKinds := []string{
+		MemoryKindDecision,
+		MemoryKindPattern,
+		MemoryKindBugfix,
+		MemoryKindProcedure,
+		MemoryKindConfig,
+		MemoryKindIdentity,
+		MemoryKindUserPreference,
+		MemoryKindGlossary,
+	}
+	for _, kind := range nonExpiryKinds {
+		id, err := s.AddMemory(AddMemoryParams{
+			ProjectID: "ohara",
+			Kind:      kind,
+			Title:     "Test " + kind,
+			Body:      "Body for " + kind,
+		})
+		if err != nil {
+			t.Fatalf("AddMemory %s: %v", kind, err)
+		}
+		mem, err := s.GetMemory(id)
+		if err != nil {
+			t.Fatalf("GetMemory %s: %v", kind, err)
+		}
+		if mem.ExpiresAt != nil {
+			t.Errorf("kind %s should NOT have expires_at, got %v", kind, *mem.ExpiresAt)
+		}
+	}
+}
+
+func TestGetMemories_ExcludesExpiredItems(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add an active memory without expiry
+	activeID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Active decision",
+		Body:      "This should be found",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	// Add a discovery memory (which auto-expires) and manually set its expires_at to the past
+	discoveryID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDiscovery,
+		Title:     "Expired discovery",
+		Body:      "This should be excluded",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory discovery: %v", err)
+	}
+
+	// Manually expire the discovery memory by setting expires_at to the past
+	_, err = s.db.Exec(
+		`UPDATE memory_items SET expires_at = '2020-01-01T00:00:00Z' WHERE id = ?`,
+		discoveryID,
+	)
+	if err != nil {
+		t.Fatalf("set expired: %v", err)
+	}
+
+	// GetMemories should return only the active one
+	items, err := s.GetMemories("ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("GetMemories: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 active item, got %d", len(items))
+	}
+	if items[0].ID != activeID {
+		t.Fatalf("expected active memory id %d, got %d", activeID, items[0].ID)
+	}
+
+	// Verify the expired item is not returned even if we explicitly search by its kind
+	expiredItems, err := s.GetMemories("ohara", "", MemoryKindDiscovery, MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("GetMemories discovery filter: %v", err)
+	}
+	if len(expiredItems) != 0 {
+		t.Fatalf("expected 0 expired discovery items, got %d", len(expiredItems))
+	}
+}
+
+func TestSearchMemories_ExcludesExpiredItems(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add an active memory that matches the search
+	activeID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Use connection pooling",
+		Body:      "Pool database connections for better performance",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	// Add an expired memory that also matches the search terms
+	expiredID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Use connection pooling old",
+		Body:      "Pool database connections for better performance old",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory expired: %v", err)
+	}
+
+	// Manually expire the second memory
+	_, err = s.db.Exec(
+		`UPDATE memory_items SET expires_at = '2020-01-01T00:00:00Z' WHERE id = ?`,
+		expiredID,
+	)
+	if err != nil {
+		t.Fatalf("set expired: %v", err)
+	}
+
+	// SearchMemories should only return the active one
+	results, err := s.SearchMemories("pool", "ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 search result (active only), got %d", len(results))
+	}
+	if results[0].ID != activeID {
+		t.Fatalf("expected active memory id %d, got %d", activeID, results[0].ID)
+	}
+}
+
+func TestBuildPack_ExcludesExpiredItems(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add active memories for pack
+	activeID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Active decision",
+		Body:      "This decision is current and relevant",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	// Add expired project memory
+	expiredID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Expired decision",
+		Body:      "This decision is outdated",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory expired: %v", err)
+	}
+
+	// Manually expire the second memory
+	_, err = s.db.Exec(
+		`UPDATE memory_items SET expires_at = '2020-01-01T00:00:00Z' WHERE id = ?`,
+		expiredID,
+	)
+	if err != nil {
+		t.Fatalf("set expired: %v", err)
+	}
+
+	// BuildPack should only include the active memory
+	pack, err := s.BuildPack(PackParams{ProjectID: "ohara"})
+	if err != nil {
+		t.Fatalf("BuildPack: %v", err)
+	}
+
+	// Check that expired item is not in pack output
+	if strings.Contains(pack.Pack, "Expired decision") {
+		t.Fatal("expired memory should not appear in pack")
+	}
+	if !strings.Contains(pack.Pack, "Active decision") {
+		t.Fatal("active memory should appear in pack")
+	}
+
+	// Verify the memory items in the result
+	foundActive := false
+	foundExpired := false
+	for _, item := range pack.MemoryItems {
+		if item.ID == activeID {
+			foundActive = true
+		}
+		if item.ID == expiredID {
+			foundExpired = true
+		}
+	}
+	if !foundActive {
+		t.Fatal("active memory should be in pack.MemoryItems")
+	}
+	if foundExpired {
+		t.Fatal("expired memory should not be in pack.MemoryItems")
+	}
+}
+
+func TestMemoryExpiresAt_HelperFunction(t *testing.T) {
+	// Test discovery TTL (90 days)
+	expires := MemoryExpiresAt(MemoryKindDiscovery)
+	if expires == nil {
+		t.Fatal("discovery should have TTL")
+	}
+	expiresTime, err := time.Parse(time.RFC3339, *expires)
+	if err != nil {
+		t.Fatalf("parse discovery expires_at: %v", err)
+	}
+	ttl := MemoryTTL(MemoryKindDiscovery)
+	if ttl != 90 {
+		t.Fatalf("expected discovery TTL 90 days, got %d", ttl)
+	}
+	expectedExpiry := time.Now().UTC().AddDate(0, 0, ttl)
+	diff := expiresTime.Sub(expectedExpiry)
+	if diff < -time.Minute || diff > time.Minute {
+		t.Fatalf("discovery expires_at should be ~90 days from now, diff=%v", diff)
+	}
+
+	// Test postmortem TTL (30 days)
+	expires = MemoryExpiresAt(MemoryKindPostmortem)
+	if expires == nil {
+		t.Fatal("postmortem should have TTL")
+	}
+	ttl = MemoryTTL(MemoryKindPostmortem)
+	if ttl != 30 {
+		t.Fatalf("expected postmortem TTL 30 days, got %d", ttl)
+	}
+
+	// Test non-expiring kinds
+	for _, kind := range []string{MemoryKindDecision, MemoryKindPattern, MemoryKindBugfix} {
+		expires = MemoryExpiresAt(kind)
+		if expires != nil {
+			t.Errorf("kind %s should not have TTL, got %v", kind, *expires)
+		}
+		if MemoryTTL(kind) != 0 {
+			t.Errorf("kind %s TTL should be 0, got %d", kind, MemoryTTL(kind))
+		}
+	}
+}

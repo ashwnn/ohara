@@ -349,6 +349,31 @@ func MemoryBodyLimit(kind string) int {
 	return 0
 }
 
+// Memory kind TTLs (spec-defined expiry windows from creation).
+var memoryKindTTL = map[string]int{
+	MemoryKindDiscovery:  90, // discovery memories expire after 90 days
+	MemoryKindPostmortem: 30, // postmortem memories expire after 30 days
+}
+
+// MemoryTTL returns the TTL in days for a given memory kind, or 0 if the kind never expires.
+func MemoryTTL(kind string) int {
+	if ttl, ok := memoryKindTTL[kind]; ok {
+		return ttl
+	}
+	return 0
+}
+
+// MemoryExpiresAt computes the expires_at timestamp for a newly created memory.
+// Returns empty string if the kind has no expiry (nil pointer in SQL).
+func MemoryExpiresAt(kind string) *string {
+	ttl := MemoryTTL(kind)
+	if ttl <= 0 {
+		return nil
+	}
+	expires := time.Now().UTC().AddDate(0, 0, ttl).Format(time.RFC3339)
+	return &expires
+}
+
 // PackResult is the output of building a context pack.
 type PackResult struct {
 	Pack         string       `json:"pack"`
