@@ -97,6 +97,7 @@ func stubRuntimeHooks(t *testing.T) {
 	oldNewTUIModel := newTUIModel
 	oldNewTeaProgram := newTeaProgram
 	oldRunTeaProgram := runTeaProgram
+	oldStoreConsolidate := storeConsolidate
 
 	storeNew = store.New
 	newHTTPServer = func(s *store.Store, _ int) *oharasrv.Server { return oharasrv.New(s, 0) }
@@ -125,6 +126,9 @@ func stubRuntimeHooks(t *testing.T) {
 	}
 	storeStats = func(s *store.Store) (*store.Stats, error) { return s.Stats() }
 	storeExport = func(s *store.Store) (*store.ExportData, error) { return s.Export() }
+	storeConsolidate = func(s *store.Store, sources []string, canonical string) (*store.MergeResult, error) {
+		return s.MergeProjects(sources, canonical)
+	}
 	jsonMarshalIndent = json.MarshalIndent
 	syncStatus = func(sy *oharasync.Syncer) (localChunks int, remoteChunks int, pendingImport int, err error) {
 		return sy.Status()
@@ -161,6 +165,7 @@ func stubRuntimeHooks(t *testing.T) {
 		syncImport = oldSyncImport
 		syncExport = oldSyncExport
 		checkForUpdates = oldCheckForUpdates
+		storeConsolidate = oldStoreConsolidate
 	})
 }
 

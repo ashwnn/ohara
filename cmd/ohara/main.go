@@ -117,8 +117,10 @@ var detectProject = func(dir string) string {
 	return strings.ToLower(name)
 }
 
-// newObsidianExporter creates an obsidian exporter. Stubbed in tests.
-var newObsidianExporter = func(s, c interface{}) interface{} { return nil }
+// storeConsolidate merges project records. Stubbed in tests.
+var storeConsolidate = func(s *store.Store, sources []string, canonical string) (*store.MergeResult, error) {
+	return s.MergeProjects(sources, canonical)
+}
 
 // newObsidianWatcher creates an obsidian watcher. Stubbed in tests.
 var newObsidianWatcher = func(c interface{}) interface{} { return nil }
@@ -930,8 +932,164 @@ func realCmdProjectsList(cfg store.Config) {
 	}
 }
 
+// findSimilarProjectGroups returns groups of project names that are "similar"
+// to each other, using a conservative heuristic: two names are similar if
+// one is a substring of the other (case-insensitive) OR they share a common
+// prefix of at least 4 characters (case-insensitive).
+func findSimilarProjectGroups(names []string) [][]string {
+	if len(names) < 2 {
+		return nil
+	}
+	groups := make([][]string, 0)
+	used := make([]bool, len(names))
+	lower := make([]string, len(names))
+	for i, n := range names {
+		lower[i] = strings.ToLower(n)
+	}
+	for i := 0; i < len(names); i++ {
+		if used[i] {
+			continue
+		}
+		group := []string{names[i]}
+		used[i] = true
+		for j := i + 1; j < len(names); j++ {
+			if used[j] {
+				continue
+			}
+			li, lj := lower[i], lower[j]
+			similar := false
+			// Substring: one contains the other
+			if strings.Contains(li, lj) || strings.Contains(lj, li) {
+				similar = true
+			}
+			// Shared prefix (at least 4 chars)
+			if !similar && len(li) >= 4 && len(lj) >= 4 {
+				prefixLen := 4
+				for prefixLen <= len(li) && prefixLen <= len(lj) && li[:prefixLen] == lj[:prefixLen] {
+					prefixLen++
+				}
+				if prefixLen > 4 {
+					similar = true
+				}
+			}
+			if similar {
+				group = append(group, names[j])
+				used[j] = true
+			}
+		}
+		if len(group) > 1 {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
 func realCmdProjectsConsolidate(cfg store.Config) {
-	fatal("projects consolidate: not implemented in this binary")
+	// Parse flags.
+	dryRun := false
+	allMode := false
+	project := ""
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--dry-run" || arg == "-n" {
+			dryRun = true
+		} else if arg == "--all" {
+			allMode = true
+		} else if strings.HasPrefix(arg, "--project=") {
+			project = strings.TrimPrefix(arg, "--project=")
+		} else if arg == "--project" && i+1 < len(args) {
+			project = args[i+1]
+			i++
+		}
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	// Detect current project if not specified.
+	if project == "" {
+		wd, _ := os.Getwd()
+		project = detectProject(wd)
+	}
+
+	names, err := s.ListProjectNames()
+	if err != nil {
+		fatal("list projects: " + err.Error())
+	}
+
+	groups := findSimilarProjectGroups(names)
+	if len(groups) == 0 {
+		fmt.Println("No similar projects found")
+		return
+	}
+
+	// dry-run: show all groups and exit.
+	if dryRun {
+		fmt.Println("dry-run: would consolidate the following groups:")
+		for _, g := range groups {
+			fmt.Printf("  Group: %s\n", strings.Join(g, ", "))
+		}
+		return
+	}
+
+	// Process each group.
+	for _, group := range groups {
+		// Canonical = shortest name in group.
+		canonical := group[0]
+		for _, n := range group[1:] {
+			if len(n) < len(canonical) {
+				canonical = n
+			}
+		}
+		sources := []string{}
+		for _, n := range group {
+			if n != canonical {
+				sources = append(sources, n)
+			}
+		}
+
+		if allMode {
+			// Merge all silently.
+			_, err := storeConsolidate(s, sources, canonical)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  merge %s → %s: %v\n", strings.Join(sources, ","), canonical, err)
+				continue
+			}
+			fmt.Printf("Merged into %s: %s\n", canonical, strings.Join(sources, ", "))
+		} else {
+			// Interactive.
+			fmt.Printf("Found similar projects: %s\n", strings.Join(group, ", "))
+			fmt.Printf("  Canonical: %s\n", canonical)
+			fmt.Println("  Merge the others into this one? [y(es)/a(ll)/s(kip)/q(uit)]")
+			var input string
+			scanInputLine(&input)
+			input = strings.TrimSpace(strings.ToLower(input))
+			switch input {
+			case "q", "quit":
+				return
+			case "s", "skip":
+				continue
+			case "a", "all":
+				allMode = true
+				// fall through to merge
+			case "y", "yes", "":
+				// proceed with merge
+			default:
+				fmt.Println("  Skipping (unrecognized input)")
+				continue
+			}
+			_, err := storeConsolidate(s, sources, canonical)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  merge error: %v\n", err)
+				continue
+			}
+			fmt.Printf("Merged into %s: %s\n", canonical, strings.Join(sources, ", "))
+		}
+	}
 }
 
 func realCmdObsidianExport(cfg store.Config) {
