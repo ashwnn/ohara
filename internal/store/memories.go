@@ -105,12 +105,18 @@ func (s *Store) GetMemory(id int64) (*MemoryItem, error) {
 }
 
 // GetMemories retrieves memory items matching the given filters.
-// It automatically excludes items that have expired (expires_at < now),
-// regardless of their status, unless an explicit status filter is provided.
+// By default (status="" or status="active"), it excludes items that have expired
+// (expires_at < now). When status is explicitly set to a non-active value (e.g.,
+// "archived"), expired items ARE included so they remain retrievable for explicit queries.
 func (s *Store) GetMemories(projectID, scope, kind, status string, limit int) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+
+	// Preserve original status to determine if expires_at filter should apply.
+	// The expires_at filter only applies when status is implicitly or explicitly "active".
+	// When status is explicitly non-active (e.g., "archived"), expired items are included.
+	originalStatus := status
 	if status == "" {
 		status = MemoryStatusActive
 	}
@@ -119,8 +125,14 @@ func (s *Store) GetMemories(projectID, scope, kind, status string, limit int) ([
 		SELECT id, created_at, updated_at, project_id, actor_id, kind, scope, title, body, tags,
 		       source, status, superseded_by, expires_at
 		FROM memory_items
-		WHERE status = ? AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now'))`
+		WHERE status = ?`
 	args := []any{status}
+
+	// Only filter by expires_at when querying active items.
+	// Explicit non-active queries (e.g., archived) should return all matching items.
+	if originalStatus == "" || originalStatus == MemoryStatusActive {
+		query += " AND (expires_at IS NULL OR expires_at = '' OR expires_at > datetime('now'))"
+	}
 
 	if projectID != "" {
 		query += " AND project_id = ?"
@@ -247,11 +259,18 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 }
 
 // SearchMemories performs FTS5 search over memory items with kind and recency boosts.
-// It automatically excludes items that have expired (expires_at < now).
+// By default (status="" or status="active"), it excludes items that have expired
+// (expires_at < now). When status is explicitly set to a non-active value (e.g.,
+// "archived"), expired items ARE included so they remain searchable for explicit queries.
 func (s *Store) SearchMemories(query string, projectID, scope, kind string, status string, limit int) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 10
 	}
+
+	// Preserve original status to determine if expires_at filter should apply.
+	// The expires_at filter only applies when status is implicitly or explicitly "active".
+	// When status is explicitly non-active (e.g., "archived"), expired items are included.
+	originalStatus := status
 	if status == "" {
 		status = MemoryStatusActive
 	}
@@ -266,8 +285,14 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 		       mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at
 		FROM memory_items_fts fts
 		JOIN memory_items mi ON mi.id = fts.rowid
-		WHERE memory_items_fts MATCH ? AND mi.status = ? AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))`
+		WHERE memory_items_fts MATCH ? AND mi.status = ?`
 	args := []any{ftsQuery, status}
+
+	// Only filter by expires_at when querying active items.
+	// Explicit non-active queries (e.g., archived) should return all matching items.
+	if originalStatus == "" || originalStatus == MemoryStatusActive {
+		sqlQ += " AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))"
+	}
 
 	if projectID != "" {
 		sqlQ += " AND mi.project_id = ?"

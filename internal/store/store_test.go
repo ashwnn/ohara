@@ -5427,6 +5427,144 @@ func TestBuildPack_ExcludesExpiredItems(t *testing.T) {
 	}
 }
 
+func TestGetMemories_ArchivedItemsRemainRetrievable(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add an active decision memory
+	activeID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Active decision",
+		Body:      "This is current",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	// Add a discovery memory and set it to archived+expired
+	archivedID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDiscovery,
+		Title:     "Archived discovery",
+		Body:      "This is archived and expired",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory archived: %v", err)
+	}
+
+	// Set status to archived and expire the discovery memory
+	_, err = s.db.Exec(
+		`UPDATE memory_items SET status = 'archived', expires_at = '2020-01-01T00:00:00Z' WHERE id = ?`,
+		archivedID,
+	)
+	if err != nil {
+		t.Fatalf("set archived and expired: %v", err)
+	}
+
+	// Verify GetMemory (by ID) can still retrieve the expired item directly
+	mem, err := s.GetMemory(archivedID)
+	if err != nil {
+		t.Fatalf("GetMemory should retrieve expired item by ID: %v", err)
+	}
+	if mem.ID != archivedID {
+		t.Fatalf("expected memory id %d, got %d", archivedID, mem.ID)
+	}
+
+	// Verify default GetMemories (status="") excludes expired items
+	items, err := s.GetMemories("ohara", "", "", "", 10)
+	if err != nil {
+		t.Fatalf("GetMemories with default status: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != activeID {
+		t.Fatalf("expected 1 active item, got %d items", len(items))
+	}
+
+	// Verify GetMemories with explicit status="active" also excludes expired items
+	activeItems, err := s.GetMemories("ohara", "", "", MemoryStatusActive, 10)
+	if err != nil {
+		t.Fatalf("GetMemories with active status: %v", err)
+	}
+	if len(activeItems) != 1 || activeItems[0].ID != activeID {
+		t.Fatalf("expected 1 active item, got %d items", len(activeItems))
+	}
+
+	// Verify GetMemories with status="archived" CAN retrieve archived/expired items
+	archivedItems, err := s.GetMemories("ohara", "", "", MemoryStatusArchived, 10)
+	if err != nil {
+		t.Fatalf("GetMemories with archived status: %v", err)
+	}
+	foundArchived := false
+	for _, item := range archivedItems {
+		if item.ID == archivedID {
+			foundArchived = true
+			break
+		}
+	}
+	if !foundArchived {
+		t.Fatalf("expected archived/expired item to be retrievable via archived status, got %d items", len(archivedItems))
+	}
+}
+
+func TestSearchMemories_ArchivedItemsRemainSearchable(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add an active pattern memory
+	activeID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Active pattern auth",
+		Body:      "Use middleware for auth validation",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory active: %v", err)
+	}
+
+	// Add an archived pattern memory that is also expired
+	archivedID, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Archived pattern auth",
+		Body:      "Use middleware for old auth approach",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory archived: %v", err)
+	}
+
+	// Set status to archived and expire the memory
+	_, err = s.db.Exec(
+		`UPDATE memory_items SET status = 'archived', expires_at = '2020-01-01T00:00:00Z' WHERE id = ?`,
+		archivedID,
+	)
+	if err != nil {
+		t.Fatalf("set archived and expired: %v", err)
+	}
+
+	// Verify default SearchMemories (status="") excludes expired items
+	results, err := s.SearchMemories("middleware", "ohara", "", "", "", 10)
+	if err != nil {
+		t.Fatalf("SearchMemories with default status: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != activeID {
+		t.Fatalf("expected 1 active search result, got %d", len(results))
+	}
+
+	// Verify SearchMemories with status="archived" includes archived/expired items
+	archivedResults, err := s.SearchMemories("middleware", "ohara", "", "", MemoryStatusArchived, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories with archived status: %v", err)
+	}
+	foundArchived := false
+	for _, item := range archivedResults {
+		if item.ID == archivedID {
+			foundArchived = true
+			break
+		}
+	}
+	if !foundArchived {
+		t.Fatalf("expected archived/expired pattern item to be searchable via archived status, got %d results", len(archivedResults))
+	}
+}
+
 func TestMemoryExpiresAt_HelperFunction(t *testing.T) {
 	// Test discovery TTL (90 days)
 	expires := MemoryExpiresAt(MemoryKindDiscovery)
