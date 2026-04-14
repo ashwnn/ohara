@@ -668,17 +668,15 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Contradiction detection for decision/pattern/config kinds
+	// Contradiction detection for decision/pattern/config kinds — returns conflict info
+	// without blocking the save. The caller can decide whether to supersede/archive the
+	// older memory based on the warning in the response.
+	var conflictWarning *store.ConflictInfo
 	if conflict, err := s.store.DetectConflict(body); err != nil {
 		jsonError(w, http.StatusInternalServerError, "conflict detection failed: "+err.Error())
 		return
 	} else if conflict != nil {
-		jsonResponse(w, http.StatusConflict, map[string]any{
-			"error":      "contradiction detected",
-			"conflict":   conflict,
-			"suggestion": "review the conflicting memory and update or supersede it instead of creating a duplicate",
-		})
-		return
+		conflictWarning = conflict
 	}
 
 	id, err := s.store.AddMemory(body)
@@ -688,7 +686,16 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.notifyWrite()
-	jsonResponse(w, http.StatusCreated, map[string]any{"id": id, "status": "saved"})
+
+	resp := map[string]any{"id": id, "status": "saved"}
+	if conflictWarning != nil {
+		resp["warning"] = map[string]any{
+			"type":     "contradiction_detected",
+			"conflict": conflictWarning,
+			"message":  "a conflicting memory was found; review it and update or supersede if needed",
+		}
+	}
+	jsonResponse(w, http.StatusCreated, resp)
 }
 
 func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {

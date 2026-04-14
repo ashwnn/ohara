@@ -556,7 +556,57 @@ func TestHandleAddMemory_NoConflict_ReturnsCreated(t *testing.T) {
 	}
 }
 
-func TestHandleAddMemory_Conflict_Returns409(t *testing.T) {
+func TestHandleAddMemory_Conflict_ReturnsCreatedWithWarning(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Seed an existing decision memory
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Attempt to add a conflicting decision memory — save still succeeds with warning
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for conflicting memory (save succeeds), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify response body contains conflict warning (not a blocking error)
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["id"] == nil {
+		t.Error("expected id in response")
+	}
+	if resp["status"] != "saved" {
+		t.Errorf("expected status 'saved', got %v", resp["status"])
+	}
+	warning, ok := resp["warning"].(map[string]any)
+	if !ok {
+		t.Fatal("expected warning field in response for conflict")
+	}
+	if warning["type"] != "contradiction_detected" {
+		t.Errorf("expected warning type 'contradiction_detected', got %v", warning["type"])
+	}
+	if warning["conflict"] == nil {
+		t.Error("expected conflict info in warning")
+	}
+}
+
+func TestHandleAddMemory_Conflict_SaveActuallyPersisted(t *testing.T) {
+	// Verifies that conflicting memories are actually saved, not silently dropped.
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
@@ -578,23 +628,40 @@ func TestHandleAddMemory_Conflict_Returns409(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for conflicting memory, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify conflict response body contains conflict info
+	// Parse response to get the new memory ID
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse response: %v", err)
 	}
-	if resp["error"] != "contradiction detected" {
-		t.Errorf("expected error 'contradiction detected', got %v", resp["error"])
+	newIDFloat, ok := resp["id"].(float64)
+	if !ok {
+		t.Fatal("expected id as number in response")
 	}
-	if resp["conflict"] == nil {
-		t.Error("expected conflict info in response")
+	newID := int64(newIDFloat)
+
+	// Verify the new memory was actually persisted
+	saved, err := st.GetMemory(newID)
+	if err != nil {
+		t.Fatalf("get saved memory: %v", err)
 	}
-	if resp["suggestion"] == nil {
-		t.Error("expected suggestion in response")
+	if saved.Title != "Auth decision: JWT for session management" {
+		t.Errorf("expected saved title, got %q", saved.Title)
+	}
+	if saved.Body != "Alternative approach" {
+		t.Errorf("expected saved body, got %q", saved.Body)
+	}
+
+	// Verify we now have 2 decision memories
+	memories, err := st.GetMemories("ohara", "", "decision", "active", 10)
+	if err != nil {
+		t.Fatalf("get memories: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("expected 2 decision memories after conflict save, got %d", len(memories))
 	}
 }
 
@@ -625,7 +692,7 @@ func TestHandleAddMemory_BugfixKind_BypassesConflict(t *testing.T) {
 	}
 }
 
-func TestHandleAddMemory_PatternConflict_Returns409(t *testing.T) {
+func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithWarning(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
@@ -641,18 +708,26 @@ func TestHandleAddMemory_PatternConflict_Returns409(t *testing.T) {
 		t.Fatalf("seed memory: %v", err)
 	}
 
-	// Conflicting pattern
+	// Conflicting pattern — save succeeds with warning
 	body := `{"project_id":"ohara","kind":"pattern","title":"Error handling: retry pattern for API requests","body":"Use exponential backoff"}`
 	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for conflicting pattern, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for conflicting pattern (save succeeds), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["warning"] == nil {
+		t.Fatal("expected warning field for conflicting pattern")
 	}
 }
 
-func TestHandleAddMemory_ConfigConflict_Returns409(t *testing.T) {
+func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithWarning(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	h := srv.Handler()
@@ -668,14 +743,22 @@ func TestHandleAddMemory_ConfigConflict_Returns409(t *testing.T) {
 		t.Fatalf("seed memory: %v", err)
 	}
 
-	// Conflicting config
+	// Conflicting config — save succeeds with warning
 	body := `{"project_id":"ohara","kind":"config","title":"Database config: PostgreSQL for production settings","body":"Pool size 10"}`
 	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for conflicting config, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for conflicting config (save succeeds), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["warning"] == nil {
+		t.Fatal("expected warning field for conflicting config")
 	}
 }
 
