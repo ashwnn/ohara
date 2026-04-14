@@ -1,11 +1,11 @@
 ---
-name: engram-testing-coverage
+name: ohara-testing-coverage
 description: >
-  TDD and coverage standards for Engram.
+  TDD and coverage standards for Ohara.
   Trigger: When implementing behavior changes in any package.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

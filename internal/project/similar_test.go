@@ -15,8 +15,8 @@ func TestLevenshtein(t *testing.T) {
 		{a: "abc", b: "abc", want: 0},
 		{a: "kitten", b: "sitting", want: 3},
 		{a: "saturday", b: "sunday", want: 3},
-		{a: "engram", b: "engam", want: 1},  // single deletion
-		{a: "engram", b: "engram", want: 0}, // identical
+		{a: "ohara", b: "ohar", want: 1},  // single deletion
+		{a: "ohara", b: "ohara", want: 0}, // identical
 		{a: "a", b: "b", want: 1},
 		{a: "abc", b: "ac", want: 1},   // one deletion
 		{a: "abc", b: "axc", want: 1},  // one substitution
@@ -34,7 +34,7 @@ func TestLevenshtein(t *testing.T) {
 // TestLevenshtein_Symmetry verifies that levenshtein(a,b) == levenshtein(b,a).
 func TestLevenshtein_Symmetry(t *testing.T) {
 	pairs := [][2]string{
-		{"engram", "engam"},
+		{"ohara", "ohar"},
 		{"kitten", "sitting"},
 		{"abc", "xyz"},
 		{"", "hello"},
@@ -52,21 +52,21 @@ func TestLevenshtein_Symmetry(t *testing.T) {
 // ─── FindSimilar unit tests ──────────────────────────────────────────────────
 
 func TestFindSimilar_CaseInsensitiveAndSubstring(t *testing.T) {
-	existing := []string{"Engram", "engram-memory", "totally-different"}
-	matches := FindSimilar("engram", existing, 3)
+	existing := []string{"Ohara", "ohara-memory", "totally-different"}
+	matches := FindSimilar("ohara", existing, 3)
 
 	if len(matches) < 2 {
 		t.Fatalf("expected at least 2 matches, got %d: %v", len(matches), matches)
 	}
 
 	// First match should be case-insensitive
-	if matches[0].Name != "Engram" || matches[0].MatchType != "case-insensitive" {
-		t.Errorf("first match = %+v; want {Engram, case-insensitive}", matches[0])
+	if matches[0].Name != "Ohara" || matches[0].MatchType != "case-insensitive" {
+		t.Errorf("first match = %+v; want {Ohara, case-insensitive}", matches[0])
 	}
 
 	// Second match should be substring
-	if matches[1].Name != "engram-memory" || matches[1].MatchType != "substring" {
-		t.Errorf("second match = %+v; want {engram-memory, substring}", matches[1])
+	if matches[1].Name != "ohara-memory" || matches[1].MatchType != "substring" {
+		t.Errorf("second match = %+v; want {ohara-memory, substring}", matches[1])
 	}
 }
 
@@ -113,8 +113,8 @@ func TestFindSimilar_TiandaGroup(t *testing.T) {
 }
 
 func TestFindSimilar_ExcludesExactMatch(t *testing.T) {
-	existing := []string{"engram"}
-	matches := FindSimilar("engram", existing, 3)
+	existing := []string{"ohara"}
+	matches := FindSimilar("ohara", existing, 3)
 
 	if len(matches) != 0 {
 		t.Errorf("expected empty results for exact match, got %v", matches)
@@ -131,14 +131,14 @@ func TestFindSimilar_NothingSimilar(t *testing.T) {
 }
 
 func TestFindSimilar_LevenshteinHit(t *testing.T) {
-	existing := []string{"engam"} // distance 1 from "engram"
-	matches := FindSimilar("engram", existing, 2)
+	existing := []string{"ohar"} // distance 1 from "ohara"
+	matches := FindSimilar("ohara", existing, 2)
 
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 levenshtein match, got %d: %v", len(matches), matches)
 	}
-	if matches[0].Name != "engam" {
-		t.Errorf("match name = %q; want engam", matches[0].Name)
+	if matches[0].Name != "ohar" {
+		t.Errorf("match name = %q; want ohar", matches[0].Name)
 	}
 	if matches[0].MatchType != "levenshtein" {
 		t.Errorf("match type = %q; want levenshtein", matches[0].MatchType)
@@ -150,8 +150,8 @@ func TestFindSimilar_LevenshteinHit(t *testing.T) {
 
 func TestFindSimilar_LevenshteinBeyondMaxDistance(t *testing.T) {
 	existing := []string{"completely-different-string"}
-	// "engram" vs "completely-different-string" is far beyond maxDistance=2
-	matches := FindSimilar("engram", existing, 2)
+	// "ohara" vs "completely-different-string" is far beyond maxDistance=2
+	matches := FindSimilar("ohara", existing, 2)
 
 	if len(matches) != 0 {
 		t.Errorf("expected no matches beyond max distance, got %v", matches)
@@ -161,11 +161,11 @@ func TestFindSimilar_LevenshteinBeyondMaxDistance(t *testing.T) {
 func TestFindSimilar_OrderingCaseFirst(t *testing.T) {
 	// Verify ordering: case-insensitive → substring → levenshtein
 	existing := []string{
-		"engam",      // levenshtein distance 1
-		"Engram",     // case-insensitive
-		"engram-old", // substring
+		"ohar",      // levenshtein distance 1
+		"Ohara",     // case-insensitive
+		"ohara-old", // substring
 	}
-	matches := FindSimilar("engram", existing, 2)
+	matches := FindSimilar("ohara", existing, 2)
 
 	if len(matches) < 3 {
 		t.Fatalf("expected 3 matches, got %d: %v", len(matches), matches)
@@ -183,7 +183,7 @@ func TestFindSimilar_OrderingCaseFirst(t *testing.T) {
 }
 
 func TestFindSimilar_EmptyExisting(t *testing.T) {
-	matches := FindSimilar("engram", []string{}, 3)
+	matches := FindSimilar("ohara", []string{}, 3)
 	if len(matches) != 0 {
 		t.Errorf("expected no matches for empty existing list, got %v", matches)
 	}
@@ -193,8 +193,8 @@ func TestFindSimilar_ZeroMaxDistance(t *testing.T) {
 	// With maxDistance=0, only exact levenshtein=0 would match — but those are
 	// caught by the case-insensitive check first. Verify levenshtein matches
 	// at distance > 0 are excluded.
-	existing := []string{"engam"} // distance 1
-	matches := FindSimilar("engram", existing, 0)
+	existing := []string{"ohar"} // distance 1
+	matches := FindSimilar("ohara", existing, 0)
 
 	if len(matches) != 0 {
 		t.Errorf("expected no matches with maxDistance=0, got %v", matches)

@@ -1,4 +1,4 @@
-module github.com/Gentleman-Programming/engram
+module github.com/ashwnn/ohara
 
 go 1.24.2
 

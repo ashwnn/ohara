@@ -1,11 +1,11 @@
 ---
-name: engram-tui-quality
+name: ohara-tui-quality
 description: >
-  Bubbletea/Lipgloss quality rules for Engram TUI.
+  Bubbletea/Lipgloss quality rules for Ohara TUI.
   Trigger: Changes in model, update, view, navigation, or rendering.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

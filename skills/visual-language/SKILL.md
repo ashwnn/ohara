@@ -1,11 +1,11 @@
 ---
-name: engram-visual-language
+name: ohara-visual-language
 description: >
-  Visual language rules for Engram surfaces. Trigger: Any dashboard styling,
+  Visual language rules for Ohara surfaces. Trigger: Any dashboard styling,
   typography, spacing, or visual identity change.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 
@@ -20,7 +20,7 @@ Use this skill when:
 
 ## Visual Rules
 
-1. The dashboard must feel like Engram, not a generic SaaS admin.
+1. The dashboard must feel like Ohara, not a generic SaaS admin.
 2. Prefer strong hierarchy, fewer containers, and clearer breathing room.
 3. Use the TUI-inspired palette and mono/display accents intentionally.
 4. Format machine timestamps and raw identifiers into human-scannable UI.

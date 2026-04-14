@@ -1,11 +1,11 @@
 ---
-name: engram-project-structure
+name: ohara-project-structure
 description: >
-  Repository structure and placement rules for Engram. Trigger: Creating files,
+  Repository structure and placement rules for Ohara. Trigger: Creating files,
   packages, handlers, templates, styles, or tests in this repo.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

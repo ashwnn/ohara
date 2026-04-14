@@ -1,12 +1,12 @@
-# Label definitions for Gentleman-Programming/engram
+# Label definitions for Ohara
 #
 # This file documents the canonical label set for this repo.
 # Apply labels via gh CLI (run from repo root, requires write access):
 #
-#   gh label create "<name>" --color "<hex>" --description "<desc>" --repo Gentleman-Programming/engram
+#   gh label create "<name>" --color "<hex>" --description "<desc>" --repo ashwnn/ohara
 #
 # Or use a tool like github-label-sync:
-#   npx github-label-sync --labels .github/labels.yml Gentleman-Programming/engram
+#   npx github-label-sync --labels .github/labels.yml ashwnn/ohara
 
 # --- Type labels (required on every PR — pick exactly one) ---
 - name: "type:bug"

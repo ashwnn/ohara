@@ -1,5 +1,5 @@
-# Binary (only at root, not cmd/engram/ directory)
-/engram
+# Binary (only at root, not cmd/ohara/ directory)
+/ohara
 *.exe
 
 # Database
@@ -8,7 +8,7 @@
 *.db-shm
 
 # Export files
-engram-export.json
+ohara-export.json
 
 # OS
 .DS_Store
@@ -26,6 +26,6 @@ Thumbs.db
 .codex/skills
 .github/skills
 .gemini/skills
-engram-dev
+ohara-dev
 .atl/
 .release-notes-beta.md

@@ -1,11 +1,11 @@
 ---
-name: engram-cultural-norms
+name: ohara-cultural-norms
 description: >
-  Cultural and collaboration norms for Engram contributors and agents.
+  Cultural and collaboration norms for Ohara contributors and agents.
   Trigger: Starting substantial work, reviewing changes, or defining team conventions.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 
@@ -21,7 +21,7 @@ Use this skill when:
 ## Cultural Rules
 
 1. Product coherence beats local cleverness.
-2. Every visible feature should feel connected to the full Engram experience.
+2. Every visible feature should feel connected to the full Ohara experience.
 3. Avoid generic enterprise UI/architecture drift.
 4. Prefer explicit decisions and documented rules over tribal knowledge.
 5. Quality means behavior, naming, tests, docs, and UX all line up.

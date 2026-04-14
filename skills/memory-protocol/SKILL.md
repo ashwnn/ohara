@@ -1,11 +1,11 @@
 ---
-name: engram-memory-protocol
+name: ohara-memory-protocol
 description: >
-  Persistent memory discipline for Engram contributors.
+  Persistent memory discipline for Ohara contributors.
   Trigger: Decisions, bugfixes, discoveries, preferences, or session closure.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

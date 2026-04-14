@@ -1,11 +1,11 @@
 ---
-name: engram-business-rules
+name: ohara-business-rules
 description: >
-  Product and business-rule guardrails for Engram. Trigger: Any change that
-  affects sync behavior, project controls, permissions, or memory semantics.
+  Product and business-rule guardrails for Ohara. Trigger: Any change that
+  affects project controls, permissions, or memory semantics.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

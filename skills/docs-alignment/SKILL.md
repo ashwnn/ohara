@@ -1,11 +1,11 @@
 ---
-name: engram-docs-alignment
+name: ohara-docs-alignment
 description: >
-  Documentation alignment rules for Engram.
+  Documentation alignment rules for Ohara.
   Trigger: Any code or workflow change that affects user or contributor behavior.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

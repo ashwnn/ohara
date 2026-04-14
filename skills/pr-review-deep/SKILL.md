@@ -1,11 +1,11 @@
 ---
-name: engram-pr-review-deep
+name: ohara-pr-review-deep
 description: >
-  Deep technical review protocol for Engram pull requests.
+  Deep technical review protocol for Ohara pull requests.
   Trigger: Reviewing any external or internal contribution before merge.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

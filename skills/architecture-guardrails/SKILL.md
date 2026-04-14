@@ -1,12 +1,12 @@
 ---
-name: engram-architecture-guardrails
+name: ohara-architecture-guardrails
 description: >
-  Architecture guardrails for Engram across local store, cloud sync, dashboard,
+  Architecture guardrails for Ohara across local store, HTTP API, MCP server,
   and plugins. Trigger: Any change that affects system boundaries, ownership,
   state flow, or cross-package responsibilities.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

@@ -1,11 +1,11 @@
 ---
-name: engram-dashboard-htmx
+name: ohara-dashboard-htmx
 description: >
-  HTMX and templ interaction rules for the Engram dashboard. Trigger: Any
+  HTMX and templ interaction rules for the Ohara dashboard. Trigger: Any
   change to htmx attributes, partial updates, forms, or server-rendered browser UI.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/ashwnn/ohara/internal/store"
 )
 
 func newTestStore(t *testing.T) *store.Store {
@@ -130,7 +130,7 @@ func (f *fakeGzipWriter) Close() error {
 
 func TestNew(t *testing.T) {
 	s := newTestStore(t)
-	syncDir := filepath.Join(t.TempDir(), ".engram")
+	syncDir := filepath.Join(t.TempDir(), ".ohara")
 	sy := New(s, syncDir)
 
 	if sy == nil {
@@ -148,7 +148,7 @@ func TestExportImportFlowWithProjectFilter(t *testing.T) {
 	srcStore := newTestStore(t)
 	seedStoreForSync(t, srcStore)
 
-	syncDir := filepath.Join(t.TempDir(), ".engram")
+	syncDir := filepath.Join(t.TempDir(), ".ohara")
 	exporter := New(srcStore, syncDir)
 
 	exportResult, err := exporter.Export("alice", "proj-a")

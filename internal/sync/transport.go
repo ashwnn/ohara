@@ -9,7 +9,7 @@ import (
 
 // Transport defines how chunks are read and written during sync.
 // This is the abstraction that allows the same Syncer to work with
-// both local filesystem (.engram/ directory) and remote cloud server.
+// both local filesystem (.ohara/ directory) and remote cloud server.
 type Transport interface {
 	// ReadManifest returns the manifest (chunk index).
 	// Returns an empty manifest if none exists yet.
@@ -35,7 +35,7 @@ type Transport interface {
 // This encapsulates all filesystem operations that were previously
 // inline in the Syncer methods.
 type FileTransport struct {
-	syncDir string // Path to .engram/ directory
+	syncDir string // Path to sync directory (e.g. .ohara/)
 }
 
 // NewFileTransport creates a FileTransport rooted at the given sync directory.

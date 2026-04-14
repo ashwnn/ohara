@@ -1,6 +1,6 @@
-# Contributing to Engram
+# Contributing to Ohara
 
-Thanks for contributing. Engram enforces a strict **issue-first workflow** — every change starts with an approved issue.
+Thanks for contributing. Ohara enforces a strict **issue-first workflow** — every change starts with an approved issue.
 
 ---
 
@@ -159,7 +159,7 @@ Why hybrid:
 
 ## Maintainer Triage Cadence
 
-Engram uses a lightweight, regular cadence so contributors know what to expect.
+Ohara uses a lightweight, regular cadence so contributors know what to expect.
 
 | Activity | Frequency | What Happens |
 |----------|-----------|-------------|
@@ -177,7 +177,7 @@ If you haven't received a response within 7 days on a PR or issue, a single ping
 
 - PRs opened without an approved issue
 - PRs that fail CI and aren't updated within 30 days
-- Issues that are vague, a duplicate, or belong in [Discussions](https://github.com/Gentleman-Programming/engram/discussions)
+- Issues that are vague, a duplicate, or belong in [Discussions](https://github.com/ashwnn/ohara/discussions)
 - Issues with no response to a maintainer question after 14 days
 
 ---

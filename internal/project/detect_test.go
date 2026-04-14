@@ -38,13 +38,13 @@ func TestExtractRepoName(t *testing.T) {
 		},
 		{
 			name: "SSH org with dots in repo name",
-			url:  "git@github.com:Gentleman-Programming/engram.git",
-			want: "engram",
+			url:  "git@github.com:opencode-go/ohara.git",
+			want: "ohara",
 		},
 		{
 			name: "HTTPS org with dots",
-			url:  "https://github.com/Gentleman-Programming/engram.git",
-			want: "engram",
+			url:  "https://github.com/opencode-go/ohara.git",
+			want: "ohara",
 		},
 		{
 			name: "Repo name without .git from SSH",
@@ -108,14 +108,14 @@ func TestDetectProject_GitRemote_HTTPS(t *testing.T) {
 	initGit(t, dir)
 
 	cmd := exec.Command("git", "-C", dir, "remote", "add", "origin",
-		"https://github.com/Gentleman-Programming/engram.git")
+		"https://github.com/opencode-go/ohara.git")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git remote add: %v\n%s", err, out)
 	}
 
 	got := DetectProject(dir)
-	if got != "engram" {
-		t.Errorf("DetectProject HTTPS remote = %q; want %q", got, "engram")
+	if got != "ohara" {
+		t.Errorf("DetectProject HTTPS remote = %q; want %q", got, "ohara")
 	}
 }
 

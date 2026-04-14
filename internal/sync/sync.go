@@ -1,4 +1,4 @@
-// Package sync implements git-friendly memory synchronization for Engram.
+// Package sync implements git-friendly memory synchronization for Ohara.
 //
 // Instead of a single large JSON file, memories are stored as compressed
 // JSONL chunks with a manifest index. This design:
@@ -10,13 +10,13 @@
 //
 // Directory structure:
 //
-//	.engram/
+//	.ohara/
 //	├── manifest.json          ← index of all chunks (small, mergeable)
 //	├── chunks/
 //	│   ├── a3f8c1d2.jsonl.gz ← chunk 1 (compressed)
 //	│   ├── b7d2e4f1.jsonl.gz ← chunk 2
 //	│   └── ...
-//	└── engram.db              ← local working DB (gitignored)
+//	└── ohara.db              ← local working DB (gitignored)
 package sync
 
 import (
@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/ashwnn/ohara/internal/store"
 )
 
 var (
@@ -100,7 +100,7 @@ type ImportResult struct {
 // Syncer handles exporting and importing memory chunks.
 type Syncer struct {
 	store     *store.Store
-	syncDir   string    // Path to .engram/ in the project repo (kept for backward compat)
+	syncDir   string    // Path to .ohara/ in the project repo
 	transport Transport // Pluggable I/O backend (filesystem, remote, etc.)
 }
 

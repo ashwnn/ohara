@@ -19,11 +19,6 @@ link_skills() {
 
   mkdir -p "${target_dir}"
 
-  # Remove legacy aggregate link if present.
-  if [ -L "${target_dir}/engram" ]; then
-    rm -f "${target_dir}/engram"
-  fi
-
   for source_path in "${SKILLS_SOURCE}"/*; do
     skill_name="$(basename "${source_path}")"
     link_path="${target_dir}/${skill_name}"
@@ -32,9 +27,7 @@ link_skills() {
   done
 }
 
-link_skills "${REPO_ROOT}/.claude"
-link_skills "${REPO_ROOT}/.codex"
-link_skills "${REPO_ROOT}/.gemini"
+link_skills "${REPO_ROOT}/.opencode"
 
 echo
-echo "Done. Skills linked for project .claude, .codex, and .gemini"
+echo "Done. Skills linked for project .opencode"

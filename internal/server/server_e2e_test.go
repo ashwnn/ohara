@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/ashwnn/ohara/internal/store"
 )
 
 func newE2EServer(t *testing.T) (*store.Store, *httptest.Server) {
@@ -66,8 +66,8 @@ func TestObservationsTopicUpsertAndDeleteE2E(t *testing.T) {
 
 	sessionResp := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":        "s-e2e",
-		"project":   "engram",
-		"directory": "/tmp/engram",
+		"project":"ohara",
+		"directory":"/tmp/ohara",
 	})
 	if sessionResp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", sessionResp.StatusCode)
@@ -79,7 +79,7 @@ func TestObservationsTopicUpsertAndDeleteE2E(t *testing.T) {
 		"type":       "architecture",
 		"title":      "Auth architecture",
 		"content":    "Use middleware chain for auth",
-		"project":    "engram",
+		"project":"ohara",
 		"scope":      "project",
 		"topic_key":  "architecture/auth-model",
 	})
@@ -94,7 +94,7 @@ func TestObservationsTopicUpsertAndDeleteE2E(t *testing.T) {
 		"type":       "architecture",
 		"title":      "Auth architecture",
 		"content":    "Move auth to gateway and middleware chain",
-		"project":    "engram",
+		"project":"ohara",
 		"scope":      "project",
 		"topic_key":  "architecture/auth-model",
 	})
@@ -127,7 +127,7 @@ func TestObservationsTopicUpsertAndDeleteE2E(t *testing.T) {
 		"type":       "bugfix",
 		"title":      "Fix auth panic",
 		"content":    "Fix nil token panic",
-		"project":    "engram",
+		"project":"ohara",
 		"scope":      "project",
 		"topic_key":  "bug/auth-nil-panic",
 	})
@@ -162,7 +162,7 @@ func TestObservationsTopicUpsertAndDeleteE2E(t *testing.T) {
 	}
 	deletedGetResp.Body.Close()
 
-	searchResp, err := client.Get(ts.URL + "/search?q=panic&project=engram&scope=project&limit=10")
+	searchResp, err := client.Get(ts.URL + "/search?q=panic&project=ohara&scope=project&limit=10")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -185,8 +185,8 @@ func TestPassiveCaptureEndpointE2E(t *testing.T) {
 	// Create session
 	sessionResp := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":        "s-passive",
-		"project":   "engram",
-		"directory": "/tmp/engram",
+		"project":"ohara",
+		"directory":"/tmp/ohara",
 	})
 	if sessionResp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", sessionResp.StatusCode)
@@ -196,7 +196,7 @@ func TestPassiveCaptureEndpointE2E(t *testing.T) {
 	// POST passive capture with learnings
 	captureResp := postJSON(t, client, ts.URL+"/observations/passive", map[string]any{
 		"session_id": "s-passive",
-		"project":    "engram",
+		"project":"ohara",
 		"source":     "subagent-stop",
 		"content":    "## Key Learnings:\n\n1. bcrypt cost=12 is the right balance for our server performance\n2. JWT refresh tokens need atomic rotation to prevent race conditions\n",
 	})
@@ -212,7 +212,7 @@ func TestPassiveCaptureEndpointE2E(t *testing.T) {
 	}
 
 	// Verify observations are searchable
-	searchResp, err := client.Get(ts.URL + "/search?q=bcrypt&project=engram&limit=10")
+	searchResp, err := client.Get(ts.URL + "/search?q=bcrypt&project=ohara&limit=10")
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -231,8 +231,8 @@ func TestPassiveCaptureEndpointEmptyContentE2E(t *testing.T) {
 
 	sessionResp := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":        "s-empty",
-		"project":   "engram",
-		"directory": "/tmp/engram",
+		"project":"ohara",
+		"directory":"/tmp/ohara",
 	})
 	if sessionResp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", sessionResp.StatusCode)
@@ -242,7 +242,7 @@ func TestPassiveCaptureEndpointEmptyContentE2E(t *testing.T) {
 	captureResp := postJSON(t, client, ts.URL+"/observations/passive", map[string]any{
 		"session_id": "s-empty",
 		"content":    "just some text without any learning section",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if captureResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for empty capture, got %d", captureResp.StatusCode)
@@ -258,7 +258,7 @@ func TestPassiveCaptureEndpointRequiresSessionID(t *testing.T) {
 	client := ts.Client()
 
 	captureResp := postJSON(t, client, ts.URL+"/observations/passive", map[string]any{
-		"project": "engram",
+		"project":"ohara",
 		"content": "## Key Learnings:\n\n1. This should fail because session_id is missing",
 	})
 	if captureResp.StatusCode != http.StatusBadRequest {
@@ -288,7 +288,7 @@ func TestPassiveCaptureEndpointReturnsServerErrorWhenSessionMissing(t *testing.T
 	// No session created; saving observations should fail with FK constraint.
 	captureResp := postJSON(t, client, ts.URL+"/observations/passive", map[string]any{
 		"session_id": "missing-session",
-		"project":    "engram",
+		"project":"ohara",
 		"content":    "## Key Learnings:\n\n1. This long learning should trigger a DB insert and fail on FK",
 	})
 	if captureResp.StatusCode != http.StatusInternalServerError {
@@ -314,7 +314,7 @@ func TestCoreReadHandlersAndHelpersE2E(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-core",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -326,7 +326,7 @@ func TestCoreReadHandlersAndHelpersE2E(t *testing.T) {
 		"type":       "decision",
 		"title":      "Core test",
 		"content":    "exercise handlers",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if obs.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating observation, got %d", obs.StatusCode)
@@ -334,7 +334,7 @@ func TestCoreReadHandlersAndHelpersE2E(t *testing.T) {
 	obsData := decodeJSON[map[string]any](t, obs)
 	obsID := int64(obsData["id"].(float64))
 
-	recentSessionsResp, err := client.Get(ts.URL + "/sessions/recent?project=engram&limit=oops")
+	recentSessionsResp, err := client.Get(ts.URL + "/sessions/recent?project=ohara&limit=oops")
 	if err != nil {
 		t.Fatalf("recent sessions: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestCoreReadHandlersAndHelpersE2E(t *testing.T) {
 		t.Fatalf("expected at least one recent session")
 	}
 
-	recentObsResp, err := client.Get(ts.URL + "/observations/recent?project=engram&scope=project&limit=bad")
+	recentObsResp, err := client.Get(ts.URL + "/observations/recent?project=ohara&scope=project&limit=bad")
 	if err != nil {
 		t.Fatalf("recent observations: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestCoreReadHandlersAndHelpersE2E(t *testing.T) {
 		t.Fatalf("expected focus observation in timeline")
 	}
 
-	contextResp, err := client.Get(ts.URL + "/context?project=engram&scope=project")
+	contextResp, err := client.Get(ts.URL + "/context?project=ohara&scope=project")
 	if err != nil {
 		t.Fatalf("context: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestValidationAndImportExportErrorsE2E(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-validate",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -489,7 +489,7 @@ func TestValidationAndImportExportErrorsE2E(t *testing.T) {
 	}
 	reimportResp.Body.Close()
 
-	recentPromptsResp, err := client.Get(ts.URL + "/prompts/recent?project=engram&limit=bad")
+	recentPromptsResp, err := client.Get(ts.URL + "/prompts/recent?project=ohara&limit=bad")
 	if err != nil {
 		t.Fatalf("recent prompts: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestPromptAndObservationMutationHandlersE2E(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-mutate",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -515,7 +515,7 @@ func TestPromptAndObservationMutationHandlersE2E(t *testing.T) {
 	addPrompt := postJSON(t, client, ts.URL+"/prompts", map[string]any{
 		"session_id": "s-mutate",
 		"content":    "How to fix auth panic?",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if addPrompt.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 adding prompt, got %d", addPrompt.StatusCode)
@@ -530,7 +530,7 @@ func TestPromptAndObservationMutationHandlersE2E(t *testing.T) {
 	}
 	addPromptMissing.Body.Close()
 
-	searchPromptResp, err := client.Get(ts.URL + "/prompts/search?q=auth&project=engram&limit=5")
+	searchPromptResp, err := client.Get(ts.URL + "/prompts/search?q=auth&project=ohara&limit=5")
 	if err != nil {
 		t.Fatalf("search prompts: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestPromptAndObservationMutationHandlersE2E(t *testing.T) {
 		"type":       "decision",
 		"title":      "Auth handling",
 		"content":    "Use middleware",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if obs.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 adding observation, got %d", obs.StatusCode)
@@ -639,7 +639,7 @@ func TestServerHandlersReturn500WhenStoreClosed(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-closed",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -653,7 +653,7 @@ func TestServerHandlersReturn500WhenStoreClosed(t *testing.T) {
 	addPrompt := postJSON(t, client, ts.URL+"/prompts", map[string]any{
 		"session_id": "s-closed",
 		"content":    "prompt",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if addPrompt.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500 add prompt with closed store, got %d", addPrompt.StatusCode)
@@ -718,7 +718,7 @@ func TestObservationAndSessionErrorBranchesE2E(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-errors",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -730,7 +730,7 @@ func TestObservationAndSessionErrorBranchesE2E(t *testing.T) {
 		"type":       "decision",
 		"title":      "Delete me",
 		"content":    "content",
-		"project":    "engram",
+		"project":"ohara",
 	})
 	if obs.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 adding observation, got %d", obs.StatusCode)
@@ -783,7 +783,7 @@ func TestStoreClosedExtraServerBranchesE2E(t *testing.T) {
 
 	create := postJSON(t, client, ts.URL+"/sessions", map[string]any{
 		"id":      "s-closed-2",
-		"project": "engram",
+		"project":"ohara",
 	})
 	if create.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 creating session, got %d", create.StatusCode)
@@ -794,7 +794,7 @@ func TestStoreClosedExtraServerBranchesE2E(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	createSessionResp := postJSON(t, client, ts.URL+"/sessions", map[string]any{"id": "s2", "project": "engram"})
+	createSessionResp := postJSON(t, client, ts.URL+"/sessions", map[string]any{"id": "s2", "project":"ohara"})
 	if createSessionResp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500 creating session on closed store, got %d", createSessionResp.StatusCode)
 	}

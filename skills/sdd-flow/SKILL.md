@@ -1,11 +1,11 @@
 ---
-name: engram-sdd-flow
+name: ohara-sdd-flow
 description: >
-  Spec-Driven Development workflow for Engram.
+  Spec-Driven Development workflow for Ohara.
   Trigger: When user requests SDD or multi-phase implementation planning.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 

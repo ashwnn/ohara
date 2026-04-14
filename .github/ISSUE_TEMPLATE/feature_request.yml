@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature or improvement for engram
+description: Suggest a new feature or improvement for Ohara
 labels: ["type:feature", "status:needs-review"]
 body:
   - type: markdown
@@ -13,8 +13,6 @@ body:
         > 1. You submit this issue → it gets `status:needs-review` automatically
         > 2. A maintainer reviews it → adds `status:approved` if accepted
         > 3. Only then can a PR be opened to implement it
-        >
-        > See [CONTRIBUTING.md](https://github.com/Gentleman-Programming/engram/blob/main/CONTRIBUTING.md) for the full workflow.
 
   - type: checkboxes
     id: preflight
@@ -22,7 +20,7 @@ body:
       label: "📋 Pre-flight Checks"
       description: Please confirm before submitting.
       options:
-        - label: I have searched [existing issues](https://github.com/Gentleman-Programming/engram/issues) and this is not a duplicate
+        - label: I have searched [existing issues](https://github.com/ashwnn/ohara/issues) and this is not a duplicate
           required: true
         - label: I understand this issue needs `status:approved` before a PR can be opened
           required: true
@@ -45,16 +43,11 @@ body:
       label: "💡 Proposed Solution"
       description: Describe the solution you'd like. How should it work from the user's perspective?
       placeholder: |
-        I'd like engram to...
+        I'd like ohara to...
 
         Example usage:
         ```bash
-        engram <new-command> --flag
-        ```
-
-        Expected output:
-        ```
-        ...
+        ohara <new-command> --flag
         ```
     validations:
       required: true
@@ -63,13 +56,11 @@ body:
     id: scope
     attributes:
       label: "📦 Affected Area"
-      description: Which part of engram does this affect?
+      description: Which part of Ohara does this affect?
       options:
         - CLI (commands, flags)
         - MCP Server (tools, transport)
-        - TUI (terminal UI)
         - Store (database, queries)
-        - Sync (multi-instance)
         - Skills (agent skills)
         - Documentation
         - Other
@@ -91,6 +82,6 @@ body:
     id: context
     attributes:
       label: "📎 Additional Context"
-      description: Any other context, mockups, examples, or references that help explain the request.
+      description: Links, screenshots, or anything else that helps explain the request.
     validations:
       required: false

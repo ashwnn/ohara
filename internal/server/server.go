@@ -1,4 +1,4 @@
-// Package server provides the HTTP API for Engram.
+// Package server provides the HTTP API for Ohara.
 //
 // This is how external clients (OpenCode plugin, Claude Code hooks,
 // any agent) communicate with the memory engine. Simple JSON REST API.
@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/ashwnn/ohara/internal/store"
 )
 
 var loadServerStats = func(s *store.Store) (*store.Stats, error) {
@@ -23,7 +23,7 @@ var loadServerStats = func(s *store.Store) (*store.Stats, error) {
 }
 
 // SyncStatusProvider returns the current sync status. This is implemented
-// by autosync.Manager and injected from cmd/engram/main.go.
+// by autosync.Manager and injected from cmd/ohara/main.go.
 type SyncStatusProvider interface {
 	Status() SyncStatus
 }
@@ -85,9 +85,9 @@ func (s *Server) Start() error {
 
 	ln, err := listenFn("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("engram server: listen %s: %w", addr, err)
+		return fmt.Errorf("ohara server: listen %s: %w", addr, err)
 	}
-	log.Printf("[engram] HTTP server listening on %s", addr)
+	log.Printf("[ohara] HTTP server listening on %s", addr)
 	return serveFn(ln, s.mux)
 }
 
@@ -146,7 +146,7 @@ func (s *Server) routes() {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"service": "engram",
+		"service": "ohara",
 		"version": "0.1.0",
 	})
 }
@@ -485,7 +485,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename=engram-export.json")
+	w.Header().Set("Content-Disposition", "attachment; filename=ohara-export.json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(data)
 }
@@ -585,7 +585,7 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.store.MigrateProject(body.OldProject, body.NewProject)
 	if err != nil {
-		log.Printf("[engram] project migration failed: %v", err)
+		log.Printf("[ohara] project migration failed: %v", err)
 		jsonError(w, http.StatusInternalServerError, "migration failed")
 		return
 	}
@@ -595,7 +595,7 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[engram] migrated project %q → %q (obs: %d, sessions: %d, prompts: %d)",
+	log.Printf("[ohara] migrated project %q → %q (obs: %d, sessions: %d, prompts: %d)",
 		body.OldProject, body.NewProject,
 		result.ObservationsUpdated, result.SessionsUpdated, result.PromptsUpdated)
 

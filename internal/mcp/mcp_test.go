@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/ashwnn/ohara/internal/store"
 	mcppkg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -91,7 +91,7 @@ func TestHandleSaveSuggestsTopicKeyWhenMissing(t *testing.T) {
 		"title":   "Auth architecture",
 		"content": "Define boundaries for auth middleware",
 		"type":    "architecture",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -116,7 +116,7 @@ func TestHandleSaveDoesNotSuggestWhenTopicKeyProvided(t *testing.T) {
 		"title":     "Auth architecture",
 		"content":   "Define boundaries for auth middleware",
 		"type":      "architecture",
-		"project":   "engram",
+		"project":   "ohara",
 		"topic_key": "architecture/auth-model",
 	}}}
 
@@ -140,7 +140,7 @@ func TestHandleCapturePassiveExtractsAndSaves(t *testing.T) {
 
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"content": "## Key Learnings:\n\n1. bcrypt cost=12 is the right balance for our server\n2. JWT refresh tokens need atomic rotation to prevent races\n",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -165,7 +165,7 @@ func TestHandleCapturePassiveRequiresContent(t *testing.T) {
 	h := handleCapturePassive(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"project": "engram",
+		"project": "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -183,7 +183,7 @@ func TestHandleCapturePassiveWithNoLearningSection(t *testing.T) {
 
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"content": "plain text without learning headers",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -206,7 +206,7 @@ func TestHandleCapturePassiveDefaultsSourceAndSession(t *testing.T) {
 
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"content": "## Key Learnings:\n\n1. This learning is long enough to be persisted with default source",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -217,7 +217,7 @@ func TestHandleCapturePassiveDefaultsSourceAndSession(t *testing.T) {
 		t.Fatalf("unexpected tool error: %s", callResultText(t, res))
 	}
 
-	obs, err := s.RecentObservations("engram", "project", 5)
+	obs, err := s.RecentObservations("ohara", "project", 5)
 	if err != nil {
 		t.Fatalf("recent observations: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestHandleCapturePassiveReturnsToolErrorOnStoreFailure(t *testing.T) {
 	// Force FK failure: explicit session_id that does not exist.
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"session_id": "missing-session",
-		"project":    "engram",
+		"project":    "ohara",
 		"content":    "## Key Learnings:\n\n1. This learning is long enough to trigger insert and fail on FK",
 	}}}
 
@@ -288,7 +288,7 @@ func TestHelperArgsAndTruncate(t *testing.T) {
 
 func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-mcp", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-mcp", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -297,7 +297,7 @@ func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 		Type:      "bugfix",
 		Title:     "Fix panic",
 		Content:   "Fix panic in parser branch when args are missing",
-		Project:   "engram",
+		Project:   "ohara",
 		Scope:     "project",
 	})
 	if err != nil {
@@ -307,7 +307,7 @@ func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 	search := handleSearch(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	searchReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"query":   "panic",
-		"project": "engram",
+		"project": "ohara",
 		"scope":   "project",
 		"limit":   5.0,
 	}}}
@@ -366,7 +366,7 @@ func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 
 func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-flow", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-flow", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 		Type:      "decision",
 		Title:     "Auth decision",
 		Content:   "Keep auth in middleware",
-		Project:   "engram",
+		Project:   "ohara",
 	})
 	if err != nil {
 		t.Fatalf("add observation: %v", err)
@@ -384,7 +384,7 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 	savePrompt := handleSavePrompt(s, MCPConfig{})
 	savePromptReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"content": "how do we fix auth race conditions?",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 	savePromptRes, err := savePrompt(context.Background(), savePromptReq)
 	if err != nil {
@@ -396,7 +396,7 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 
 	contextHandler := handleContext(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	contextReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"project": "engram",
+		"project": "ohara",
 		"scope":   "project",
 	}}}
 	contextRes, err := contextHandler(context.Background(), contextReq)
@@ -419,7 +419,7 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 		t.Fatalf("unexpected stats error: %s", callResultText(t, statsRes))
 	}
 
-	recent, err := s.RecentObservations("engram", "project", 1)
+	recent, err := s.RecentObservations("ohara", "project", 1)
 	if err != nil || len(recent) == 0 {
 		t.Fatalf("recent observations for timeline: %v len=%d", err, len(recent))
 	}
@@ -440,7 +440,7 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 
 	sessionSummary := handleSessionSummary(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	summaryReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"project": "engram",
+		"project": "ohara",
 		"content": "## Goal\nImprove tests",
 	}}}
 	summaryRes, err := sessionSummary(context.Background(), summaryReq)
@@ -454,8 +454,8 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 	sessionStart := handleSessionStart(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	startReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"id":        "s-new",
-		"project":   "engram",
-		"directory": "/tmp/engram",
+		"project":   "ohara",
+		"directory": "/tmp/ohara",
 	}}}
 	startRes, err := sessionStart(context.Background(), startReq)
 	if err != nil {
@@ -552,7 +552,7 @@ func TestMCPHandlersErrorBranches(t *testing.T) {
 
 func TestMCPHandlersReturnErrorsWhenStoreClosed(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-closed", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-closed", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -561,7 +561,7 @@ func TestMCPHandlersReturnErrorsWhenStoreClosed(t *testing.T) {
 		Type:      "decision",
 		Title:     "Title",
 		Content:   "Content",
-		Project:   "engram",
+		Project:   "ohara",
 	})
 	if err != nil {
 		t.Fatalf("seed observation: %v", err)
@@ -595,7 +595,7 @@ func TestMCPHandlersReturnErrorsWhenStoreClosed(t *testing.T) {
 		t.Fatalf("expected delete to return tool error when store is closed")
 	}
 
-	promptRes, err := handleSavePrompt(s, MCPConfig{})(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"content": "prompt", "project": "engram"}}})
+	promptRes, err := handleSavePrompt(s, MCPConfig{})(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"content": "prompt", "project": "ohara"}}})
 	if err != nil {
 		t.Fatalf("closed store save prompt call: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestMCPHandlersReturnErrorsWhenStoreClosed(t *testing.T) {
 		t.Fatalf("expected get observation to return tool error when store is closed")
 	}
 
-	sessionSummaryRes, err := handleSessionSummary(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "engram", "content": "summary"}}})
+	sessionSummaryRes, err := handleSessionSummary(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "ohara", "content": "summary"}}})
 	if err != nil {
 		t.Fatalf("closed store session summary call: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestMCPHandlersReturnErrorsWhenStoreClosed(t *testing.T) {
 		t.Fatalf("expected session summary to return tool error when store is closed")
 	}
 
-	sessionStartRes, err := handleSessionStart(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"id": "s1", "project": "engram"}}})
+	sessionStartRes, err := handleSessionStart(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"id": "s1", "project": "ohara"}}})
 	if err != nil {
 		t.Fatalf("closed store session start call: %v", err)
 	}
@@ -685,14 +685,14 @@ func TestMCPAdditionalCoverageBranches(t *testing.T) {
 		t.Fatalf("expected none yet projects in stats output")
 	}
 
-	if err := s.CreateSession("s-extra", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-extra", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	firstID, err := s.AddObservation(store.AddObservationParams{SessionID: "s-extra", Type: "note", Title: "first", Content: "first content", Project: "engram"})
+	firstID, err := s.AddObservation(store.AddObservationParams{SessionID: "s-extra", Type: "note", Title: "first", Content: "first content", Project: "ohara"})
 	if err != nil {
 		t.Fatalf("add first: %v", err)
 	}
-	_, err = s.AddObservation(store.AddObservationParams{SessionID: "s-extra", Type: "note", Title: "second", Content: "second content", Project: "engram"})
+	_, err = s.AddObservation(store.AddObservationParams{SessionID: "s-extra", Type: "note", Title: "second", Content: "second content", Project: "ohara"})
 	if err != nil {
 		t.Fatalf("add second: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestMCPAdditionalCoverageBranches(t *testing.T) {
 	saveReq := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "Default values",
 		"content": "Ensure defaults for type and session are used",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 	saveRes, err := save(context.Background(), saveReq)
 	if err != nil {
@@ -761,7 +761,7 @@ func TestHandleSuggestTopicKeyReturnsErrorWhenSuggestionEmpty(t *testing.T) {
 
 func TestHandleUpdateAcceptsAllOptionalFields(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-all-fields", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-all-fields", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	id, err := s.AddObservation(store.AddObservationParams{
@@ -769,7 +769,7 @@ func TestHandleUpdateAcceptsAllOptionalFields(t *testing.T) {
 		Type:      "decision",
 		Title:     "Original",
 		Content:   "Original content",
-		Project:   "engram",
+		Project:   "ohara",
 		Scope:     "project",
 	})
 	if err != nil {
@@ -781,7 +781,7 @@ func TestHandleUpdateAcceptsAllOptionalFields(t *testing.T) {
 		"title":     "Updated",
 		"content":   "Updated content",
 		"type":      "architecture",
-		"project":   "engram",
+		"project":   "ohara",
 		"scope":     "personal",
 		"topic_key": "architecture/auth-model",
 	}}})
@@ -795,12 +795,12 @@ func TestHandleUpdateAcceptsAllOptionalFields(t *testing.T) {
 
 func TestHandleContextWithSessionOnlyUsesNoneProjects(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-context-none", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-context-none", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
 	res, err := handleContext(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"project": "engram",
+		"project": "ohara",
 	}}})
 	if err != nil {
 		t.Fatalf("context handler error: %v", err)
@@ -834,18 +834,18 @@ func TestHandleStatsReturnsErrorWhenLoaderFails(t *testing.T) {
 
 func TestHandleTimelineBeforeSectionAndSummaryBranches(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-timeline", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-timeline", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	_, err := s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "first", Content: "first", Project: "engram"})
+	_, err := s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "first", Content: "first", Project: "ohara"})
 	if err != nil {
 		t.Fatalf("add first observation: %v", err)
 	}
-	focusID, err := s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "second", Content: "second", Project: "engram"})
+	focusID, err := s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "second", Content: "second", Project: "ohara"})
 	if err != nil {
 		t.Fatalf("add second observation: %v", err)
 	}
-	_, err = s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "third", Content: "third", Project: "engram"})
+	_, err = s.AddObservation(store.AddObservationParams{SessionID: "s-timeline", Type: "note", Title: "third", Content: "third", Project: "ohara"})
 	if err != nil {
 		t.Fatalf("add third observation: %v", err)
 	}
@@ -872,7 +872,7 @@ func TestHandleTimelineBeforeSectionAndSummaryBranches(t *testing.T) {
 
 func TestHandleGetObservationIncludesTopicAndToolMetadata(t *testing.T) {
 	s := newMCPTestStore(t)
-	if err := s.CreateSession("s-get-meta", "engram", "/tmp/engram"); err != nil {
+	if err := s.CreateSession("s-get-meta", "ohara", "/tmp/ohara"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	id, err := s.AddObservation(store.AddObservationParams{
@@ -880,7 +880,7 @@ func TestHandleGetObservationIncludesTopicAndToolMetadata(t *testing.T) {
 		Type:      "architecture",
 		Title:     "Auth model",
 		Content:   "Details",
-		Project:   "engram",
+		Project:   "ohara",
 		ToolName:  "mcp-passive",
 		TopicKey:  "architecture/auth-model",
 	})
@@ -1341,8 +1341,8 @@ func TestDefaultSessionIDScopedByProject(t *testing.T) {
 	if got := defaultSessionID(""); got != "manual-save" {
 		t.Fatalf("expected manual-save for empty project, got %q", got)
 	}
-	if got := defaultSessionID("engram"); got != "manual-save-engram" {
-		t.Fatalf("expected manual-save-engram, got %q", got)
+	if got := defaultSessionID("ohara"); got != "manual-save-ohara" {
+		t.Fatalf("expected manual-save-ohara, got %q", got)
 	}
 	if got := defaultSessionID("my-app"); got != "manual-save-my-app" {
 		t.Fatalf("expected manual-save-my-app, got %q", got)
@@ -1512,7 +1512,7 @@ func TestDestructiveToolAnnotation(t *testing.T) {
 
 func TestNewServerWithConfig(t *testing.T) {
 	s := newMCPTestStore(t)
-	cfg := MCPConfig{DefaultProject: "engram"}
+	cfg := MCPConfig{DefaultProject: "ohara"}
 	srv := NewServerWithConfig(s, cfg, nil)
 	if srv == nil {
 		t.Fatal("expected MCP server instance")
@@ -1565,7 +1565,7 @@ func TestHandleSaveNormalizationWarning(t *testing.T) {
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "Normalization test",
 		"content": "Testing project name normalization",
-		"project": "Engram", // uppercase — should normalize to "engram"
+		"project": "Ohara", // uppercase — should normalize to "ohara"
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -1582,12 +1582,12 @@ func TestHandleSaveNormalizationWarning(t *testing.T) {
 	}
 
 	// Verify observation was stored with normalized project name
-	obs, err := s.RecentObservations("engram", "project", 5)
+	obs, err := s.RecentObservations("ohara", "project", 5)
 	if err != nil {
 		t.Fatalf("recent observations: %v", err)
 	}
 	if len(obs) == 0 {
-		t.Fatal("expected observation stored under normalized project name 'engram'")
+		t.Fatal("expected observation stored under normalized project name 'ohara'")
 	}
 }
 
@@ -1595,22 +1595,22 @@ func TestHandleSaveSimilarProjectWarning(t *testing.T) {
 	s := newMCPTestStore(t)
 	h := handleSave(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 
-	// First save to "engram" to establish an existing project
+	// First save to "ohara" to establish an existing project
 	req1 := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "First memory",
-		"content": "Memory for engram project",
-		"project": "engram",
+		"content": "Memory for ohara project",
+		"project": "ohara",
 	}}}
 	res1, err := h(context.Background(), req1)
 	if err != nil || res1.IsError {
 		t.Fatalf("first save: err=%v isError=%v text=%s", err, res1.IsError, callResultText(t, res1))
 	}
 
-	// Now save to "engam" (typo) — should warn about similar project "engram"
+	// Now save to "ahara" (typo) — should warn about similar project "ohara"
 	req2 := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "Typo project memory",
 		"content": "Memory saved under typo project name",
-		"project": "engam", // typo — Levenshtein distance 1 from "engram"
+		"project": "ahara", // typo — Levenshtein distance 1 from "ohara"
 	}}}
 	res2, err := h(context.Background(), req2)
 	if err != nil {
@@ -1644,14 +1644,14 @@ func TestHandleSaveNoSimilarWarningWhenProjectExists(t *testing.T) {
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "First memory",
 		"content": "Memory content",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 	h(context.Background(), req) // first save establishes the project
 
 	req2 := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"title":   "Second memory",
 		"content": "Another memory content",
-		"project": "engram",
+		"project": "ohara",
 	}}}
 	res2, err := h(context.Background(), req2)
 	if err != nil || res2.IsError {
@@ -1668,37 +1668,37 @@ func TestHandleMergeProjects(t *testing.T) {
 	s := newMCPTestStore(t)
 
 	// Set up observations under different project name variants
-	if err := s.CreateSession("s-Engram", "Engram", ""); err != nil {
-		t.Fatalf("create session Engram: %v", err)
+	if err := s.CreateSession("s-Ohara", "Ohara", ""); err != nil {
+		t.Fatalf("create session Ohara: %v", err)
 	}
 	if _, err := s.AddObservation(store.AddObservationParams{
-		SessionID: "s-Engram",
+		SessionID: "s-Ohara",
 		Type:      "decision",
-		Title:     "From Engram",
-		Content:   "Content from Engram",
-		Project:   "engram", // store normalizes to lowercase
+		Title:     "From Ohara",
+		Content:   "Content from Ohara",
+		Project:   "ohara", // store normalizes to lowercase
 	}); err != nil {
-		t.Fatalf("add observation Engram: %v", err)
+		t.Fatalf("add observation Ohara: %v", err)
 	}
 
-	if err := s.CreateSession("s-engram-memory", "engram-memory", ""); err != nil {
-		t.Fatalf("create session engram-memory: %v", err)
+	if err := s.CreateSession("s-ohara-memory", "ohara-memory", ""); err != nil {
+		t.Fatalf("create session ohara-memory: %v", err)
 	}
 	if _, err := s.AddObservation(store.AddObservationParams{
-		SessionID: "s-engram-memory",
+		SessionID: "s-ohara-memory",
 		Type:      "decision",
-		Title:     "From engram-memory",
-		Content:   "Content from engram-memory",
-		Project:   "engram-memory",
+		Title:     "From ohara-memory",
+		Content:   "Content from ohara-memory",
+		Project:   "ohara-memory",
 	}); err != nil {
-		t.Fatalf("add observation engram-memory: %v", err)
+		t.Fatalf("add observation ohara-memory: %v", err)
 	}
 
 	h := handleMergeProjects(s)
 
 	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"from": "engram-memory, ENGRAM", // comma-separated, with spaces and uppercase
-		"to":   "engram",
+		"from": "ohara-memory, OHARA", // comma-separated, with spaces and uppercase
+		"to":   "ohara",
 	}}}
 
 	res, err := h(context.Background(), req)
@@ -1710,19 +1710,19 @@ func TestHandleMergeProjects(t *testing.T) {
 	}
 
 	text := callResultText(t, res)
-	if !strings.Contains(text, "engram") {
+	if !strings.Contains(text, "ohara") {
 		t.Fatalf("expected merge result mentioning canonical project, got %q", text)
 	}
 	if !strings.Contains(text, "Observations moved") {
 		t.Fatalf("expected observations count in result, got %q", text)
 	}
 
-	// Verify that engram-memory observations are now under "engram"
-	obs, err := s.RecentObservations("engram", "project", 10)
+	// Verify that ohara-memory observations are now under "ohara"
+	obs, err := s.RecentObservations("ohara", "project", 10)
 	if err != nil {
 		t.Fatalf("recent observations: %v", err)
 	}
-	// Should have both: original "engram" obs + migrated "engram-memory" obs
+	// Should have both: original "ohara" obs + migrated "ohara-memory" obs
 	if len(obs) < 2 {
 		t.Fatalf("expected at least 2 observations after merge, got %d", len(obs))
 	}
@@ -1734,7 +1734,7 @@ func TestHandleMergeProjectsRequiresFromAndTo(t *testing.T) {
 
 	// Missing "from"
 	res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"to": "engram",
+		"to": "ohara",
 	}}})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
@@ -1745,7 +1745,7 @@ func TestHandleMergeProjectsRequiresFromAndTo(t *testing.T) {
 
 	// Missing "to"
 	res, err = h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"from": "engram-old",
+		"from": "ohara-old",
 	}}})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)
@@ -1757,7 +1757,7 @@ func TestHandleMergeProjectsRequiresFromAndTo(t *testing.T) {
 	// Empty from after parsing
 	res, err = h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"from": "  , , ",
-		"to":   "engram",
+		"to":   "ohara",
 	}}})
 	if err != nil {
 		t.Fatalf("handler error: %v", err)

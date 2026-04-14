@@ -1,16 +1,16 @@
-// Package mcp implements the Model Context Protocol server for Engram.
+// Package mcp implements the Model Context Protocol server for Ohara.
 //
 // This exposes memory tools via MCP stdio transport so ANY agent
-// (OpenCode, Claude Code, Cursor, Windsurf, etc.) can use Engram's
+// (OpenCode, Claude Code, Cursor, Windsurf, etc.) can use Ohara's
 // persistent memory just by adding it as an MCP server.
 //
 // Tool profiles allow agents to load only the tools they need:
 //
-//	engram mcp                    → all 15 tools (default)
-//	engram mcp --tools=agent      → 11 tools agents actually use (per skill files)
-//	engram mcp --tools=admin      → 4 tools for TUI/CLI (delete, stats, timeline, merge)
-//	engram mcp --tools=agent,admin → combine profiles
-//	engram mcp --tools=mem_save,mem_search → individual tool names
+//	ohara mcp                    → all 15 tools (default)
+//	ohara mcp --tools=agent      → 11 tools agents actually use (per skill files)
+//	ohara mcp --tools=admin      → 4 tools for TUI/CLI (delete, stats, timeline, merge)
+//	ohara mcp --tools=agent,admin → combine profiles
+//	ohara mcp --tools=mem_save,mem_search → individual tool names
 package mcp
 
 import (
@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	projectpkg "github.com/Gentleman-Programming/engram/internal/project"
-	"github.com/Gentleman-Programming/engram/internal/store"
+	projectpkg "github.com/ashwnn/ohara/internal/project"
+	"github.com/ashwnn/ohara/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -68,9 +68,9 @@ var ProfileAgent = map[string]bool{
 // ProfileAdmin contains tools for TUI, dashboards, and manual curation
 // that are NOT referenced in any agent skill or memory protocol.
 var ProfileAdmin = map[string]bool{
-	"mem_delete":         true, // only in OpenCode's ENGRAM_TOOLS filter, not in any agent instructions
-	"mem_stats":          true, // only in OpenCode's ENGRAM_TOOLS filter, not in any agent instructions
-	"mem_timeline":       true, // only in OpenCode's ENGRAM_TOOLS filter, not in any agent instructions
+	"mem_delete":         true, // admin/tooling use — not referenced in any agent skill file
+	"mem_stats":          true, // admin/tooling use — not referenced in any agent skill file
+	"mem_timeline":       true, // admin/tooling use — not referenced in any agent skill file
 	"mem_merge_projects": true, // destructive curation tool — not for agent use
 }
 
@@ -119,10 +119,10 @@ func NewServer(s *store.Store) *server.MCPServer {
 	return NewServerWithConfig(s, MCPConfig{}, nil)
 }
 
-// serverInstructions tells MCP clients when to use Engram's tools.
+// serverInstructions tells MCP clients when to use Ohara's tools.
 // 6 core tools are eager (always in context). The rest are deferred
 // and require ToolSearch to load.
-const serverInstructions = `Engram provides persistent memory that survives across sessions and compactions.
+const serverInstructions = `Ohara provides persistent memory that survives across sessions and compactions.
 
 CORE TOOLS (always available — use without ToolSearch):
   mem_save — save decisions, bugs, discoveries, conventions PROACTIVELY (do not wait to be asked)
@@ -152,7 +152,7 @@ func NewServerWithConfig(s *store.Store, cfg MCPConfig, allowlist map[string]boo
 
 func newServerWithActivity(s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) *server.MCPServer {
 	srv := server.NewMCPServer(
-		"engram",
+		"ohara",
 		"0.1.0",
 		server.WithToolCapabilities(true),
 		server.WithInstructions(serverInstructions),
@@ -607,7 +607,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 	if shouldRegister("mem_merge_projects", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_merge_projects",
-				mcp.WithDescription("Merge memories from multiple project name variants into one canonical name. Use when you discover project name drift (e.g. 'Engram' and 'engram' should be the same project). DESTRUCTIVE — moves all records from source names to the canonical name."),
+				mcp.WithDescription("Merge memories from multiple project name variants into one canonical name. Use when you discover project name drift (e.g. 'Ohara' and 'ohara' should be the same project). DESTRUCTIVE — moves all records from source names to the canonical name."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Merge Projects"),
 				mcp.WithReadOnlyHintAnnotation(false),
@@ -616,11 +616,11 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithString("from",
 					mcp.Required(),
-					mcp.Description("Comma-separated list of project names to merge FROM (e.g. 'Engram,engram-memory,ENGRAM')"),
+					mcp.Description("Comma-separated list of project names to merge FROM (e.g. 'ohara,ohara-memory,OHARA')"),
 				),
 				mcp.WithString("to",
 					mcp.Required(),
-					mcp.Description("The canonical project name to merge INTO (e.g. 'engram')"),
+					mcp.Description("The canonical project name to merge INTO (e.g. 'ohara')"),
 				),
 			),
 			handleMergeProjects(s),

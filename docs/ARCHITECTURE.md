@@ -15,15 +15,9 @@
 
 ## How It Works
 
-<p align="center">
-  <img src="../assets/agent-save.png" alt="Agent saving a memory via mem_save" width="800" />
-  <br />
-  <em>The agent proactively calls <code>mem_save</code> after significant work — structured, searchable, no noise.</em>
-</p>
+Ohara trusts the **agent** to decide what's worth remembering — not a firehose of raw tool calls.
 
-Engram trusts the **agent** to decide what's worth remembering — not a firehose of raw tool calls.
-
-### The Agent Saves, Engram Stores
+### The Agent Saves, Ohara Stores
 
 ```
 1. Agent completes significant work (bugfix, architecture decision, etc.)
@@ -31,7 +25,7 @@ Engram trusts the **agent** to decide what's worth remembering — not a firehos
    - title: "Fixed N+1 query in user list"
    - type: "bugfix"
    - content: What/Why/Where/Learned format
-3. Engram persists to SQLite with FTS5 indexing
+3. Ohara persists to SQLite with FTS5 indexing
 4. Next session: agent searches memory, gets relevant context
 ```
 
@@ -85,101 +79,78 @@ Token-efficient memory retrieval — don't dump everything, drill in:
 
 ## Memory Hygiene
 
-- `mem_save` now supports `scope` (`project` default, `personal` optional)
-- `mem_save` also supports `topic_key`; with a topic key, saves become upserts (same project+scope+topic updates the existing memory)
-- Exact dedupe prevents repeated inserts in a rolling window (hash + project + scope + type + title)
-- Duplicates update metadata (`duplicate_count`, `last_seen_at`, `updated_at`) instead of creating new rows
-- Topic upserts increment `revision_count` so evolving decisions stay in one memory
-- `mem_delete` uses soft-delete by default (`deleted_at`), with optional hard delete
-- `mem_search`, `mem_context`, recent lists, and timeline ignore soft-deleted observations
+- `mem_save` supports `scope` (`project` default, `personal` optional)
+- `mem_save` also supports `topic_key`; with a topic key, saves become upserts
+- Exact dedupe prevents repeated inserts in a rolling window
+- Duplicates update metadata instead of creating new rows
+- Topic upserts increment `revision_count`
+- `mem_delete` uses soft-delete by default
+- Search operations ignore soft-deleted observations
 
 ---
 
 ## Topic Key Workflow (Recommended)
 
-Use this when a topic evolves over time (architecture, long-running feature decisions, etc.):
+Use this when a topic evolves over time:
 
 ```text
 1. mem_suggest_topic_key(type="architecture", title="Auth architecture")
 2. mem_save(..., topic_key="architecture-auth-architecture")
-3. Later change on same topic -> mem_save(..., same topic_key)
+3. Later change -> mem_save(..., same topic_key)
    => existing observation is updated (revision_count++)
 ```
 
-Different topics should use different keys (e.g. `architecture/auth-model` vs `bug/auth-nil-panic`) so they never overwrite each other.
-
-`mem_suggest_topic_key` now applies a family heuristic for consistency across sessions:
-
-- `architecture/*` for architecture/design/ADR-like changes
-- `bug/*` for fixes, regressions, errors, panics
-- `decision/*`, `pattern/*`, `config/*`, `discovery/*`, `learning/*` when detected
+`mem_suggest_topic_key` applies family heuristics:
+- `architecture/*` for architecture/design changes
+- `bug/*` for fixes, regressions, errors
+- `decision/*`, `pattern/*`, `config/*`, `discovery/*`, `learning/*`
 
 ---
 
 ## Project Structure
 
 ```
-engram/
-├── cmd/engram/main.go              # CLI entrypoint
+ohara/
+├── cmd/ohara/main.go               # CLI entrypoint (binary: ohara)
 ├── internal/
-│   ├── store/store.go              # Core: SQLite + FTS5 + all data ops
+│   ├── store/store.go              # Core: SQLite + FTS5 + data ops
 │   ├── server/server.go            # HTTP REST API (port 7437)
 │   ├── mcp/mcp.go                  # MCP stdio server (15 tools)
-│   ├── setup/setup.go              # Agent plugin installer (go:embed)
-│   ├── project/                     # Project name detection + similarity matching
-│   │   └── project.go              # DetectProject, FindSimilar, Levenshtein
-│   ├── sync/sync.go                # Git sync: manifest + compressed chunks
-│   └── tui/                        # Bubbletea terminal UI
-│       ├── model.go                # Screen constants, Model, Init()
-│       ├── styles.go               # Lipgloss styles (Catppuccin Mocha)
-│       ├── update.go               # Input handling, per-screen handlers
-│       └── view.go                 # Rendering, per-screen views
-├── plugin/
-│   ├── opencode/engram.ts          # OpenCode adapter plugin
-│   └── claude-code/                # Claude Code plugin (hooks + skill)
-│       ├── .claude-plugin/plugin.json
-│       ├── .mcp.json
-│       ├── hooks/hooks.json
-│       ├── scripts/                # session-start, post-compaction, subagent-stop, session-stop
-│       └── skills/memory/SKILL.md
-├── skills/                         # Contributor AI skills (repo-wide standards + Engram-specific guardrails)
-├── setup.sh                        # Links repo skills into .claude/.codex/.gemini (project-local)
-├── assets/                         # Screenshots and media
+│   ├── setup/setup.go              # Agent plugin installer
+│   └── project/                    # Project name detection
+├── plugin/                         # Agent plugins (OpenCode, etc.)
+├── skills/                         # AI skills and guardrails
 ├── DOCS.md                         # Full technical documentation
-├── CONTRIBUTING.md                 # Contribution workflow and standards
-├── go.mod
-└── go.sum
+└── go.mod / go.sum
 ```
+
+**Note:** This fork focuses on MCP and HTTP API. TUI and sync features from upstream are not included.
 
 ---
 
 ## CLI Reference
 
 ```
-engram setup [agent]      Install/setup agent integration (opencode, claude-code, gemini-cli, codex)
-engram serve [port]       Start HTTP API server (default: 7437)
-engram mcp                Start MCP server (stdio transport)
-engram tui                Launch interactive terminal UI
-engram search <query>     Search memories
-engram save <title> <msg> Save a memory
-engram timeline <obs_id>  Chronological context around an observation
-engram context [project]  Recent context from previous sessions
-engram stats              Memory statistics
-engram export [file]      Export all memories to JSON
-engram import <file>      Import memories from JSON
-engram sync               Export new memories as compressed chunk to .engram/
-engram sync --all         Export ALL projects (ignore directory-based filter)
-engram projects list      Show all projects with obs/session/prompt counts
-engram projects consolidate  Interactive merge of similar project names [--all] [--dry-run]
-engram projects prune     Remove projects with 0 observations [--dry-run]
-engram obsidian-export    Export memories to Obsidian vault (beta)
-engram version            Show version
+ohara setup [agent]       Install/setup agent integration
+ohara serve [port]        Start HTTP API server (default: 7437)
+ohara mcp                 Start MCP server (stdio transport)
+ohara search <query>      Search memories
+ohara save <title> <msg>  Save a memory
+ohara timeline <obs_id>   Chronological context around an observation
+ohara context [project]   Recent context from previous sessions
+ohara stats               Memory statistics
+ohara export [file]       Export all memories to JSON
+ohara import <file>       Import memories from JSON
+ohara projects list       Show all projects with counts
+ohara projects consolidate  Interactive merge of similar project names
+ohara projects prune      Remove projects with 0 observations
+ohara version             Show version
 ```
 
 ---
 
 ## Next Steps
 
-- [Agent Setup](AGENT-SETUP.md) — connect your agent to Engram
-- [Plugins](PLUGINS.md) — what the OpenCode and Claude Code plugins add
-- [Obsidian Brain](beta/obsidian-brain.md) — visualize memories as a knowledge graph (beta)
+- [Agent Setup](AGENT-SETUP.md) — connect your agent to Ohara
+- [Full Docs](../DOCS.md) — complete technical reference
+

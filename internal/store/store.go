@@ -1,7 +1,7 @@
-// Package store implements the persistent memory engine for Engram.
+// Package store implements the persistent memory engine for Ohara.
 //
 // It uses SQLite with FTS5 full-text search to store and retrieve
-// observations from AI coding sessions. This is the core of Engram —
+// observations from AI coding sessions. This is the core of Ohara —
 // everything else (HTTP server, MCP server, CLI, plugins) talks to this.
 package store
 
@@ -240,7 +240,7 @@ type syncPromptPayload struct {
 	Project   *string `json:"project,omitempty"`
 }
 
-// ExportData is the full serializable dump of the engram database.
+// ExportData is the full serializable dump of the Ohara database.
 type ExportData struct {
 	Version      string        `json:"version"`
 	ExportedAt   string        `json:"exported_at"`
@@ -262,10 +262,10 @@ type Config struct {
 func DefaultConfig() (Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return Config{}, fmt.Errorf("engram: determine home directory: %w", err)
+		return Config{}, fmt.Errorf("ohara: determine home directory: %w", err)
 	}
 	return Config{
-		DataDir:              filepath.Join(home, ".engram"),
+		DataDir:              filepath.Join(home, ".ohara"),
 		MaxObservationLength: 50000,
 		MaxContextResults:    20,
 		MaxSearchResults:     20,
@@ -407,16 +407,16 @@ func (s *Store) commitHook(tx *sql.Tx) error {
 
 func New(cfg Config) (*Store, error) {
 	if !filepath.IsAbs(cfg.DataDir) {
-		return nil, fmt.Errorf("engram: data directory must be an absolute path, got %q — set ENGRAM_DATA_DIR or ensure your home directory is resolvable", cfg.DataDir)
+		return nil, fmt.Errorf("ohara: data directory must be an absolute path, got %q — set OHARA_DATA_DIR or ensure your home directory is resolvable", cfg.DataDir)
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-		return nil, fmt.Errorf("engram: create data dir: %w", err)
+		return nil, fmt.Errorf("ohara: create data dir: %w", err)
 	}
 
-	dbPath := filepath.Join(cfg.DataDir, "engram.db")
+	dbPath := filepath.Join(cfg.DataDir, "ohara.db")
 	db, err := openDB("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("engram: open database: %w", err)
+		return nil, fmt.Errorf("ohara: open database: %w", err)
 	}
 
 	// SQLite performance pragmas
@@ -428,16 +428,16 @@ func New(cfg Config) (*Store, error) {
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
-			return nil, fmt.Errorf("engram: pragma %q: %w", p, err)
+			return nil, fmt.Errorf("ohara: pragma %q: %w", p, err)
 		}
 	}
 
 	s := &Store{db: db, cfg: cfg, hooks: defaultStoreHooks()}
 	if err := s.migrate(); err != nil {
-		return nil, fmt.Errorf("engram: migration: %w", err)
+		return nil, fmt.Errorf("ohara: migration: %w", err)
 	}
 	if err := s.repairEnrolledProjectSyncMutations(); err != nil {
-		return nil, fmt.Errorf("engram: repair enrolled sync journal: %w", err)
+		return nil, fmt.Errorf("ohara: repair enrolled sync journal: %w", err)
 	}
 
 	return s, nil
@@ -1554,7 +1554,7 @@ func (s *Store) Timeline(observationID int64, before, after int) (*TimelineResul
 // ─── Search (FTS5) ───────────────────────────────────────────────────────────
 
 func (s *Store) Search(query string, opts SearchOptions) ([]SearchResult, error) {
-	// Normalize project filter so "Engram" finds records stored as "engram"
+	// Normalize project filter so "Ohara" finds records stored as "ohara"
 	opts.Project, _ = NormalizeProject(opts.Project)
 
 	limit := opts.Limit

@@ -11,15 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/mcp"
-	engramsrv "github.com/Gentleman-Programming/engram/internal/server"
-	"github.com/Gentleman-Programming/engram/internal/setup"
-	"github.com/Gentleman-Programming/engram/internal/store"
-	engramsync "github.com/Gentleman-Programming/engram/internal/sync"
-	"github.com/Gentleman-Programming/engram/internal/tui"
-	versioncheck "github.com/Gentleman-Programming/engram/internal/version"
+	"github.com/ashwnn/ohara/internal/mcp"
+	oharasrv "github.com/ashwnn/ohara/internal/server"
+	"github.com/ashwnn/ohara/internal/setup"
+	"github.com/ashwnn/ohara/internal/store"
+	oharasync "github.com/ashwnn/ohara/internal/sync"
+	versioncheck "github.com/ashwnn/ohara/internal/version"
 
-	tea "github.com/charmbracelet/bubbletea"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
@@ -82,9 +80,6 @@ func stubRuntimeHooks(t *testing.T) {
 	oldNewMCPServer := newMCPServer
 	oldNewMCPServerWithTools := newMCPServerWithTools
 	oldServeMCP := serveMCP
-	oldNewTUIModel := newTUIModel
-	oldNewTeaProgram := newTeaProgram
-	oldRunTeaProgram := runTeaProgram
 	oldSetupSupportedAgents := setupSupportedAgents
 	oldSetupInstallAgent := setupInstallAgent
 	oldScanInputLine := scanInputLine
@@ -101,8 +96,8 @@ func stubRuntimeHooks(t *testing.T) {
 	oldCheckForUpdates := checkForUpdates
 
 	storeNew = store.New
-	newHTTPServer = func(s *store.Store, _ int) *engramsrv.Server { return engramsrv.New(s, 0) }
-	startHTTP = func(_ *engramsrv.Server) error { return nil }
+	newHTTPServer = func(s *store.Store, _ int) *oharasrv.Server { return oharasrv.New(s, 0) }
+	startHTTP = func(_ *oharasrv.Server) error { return nil }
 	newMCPServer = func(s *store.Store) *mcpserver.MCPServer {
 		return mcpserver.NewMCPServer("test", "0", mcpserver.WithRecovery())
 	}
@@ -110,9 +105,6 @@ func stubRuntimeHooks(t *testing.T) {
 		return mcpserver.NewMCPServer("test", "0", mcpserver.WithRecovery())
 	}
 	serveMCP = func(_ *mcpserver.MCPServer, _ ...mcpserver.StdioOption) error { return nil }
-	newTUIModel = func(_ *store.Store) tui.Model { return tui.New(nil, "") }
-	newTeaProgram = func(tea.Model, ...tea.ProgramOption) *tea.Program { return &tea.Program{} }
-	runTeaProgram = func(*tea.Program) (tea.Model, error) { return nil, nil }
 	setupSupportedAgents = setup.SupportedAgents
 	setupInstallAgent = setup.Install
 	scanInputLine = fmt.Scanln
@@ -131,11 +123,11 @@ func stubRuntimeHooks(t *testing.T) {
 	storeStats = func(s *store.Store) (*store.Stats, error) { return s.Stats() }
 	storeExport = func(s *store.Store) (*store.ExportData, error) { return s.Export() }
 	jsonMarshalIndent = json.MarshalIndent
-	syncStatus = func(sy *engramsync.Syncer) (localChunks int, remoteChunks int, pendingImport int, err error) {
+	syncStatus = func(sy *oharasync.Syncer) (localChunks int, remoteChunks int, pendingImport int, err error) {
 		return sy.Status()
 	}
-	syncImport = func(sy *engramsync.Syncer) (*engramsync.ImportResult, error) { return sy.Import() }
-	syncExport = func(sy *engramsync.Syncer, createdBy, project string) (*engramsync.SyncResult, error) {
+	syncImport = func(sy *oharasync.Syncer) (*oharasync.ImportResult, error) { return sy.Import() }
+	syncExport = func(sy *oharasync.Syncer, createdBy, project string) (*oharasync.SyncResult, error) {
 		return sy.Export(createdBy, project)
 	}
 	checkForUpdates = func(string) versioncheck.CheckResult {
@@ -179,7 +171,7 @@ func TestFatal(t *testing.T) {
 	if !ok || int(code) != 1 {
 		t.Fatalf("expected exit code 1 panic, got %v", recovered)
 	}
-	if !strings.Contains(stderr, "engram: boom") {
+	if !strings.Contains(stderr, "ohara: boom") {
 		t.Fatalf("fatal stderr mismatch: %q", stderr)
 	}
 }
@@ -208,23 +200,23 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stubExitWithPanic(t)
 			if tc.envPort != "" {
-				t.Setenv("ENGRAM_PORT", tc.envPort)
+				t.Setenv("OHARA_PORT", tc.envPort)
 			} else {
-				t.Setenv("ENGRAM_PORT", "")
+				t.Setenv("OHARA_PORT", "")
 			}
 
-			args := []string{"engram", "serve"}
+			args := []string{"ohara", "serve"}
 			if tc.argPort != "" {
 				args = append(args, tc.argPort)
 			}
 			withArgs(t, args...)
 
 			seenPort := -1
-			newHTTPServer = func(s *store.Store, port int) *engramsrv.Server {
+			newHTTPServer = func(s *store.Store, port int) *oharasrv.Server {
 				seenPort = port
-				return engramsrv.New(s, 0)
+				return oharasrv.New(s, 0)
 			}
-			startHTTP = func(_ *engramsrv.Server) error {
+			startHTTP = func(_ *oharasrv.Server) error {
 				return tc.startErr
 			}
 
@@ -290,7 +282,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		return &setup.Result{Agent: agent, Destination: "/tmp/dest", Files: 2}, nil
 	}
 
-	withArgs(t, "engram", "setup", "codex")
+	withArgs(t, "ohara", "setup", "codex")
 	out, errOut, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
 	if recovered != nil || errOut != "" {
 		t.Fatalf("direct setup should succeed, panic=%v stderr=%q", recovered, errOut)
@@ -299,7 +291,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		t.Fatalf("unexpected direct setup output: %q", out)
 	}
 
-	withArgs(t, "engram", "setup", "broken")
+	withArgs(t, "ohara", "setup", "broken")
 	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "install failed") {
 		t.Fatalf("expected direct setup fatal, panic=%v stderr=%q", recovered, errOut)
@@ -314,7 +306,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		return 1, nil
 	}
 
-	withArgs(t, "engram", "setup")
+	withArgs(t, "ohara", "setup")
 	out, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
 	if recovered != nil || errOut != "" {
 		t.Fatalf("interactive setup should succeed, panic=%v stderr=%q", recovered, errOut)
@@ -328,7 +320,7 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 		*p = "99"
 		return 1, nil
 	}
-	withArgs(t, "engram", "setup")
+	withArgs(t, "ohara", "setup")
 	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup() })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "Invalid choice") {
 		t.Fatalf("expected invalid choice exit, panic=%v stderr=%q", recovered, errOut)
@@ -344,32 +336,32 @@ func TestCmdExportDefaultAndCmdImportErrors(t *testing.T) {
 
 	mustSeedObservation(t, cfg, "s-exp-default", "proj", "note", "title", "content", "project")
 
-	withArgs(t, "engram", "export")
+	withArgs(t, "ohara", "export")
 	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdExport(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("export default should succeed, panic=%v stderr=%q", recovered, stderr)
 	}
-	if !strings.Contains(stdout, "Exported to engram-export.json") {
+	if !strings.Contains(stdout, "Exported to ohara-export.json") {
 		t.Fatalf("unexpected default export output: %q", stdout)
 	}
-	if _, err := os.Stat(filepath.Join(workDir, "engram-export.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(workDir, "ohara-export.json")); err != nil {
 		t.Fatalf("expected default export file: %v", err)
 	}
 
 	badPath := filepath.Join(workDir, "missing", "out.json")
-	withArgs(t, "engram", "export", badPath)
+	withArgs(t, "ohara", "export", badPath)
 	_, stderr, recovered = captureOutputAndRecover(t, func() { cmdExport(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(stderr, "no such file or directory") {
 		t.Fatalf("expected export write fatal, panic=%v stderr=%q", recovered, stderr)
 	}
 
-	withArgs(t, "engram", "import")
+	withArgs(t, "ohara", "import")
 	_, stderr, recovered = captureOutputAndRecover(t, func() { cmdImport(cfg) })
-	if _, ok := recovered.(exitCode); !ok || !strings.Contains(stderr, "usage: engram import") {
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(stderr, "usage: ohara import") {
 		t.Fatalf("expected import usage exit, panic=%v stderr=%q", recovered, stderr)
 	}
 
-	withArgs(t, "engram", "import", filepath.Join(workDir, "nope.json"))
+	withArgs(t, "ohara", "import", filepath.Join(workDir, "nope.json"))
 	_, stderr, recovered = captureOutputAndRecover(t, func() { cmdImport(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(stderr, "read") {
 		t.Fatalf("expected import read fatal, panic=%v stderr=%q", recovered, stderr)
@@ -379,7 +371,7 @@ func TestCmdExportDefaultAndCmdImportErrors(t *testing.T) {
 	if err := os.WriteFile(invalidJSON, []byte("{invalid"), 0644); err != nil {
 		t.Fatalf("write invalid json: %v", err)
 	}
-	withArgs(t, "engram", "import", invalidJSON)
+	withArgs(t, "ohara", "import", invalidJSON)
 	_, stderr, recovered = captureOutputAndRecover(t, func() { cmdImport(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(stderr, "parse") {
 		t.Fatalf("expected import parse fatal, panic=%v stderr=%q", recovered, stderr)
@@ -389,20 +381,20 @@ func TestCmdExportDefaultAndCmdImportErrors(t *testing.T) {
 func TestMainDispatchServeMCPAndTUI(t *testing.T) {
 	stubRuntimeHooks(t)
 
-	t.Setenv("ENGRAM_DATA_DIR", t.TempDir())
-	withArgs(t, "engram", "serve", "8088")
+	t.Setenv("OHARA_DATA_DIR", t.TempDir())
+	withArgs(t, "ohara", "serve", "8088")
 	_, stderr, recovered := captureOutputAndRecover(t, func() { main() })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("serve dispatch failed: panic=%v stderr=%q", recovered, stderr)
 	}
 
-	withArgs(t, "engram", "mcp")
+	withArgs(t, "ohara", "mcp")
 	_, stderr, recovered = captureOutputAndRecover(t, func() { main() })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("mcp dispatch failed: panic=%v stderr=%q", recovered, stderr)
 	}
 
-	withArgs(t, "engram", "tui")
+	withArgs(t, "ohara", "tui")
 	_, stderr, recovered = captureOutputAndRecover(t, func() { main() })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("tui dispatch failed: panic=%v stderr=%q", recovered, stderr)
@@ -437,17 +429,17 @@ func TestStoreInitFailurePaths(t *testing.T) {
 	}
 
 	argsByCmd := [][]string{
-		{"engram", "serve"},
-		{"engram", "mcp"},
-		{"engram", "tui"},
-		{"engram", "search", "q"},
-		{"engram", "save", "t", "c"},
-		{"engram", "timeline", "1"},
-		{"engram", "context"},
-		{"engram", "stats"},
-		{"engram", "export"},
-		{"engram", "import", importFile},
-		{"engram", "sync"},
+		{"ohara", "serve"},
+		{"ohara", "mcp"},
+		{"ohara", "tui"},
+		{"ohara", "search", "q"},
+		{"ohara", "save", "t", "c"},
+		{"ohara", "timeline", "1"},
+		{"ohara", "context"},
+		{"ohara", "stats"},
+		{"ohara", "export"},
+		{"ohara", "import", importFile},
+		{"ohara", "sync"},
 	}
 
 	for i, fn := range cmds {
@@ -473,11 +465,11 @@ func TestUsageAndValidationExits(t *testing.T) {
 		errSubstr  string
 		stderrOnly bool
 	}{
-		{name: "search usage", args: []string{"engram", "search"}, run: cmdSearch, errSubstr: "usage: engram search"},
-		{name: "search missing query", args: []string{"engram", "search", "--limit", "3"}, run: cmdSearch, errSubstr: "search query is required"},
-		{name: "save usage", args: []string{"engram", "save", "title"}, run: cmdSave, errSubstr: "usage: engram save"},
-		{name: "timeline usage", args: []string{"engram", "timeline"}, run: cmdTimeline, errSubstr: "usage: engram timeline"},
-		{name: "timeline invalid id", args: []string{"engram", "timeline", "abc"}, run: cmdTimeline, errSubstr: "invalid observation id"},
+		{name: "search usage", args: []string{"ohara", "search"}, run: cmdSearch, errSubstr: "usage: ohara search"},
+		{name: "search missing query", args: []string{"ohara", "search", "--limit", "3"}, run: cmdSearch, errSubstr: "search query is required"},
+		{name: "save usage", args: []string{"ohara", "save", "title"}, run: cmdSave, errSubstr: "usage: ohara save"},
+		{name: "timeline usage", args: []string{"ohara", "timeline"}, run: cmdTimeline, errSubstr: "usage: ohara timeline"},
+		{name: "timeline invalid id", args: []string{"ohara", "timeline", "abc"}, run: cmdTimeline, errSubstr: "invalid observation id"},
 	}
 
 	for _, tc := range tests {
@@ -500,7 +492,7 @@ func TestMainDispatchRemainingCommands(t *testing.T) {
 	withCwd(t, t.TempDir())
 
 	dataDir := t.TempDir()
-	t.Setenv("ENGRAM_DATA_DIR", dataDir)
+	t.Setenv("OHARA_DATA_DIR", dataDir)
 
 	seedCfg, scErr := store.DefaultConfig()
 	if scErr != nil {
@@ -522,15 +514,15 @@ func TestMainDispatchRemainingCommands(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "search", args: []string{"engram", "search", "focus"}},
-		{name: "save", args: []string{"engram", "save", "t", "c"}},
-		{name: "timeline", args: []string{"engram", "timeline", fmt.Sprintf("%d", focusID)}},
-		{name: "context", args: []string{"engram", "context", "main-proj"}},
-		{name: "stats", args: []string{"engram", "stats"}},
-		{name: "export", args: []string{"engram", "export", filepath.Join(t.TempDir(), "exp.json")}},
-		{name: "import", args: []string{"engram", "import", importFile}},
-		{name: "sync", args: []string{"engram", "sync", "--all"}},
-		{name: "setup", args: []string{"engram", "setup", "codex"}},
+		{name: "search", args: []string{"ohara", "search", "focus"}},
+		{name: "save", args: []string{"ohara", "save", "t", "c"}},
+		{name: "timeline", args: []string{"ohara", "timeline", fmt.Sprintf("%d", focusID)}},
+		{name: "context", args: []string{"ohara", "context", "main-proj"}},
+		{name: "stats", args: []string{"ohara", "stats"}},
+		{name: "export", args: []string{"ohara", "export", filepath.Join(t.TempDir(), "exp.json")}},
+		{name: "import", args: []string{"ohara", "import", importFile}},
+		{name: "sync", args: []string{"ohara", "sync", "--all"}},
+		{name: "setup", args: []string{"ohara", "setup", "codex"}},
 	}
 
 	for _, tc := range tests {
@@ -552,7 +544,7 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 		withCwd(t, workDir)
 		cfg := testConfig(t)
 
-		withArgs(t, "engram", "sync", "--all")
+		withArgs(t, "ohara", "sync", "--all")
 		stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("expected clean run, panic=%v stderr=%q", recovered, stderr)
@@ -567,14 +559,14 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 		withCwd(t, workDir)
 		cfg := testConfig(t)
 
-		if err := os.MkdirAll(filepath.Join(workDir, ".engram"), 0755); err != nil {
-			t.Fatalf("mkdir .engram: %v", err)
+		if err := os.MkdirAll(filepath.Join(workDir, ".ohara"), 0755); err != nil {
+			t.Fatalf("mkdir .ohara: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(workDir, ".engram", "manifest.json"), []byte("{bad json"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workDir, ".ohara", "manifest.json"), []byte("{bad json"), 0644); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
 
-		withArgs(t, "engram", "sync", "--status")
+		withArgs(t, "ohara", "sync", "--status")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if _, ok := recovered.(exitCode); !ok {
 			t.Fatalf("expected fatal exit, got %v", recovered)
@@ -589,14 +581,14 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 		withCwd(t, workDir)
 		cfg := testConfig(t)
 
-		if err := os.MkdirAll(filepath.Join(workDir, ".engram"), 0755); err != nil {
-			t.Fatalf("mkdir .engram: %v", err)
+		if err := os.MkdirAll(filepath.Join(workDir, ".ohara"), 0755); err != nil {
+			t.Fatalf("mkdir .ohara: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(workDir, ".engram", "manifest.json"), []byte("{bad json"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workDir, ".ohara", "manifest.json"), []byte("{bad json"), 0644); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
 
-		withArgs(t, "engram", "sync", "--import")
+		withArgs(t, "ohara", "sync", "--import")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if _, ok := recovered.(exitCode); !ok {
 			t.Fatalf("expected fatal exit, got %v", recovered)
@@ -611,14 +603,14 @@ func TestCmdSyncAdditionalBranches(t *testing.T) {
 		withCwd(t, workDir)
 		cfg := testConfig(t)
 
-		if err := os.MkdirAll(filepath.Join(workDir, ".engram"), 0755); err != nil {
-			t.Fatalf("mkdir .engram: %v", err)
+		if err := os.MkdirAll(filepath.Join(workDir, ".ohara"), 0755); err != nil {
+			t.Fatalf("mkdir .ohara: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(workDir, ".engram", "manifest.json"), []byte("{bad json"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workDir, ".ohara", "manifest.json"), []byte("{bad json"), 0644); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
 
-		withArgs(t, "engram", "sync")
+		withArgs(t, "ohara", "sync")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if _, ok := recovered.(exitCode); !ok {
 			t.Fatalf("expected fatal exit, got %v", recovered)
@@ -645,7 +637,7 @@ func TestCmdImportStoreImportFailure(t *testing.T) {
 		t.Fatalf("write bad import: %v", err)
 	}
 
-	withArgs(t, "engram", "import", badImport)
+	withArgs(t, "ohara", "import", badImport)
 	_, stderr, recovered := captureOutputAndRecover(t, func() { cmdImport(cfg) })
 	if _, ok := recovered.(exitCode); !ok {
 		t.Fatalf("expected fatal exit, got %v", recovered)
@@ -658,7 +650,7 @@ func TestCmdImportStoreImportFailure(t *testing.T) {
 func TestCmdSearchAndSaveDanglingFlags(t *testing.T) {
 	cfg := testConfig(t)
 
-	withArgs(t, "engram", "save", "dangling-title", "dangling-content", "--type")
+	withArgs(t, "ohara", "save", "dangling-title", "dangling-content", "--type")
 	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSave(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("save with dangling flag failed, panic=%v stderr=%q", recovered, stderr)
@@ -667,7 +659,7 @@ func TestCmdSearchAndSaveDanglingFlags(t *testing.T) {
 		t.Fatalf("unexpected save output: %q", stdout)
 	}
 
-	withArgs(t, "engram", "search", "dangling-content", "--limit", "not-a-number", "--project")
+	withArgs(t, "ohara", "search", "dangling-content", "--limit", "not-a-number", "--project")
 	stdout, stderr, recovered = captureOutputAndRecover(t, func() { cmdSearch(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("search with dangling flags failed, panic=%v stderr=%q", recovered, stderr)
@@ -693,7 +685,7 @@ func TestCmdSetupHyphenArgFallsBackToInteractive(t *testing.T) {
 		return 1, nil
 	}
 
-	withArgs(t, "engram", "setup", "--not-an-agent")
+	withArgs(t, "ohara", "setup", "--not-an-agent")
 	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("setup interactive fallback failed: panic=%v stderr=%q", recovered, stderr)
@@ -707,7 +699,7 @@ func TestCmdTimelineNoBeforeAfterSections(t *testing.T) {
 	cfg := testConfig(t)
 	focusID := mustSeedObservation(t, cfg, "solo-session", "solo", "note", "focus", "only content", "project")
 
-	withArgs(t, "engram", "timeline", fmt.Sprintf("%d", focusID), "--before", "0", "--after", "0")
+	withArgs(t, "ohara", "timeline", fmt.Sprintf("%d", focusID), "--before", "0", "--after", "0")
 	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdTimeline(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("timeline failed: panic=%v stderr=%q", recovered, stderr)
@@ -719,7 +711,7 @@ func TestCmdTimelineNoBeforeAfterSections(t *testing.T) {
 
 func TestCmdStatsNoProjectsYet(t *testing.T) {
 	cfg := testConfig(t)
-	withArgs(t, "engram", "stats")
+	withArgs(t, "ohara", "stats")
 	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdStats(cfg) })
 	if recovered != nil || stderr != "" {
 		t.Fatalf("stats failed: panic=%v stderr=%q", recovered, stderr)
@@ -737,14 +729,14 @@ func TestCmdSyncImportEmptyAndMixedChunks(t *testing.T) {
 		withCwd(t, workDir)
 		cfg := testConfig(t)
 
-		if err := os.MkdirAll(filepath.Join(workDir, ".engram"), 0755); err != nil {
-			t.Fatalf("mkdir .engram: %v", err)
+		if err := os.MkdirAll(filepath.Join(workDir, ".ohara"), 0755); err != nil {
+			t.Fatalf("mkdir .ohara: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(workDir, ".engram", "manifest.json"), []byte(`{"version":1,"chunks":[]}`), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workDir, ".ohara", "manifest.json"), []byte(`{"version":1,"chunks":[]}`), 0644); err != nil {
 			t.Fatalf("write manifest: %v", err)
 		}
 
-		withArgs(t, "engram", "sync", "--import")
+		withArgs(t, "ohara", "sync", "--import")
 		stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("empty import failed: panic=%v stderr=%q", recovered, stderr)
@@ -762,18 +754,18 @@ func TestCmdSyncImportEmptyAndMixedChunks(t *testing.T) {
 		importCfg := testConfig(t)
 
 		mustSeedObservation(t, exportCfg, "mix-1", "mix", "note", "one", "content-one", "project")
-		withArgs(t, "engram", "sync", "--all")
+		withArgs(t, "ohara", "sync", "--all")
 		_, _, _ = captureOutputAndRecover(t, func() { cmdSync(exportCfg) })
 
-		withArgs(t, "engram", "sync", "--import")
+		withArgs(t, "ohara", "sync", "--import")
 		_, _, _ = captureOutputAndRecover(t, func() { cmdSync(importCfg) })
 
 		time.Sleep(1100 * time.Millisecond)
 		mustSeedObservation(t, exportCfg, "mix-2", "mix", "note", "two", "content-two", "project")
-		withArgs(t, "engram", "sync", "--all")
+		withArgs(t, "ohara", "sync", "--all")
 		_, _, _ = captureOutputAndRecover(t, func() { cmdSync(exportCfg) })
 
-		withArgs(t, "engram", "sync", "--import")
+		withArgs(t, "ohara", "sync", "--import")
 		stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(importCfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("mixed import failed: panic=%v stderr=%q", recovered, stderr)
@@ -800,7 +792,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	}
 
 	t.Run("search seam error", func(t *testing.T) {
-		withArgs(t, "engram", "search", "needle")
+		withArgs(t, "ohara", "search", "needle")
 		storeSearch = func(*store.Store, string, store.SearchOptions) ([]store.SearchResult, error) {
 			return nil, errors.New("forced search error")
 		}
@@ -809,7 +801,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("save seam error", func(t *testing.T) {
-		withArgs(t, "engram", "save", "title", "content")
+		withArgs(t, "ohara", "save", "title", "content")
 		storeAddObservation = func(*store.Store, store.AddObservationParams) (int64, error) {
 			return 0, errors.New("forced save error")
 		}
@@ -818,7 +810,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("timeline seam error", func(t *testing.T) {
-		withArgs(t, "engram", "timeline", "1")
+		withArgs(t, "ohara", "timeline", "1")
 		storeTimeline = func(*store.Store, int64, int, int) (*store.TimelineResult, error) {
 			return nil, errors.New("forced timeline error")
 		}
@@ -828,7 +820,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 
 	t.Run("timeline prints session summary", func(t *testing.T) {
 		summary := "this session has a non-empty summary"
-		withArgs(t, "engram", "timeline", "1")
+		withArgs(t, "ohara", "timeline", "1")
 		storeTimeline = func(*store.Store, int64, int, int) (*store.TimelineResult, error) {
 			return &store.TimelineResult{
 				Focus:        store.Observation{ID: 1, Type: "note", Title: "focus", Content: "content", CreatedAt: "2026-01-01"},
@@ -846,7 +838,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("context seam error", func(t *testing.T) {
-		withArgs(t, "engram", "context")
+		withArgs(t, "ohara", "context")
 		storeFormatContext = func(*store.Store, string, string) (string, error) {
 			return "", errors.New("forced context error")
 		}
@@ -855,7 +847,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("stats seam error", func(t *testing.T) {
-		withArgs(t, "engram", "stats")
+		withArgs(t, "ohara", "stats")
 		storeStats = func(*store.Store) (*store.Stats, error) {
 			return nil, errors.New("forced stats error")
 		}
@@ -864,7 +856,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("export seam error", func(t *testing.T) {
-		withArgs(t, "engram", "export")
+		withArgs(t, "ohara", "export")
 		storeExport = func(*store.Store) (*store.ExportData, error) {
 			return nil, errors.New("forced export error")
 		}
@@ -873,7 +865,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 	})
 
 	t.Run("export marshal seam error", func(t *testing.T) {
-		withArgs(t, "engram", "export")
+		withArgs(t, "ohara", "export")
 		storeExport = func(s *store.Store) (*store.ExportData, error) { return s.Export() }
 		jsonMarshalIndent = func(any, string, string) ([]byte, error) {
 			return nil, errors.New("forced marshal error")
@@ -884,8 +876,8 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 
 	t.Run("sync seam status error", func(t *testing.T) {
 		withCwd(t, t.TempDir())
-		withArgs(t, "engram", "sync", "--status")
-		syncStatus = func(*engramsync.Syncer) (int, int, int, error) {
+		withArgs(t, "ohara", "sync", "--status")
+		syncStatus = func(*oharasync.Syncer) (int, int, int, error) {
 			return 0, 0, 0, errors.New("forced status error")
 		}
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
@@ -894,7 +886,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 
 	t.Run("sync uses explicit project flag", func(t *testing.T) {
 		withCwd(t, t.TempDir())
-		withArgs(t, "engram", "sync", "--project", "explicit-proj")
+		withArgs(t, "ohara", "sync", "--project", "explicit-proj")
 		stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("sync with --project should succeed, panic=%v stderr=%q", recovered, stderr)
@@ -917,7 +909,7 @@ func TestCommandErrorSeamsAndUncoveredBranches(t *testing.T) {
 			return nil, errors.New("forced setup error")
 		}
 
-		withArgs(t, "engram", "setup")
+		withArgs(t, "ohara", "setup")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdSetup() })
 		assertFatal(t, stderr, recovered, "forced setup error")
 	})
@@ -948,7 +940,7 @@ func TestCmdMCP(t *testing.T) {
 			}
 			return mcpserver.NewMCPServer("test", "0")
 		}
-		withArgs(t, "engram", "mcp")
+		withArgs(t, "ohara", "mcp")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdMCP(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("expected clean run, got panic=%v stderr=%q", recovered, stderr)
@@ -964,7 +956,7 @@ func TestCmdMCP(t *testing.T) {
 			gotAllowlist = allowlist
 			return mcpserver.NewMCPServer("test", "0")
 		}
-		withArgs(t, "engram", "mcp", "--tools=agent")
+		withArgs(t, "ohara", "mcp", "--tools=agent")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdMCP(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("expected clean run, got panic=%v stderr=%q", recovered, stderr)
@@ -980,7 +972,7 @@ func TestCmdMCP(t *testing.T) {
 			gotAllowlist = allowlist
 			return mcpserver.NewMCPServer("test", "0")
 		}
-		withArgs(t, "engram", "mcp", "--tools", "agent")
+		withArgs(t, "ohara", "mcp", "--tools", "agent")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdMCP(cfg) })
 		if recovered != nil || stderr != "" {
 			t.Fatalf("expected clean run, got panic=%v stderr=%q", recovered, stderr)
@@ -994,7 +986,7 @@ func TestCmdMCP(t *testing.T) {
 		storeNew = func(cfg store.Config) (*store.Store, error) {
 			return nil, errors.New("db open failed")
 		}
-		withArgs(t, "engram", "mcp")
+		withArgs(t, "ohara", "mcp")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdMCP(cfg) })
 		assertFatal(t, stderr, recovered, "db open failed")
 	})
@@ -1004,7 +996,7 @@ func TestCmdMCP(t *testing.T) {
 		serveMCP = func(_ *mcpserver.MCPServer, _ ...mcpserver.StdioOption) error {
 			return errors.New("stdio failed")
 		}
-		withArgs(t, "engram", "mcp")
+		withArgs(t, "ohara", "mcp")
 		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdMCP(cfg) })
 		assertFatal(t, stderr, recovered, "stdio failed")
 	})

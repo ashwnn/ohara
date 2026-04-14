@@ -1,11 +1,11 @@
 ---
-name: engram-ui-elements
+name: ohara-ui-elements
 description: >
-  Creation rules for Engram UI elements, pages, cards, metrics, and detail flows.
+  Creation rules for Ohara UI elements, pages, cards, metrics, and detail flows.
   Trigger: Adding or changing dashboard UI components or connected browsing flows.
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: ashwnn
   version: "1.0"
 ---
 
