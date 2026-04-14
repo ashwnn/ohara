@@ -318,8 +318,11 @@ func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 	if searchRes.IsError {
 		t.Fatalf("unexpected search error: %s", callResultText(t, searchRes))
 	}
-	if !strings.Contains(callResultText(t, searchRes), "Found 1 memories") {
-		t.Fatalf("expected non-empty search result")
+	searchText := callResultText(t, searchRes)
+	// The observation was added via AddObservation (legacy table), so search finds it via Search (observations)
+	// Output format: "Found %d observation(s):" for observations-only results
+	if !strings.Contains(searchText, "Found 1 observation(s)") && !strings.Contains(searchText, "Found 1 memory item(s)") {
+		t.Fatalf("expected non-empty search result, got: %q", searchText)
 	}
 
 	update := handleUpdate(s)
@@ -379,6 +382,17 @@ func TestHandlePromptContextStatsTimelineAndSessionHandlers(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("add observation: %v", err)
+	}
+
+	// Seed memory item for handleContext (uses BuildPack/memory_items)
+	_, err = s.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      "decision",
+		Title:     "Auth decision",
+		Body:      "Keep auth in middleware",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
 	}
 
 	savePrompt := handleSavePrompt(s, MCPConfig{})
@@ -799,6 +813,17 @@ func TestHandleContextWithSessionOnlyUsesNoneProjects(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
+	// Seed memory item for handleContext (uses BuildPack/memory_items)
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      "decision",
+		Title:     "Test decision",
+		Body:      "Test content for context",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
 	res, err := handleContext(s, MCPConfig{}, NewSessionActivity(10*time.Minute))(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
 		"project": "ohara",
 	}}})
@@ -814,12 +839,12 @@ func TestHandleContextWithSessionOnlyUsesNoneProjects(t *testing.T) {
 }
 
 func TestHandleStatsReturnsErrorWhenLoaderFails(t *testing.T) {
-	prev := loadMCPStats
-	loadMCPStats = func(s *store.Store) (*store.Stats, error) {
-		return nil, errors.New("stats unavailable")
+	prev := loadMCPStatsCombined
+	loadMCPStatsCombined = func(s *store.Store) (*store.Stats, *store.PackStats, error) {
+		return nil, nil, errors.New("stats unavailable")
 	}
 	t.Cleanup(func() {
-		loadMCPStats = prev
+		loadMCPStatsCombined = prev
 	})
 
 	s := newMCPTestStore(t)
@@ -929,7 +954,7 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
-		"mem_update", // skills explicitly say "use mem_update when you have an exact ID to correct"
+		"mem_update", "mem_pack", // mem_update: skills say "use mem_update when you have an exact ID"; mem_pack: explicit context pack
 	}
 	for _, tool := range expectedTools {
 		if !result[tool] {
@@ -945,8 +970,8 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		}
 	}
 
-	if len(result) != len(expectedTools) {
-		t.Errorf("agent profile has %d tools, expected %d", len(result), len(expectedTools))
+	if len(result) != 12 {
+		t.Errorf("agent profile has %d tools, expected 12", len(result))
 	}
 }
 
@@ -974,12 +999,13 @@ func TestResolveToolsCombinedProfiles(t *testing.T) {
 		t.Fatal("expected non-nil allowlist for combined profiles")
 	}
 
-	// Should have all 15 tools
+	// Should have all 16 tools
 	allTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
+		"mem_pack",
 	}
 	for _, tool := range allTools {
 		if !result[tool] {
@@ -1100,12 +1126,12 @@ func TestNewServerWithToolsAgentProfile(t *testing.T) {
 
 	tools := srv.ListTools()
 
-	// Agent tools should be present (11 tools)
+	// Agent tools should be present (12 tools)
 	agentTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
-		"mem_update",
+		"mem_update", "mem_pack",
 	}
 	for _, name := range agentTools {
 		if tools[name] == nil {
@@ -1165,6 +1191,7 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
+		"mem_pack",
 	}
 
 	for _, name := range allTools {
@@ -1173,8 +1200,8 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		}
 	}
 
-	if len(tools) != len(allTools) {
-		t.Errorf("expected %d tools with nil allowlist, got %d", len(allTools), len(tools))
+	if len(tools) != 16 {
+		t.Errorf("expected 16 tools with nil allowlist, got %d", len(tools))
 	}
 }
 
@@ -1203,14 +1230,14 @@ func TestNewServerBackwardsCompatible(t *testing.T) {
 	srv := NewServer(s)
 	tools := srv.ListTools()
 
-	// 11 agent + 4 admin = 15 total
-	if len(tools) != 15 {
-		t.Errorf("NewServer should register all 15 tools, got %d", len(tools))
+	// 12 agent + 4 admin = 16 total
+	if len(tools) != 16 {
+		t.Errorf("NewServer should register all 16 tools, got %d", len(tools))
 	}
 }
 
 func TestProfileConsistency(t *testing.T) {
-	// Verify that agent + admin = all 15 tools
+	// Verify that agent + admin = all 16 tools
 	combined := make(map[string]bool)
 	for tool := range ProfileAgent {
 		combined[tool] = true
@@ -1219,8 +1246,8 @@ func TestProfileConsistency(t *testing.T) {
 		combined[tool] = true
 	}
 
-	if len(combined) != 15 {
-		t.Errorf("agent + admin should cover all 15 tools, got %d", len(combined))
+	if len(combined) != 16 {
+		t.Errorf("agent + admin should cover all 16 tools, got %d", len(combined))
 	}
 
 	// Verify no overlap between profiles
@@ -1518,9 +1545,9 @@ func TestNewServerWithConfig(t *testing.T) {
 		t.Fatal("expected MCP server instance")
 	}
 	tools := srv.ListTools()
-	// Should have all 15 tools
-	if len(tools) != 15 {
-		t.Errorf("NewServerWithConfig should register all 15 tools, got %d", len(tools))
+	// Should have all 16 tools
+	if len(tools) != 16 {
+		t.Errorf("NewServerWithConfig should register all 16 tools, got %d", len(tools))
 	}
 }
 

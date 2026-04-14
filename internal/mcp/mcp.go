@@ -7,7 +7,7 @@
 // Tool profiles allow agents to load only the tools they need:
 //
 //	ohara mcp                    → all 15 tools (default)
-//	ohara mcp --tools=agent      → 11 tools agents actually use (per skill files)
+//	ohara mcp --tools=agent      → 12 tools agents actually use (per skill files)
 //	ohara mcp --tools=admin      → 4 tools for TUI/CLI (delete, stats, timeline, merge)
 //	ohara mcp --tools=agent,admin → combine profiles
 //	ohara mcp --tools=mem_save,mem_search → individual tool names
@@ -21,6 +21,7 @@ import (
 
 	projectpkg "github.com/ashwnn/ohara/internal/project"
 	"github.com/ashwnn/ohara/internal/store"
+	"github.com/ashwnn/ohara/internal/token"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -36,12 +37,25 @@ var loadMCPStats = func(s *store.Store) (*store.Stats, error) {
 	return s.Stats()
 }
 
+var loadMCPStatsCombined = func(s *store.Store) (*store.Stats, *store.PackStats, error) {
+	stats, err := s.Stats()
+	if err != nil {
+		return nil, nil, err
+	}
+	memStats, err := s.MemoryStats()
+	if err != nil {
+		return stats, nil, nil // MemoryStats failure is non-fatal
+	}
+	return stats, memStats, nil
+}
+
 // ─── Tool Profiles ───────────────────────────────────────────────────────────
 //
 // "agent" — tools AI agents use during coding sessions:
 //   mem_save, mem_search, mem_context, mem_session_summary,
 //   mem_session_start, mem_session_end, mem_get_observation,
-//   mem_suggest_topic_key, mem_capture_passive, mem_save_prompt
+//   mem_suggest_topic_key, mem_capture_passive, mem_save_prompt,
+//   mem_pack
 //
 // "admin" — tools for manual curation, TUI, and dashboards:
 //   mem_update, mem_delete, mem_stats, mem_timeline, mem_merge_projects
@@ -63,6 +77,7 @@ var ProfileAgent = map[string]bool{
 	"mem_capture_passive":   true, // extract learnings from text — referenced in Gemini/Codex protocol
 	"mem_save_prompt":       true, // save user prompts
 	"mem_update":            true, // update observation by ID — skills say "use mem_update when you have an exact ID to correct"
+	"mem_pack":              true, // explicit context pack via memory_items — uses new memory foundation
 }
 
 // ProfileAdmin contains tools for TUI, dashboards, and manual curation
@@ -127,10 +142,11 @@ const serverInstructions = `Ohara provides persistent memory that survives acros
 CORE TOOLS (always available — use without ToolSearch):
   mem_save — save decisions, bugs, discoveries, conventions PROACTIVELY (do not wait to be asked)
   mem_search — find past work, decisions, or context from previous sessions
-  mem_context — get recent session history (call at session start or after compaction)
+  mem_context — get recent memory context via context pack (call at session start or after compaction)
   mem_session_summary — save end-of-session summary (MANDATORY before saying "done")
   mem_get_observation — get full untruncated content of a search result by ID
   mem_save_prompt — save user prompt for context
+  mem_pack — build an explicit context pack from memory items (token-budget-aware)
 
 DEFERRED TOOLS (use ToolSearch when needed):
   mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end,
@@ -381,7 +397,7 @@ Examples:
 	if shouldRegister("mem_context", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_context",
-				mcp.WithDescription("Get recent memory context from previous sessions. Shows recent sessions and observations to understand what was done before."),
+				mcp.WithDescription("Get recent memory context from previous sessions via a token-budget-aware context pack. Uses the memory_items foundation to assemble global + project memories within a token budget (default: 400 tokens). Shows recent sessions and observations to understand what was done before."),
 				mcp.WithTitleAnnotation("Get Memory Context"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -390,11 +406,8 @@ Examples:
 				mcp.WithString("project",
 					mcp.Description("Filter by project (omit for all projects)"),
 				),
-				mcp.WithString("scope",
-					mcp.Description("Filter observations by scope: project (default) or personal"),
-				),
-				mcp.WithNumber("limit",
-					mcp.Description("Number of observations to retrieve (default: 20)"),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the context pack (default: 400, max: 800)"),
 				),
 			),
 			handleContext(s, cfg, activity),
@@ -405,7 +418,7 @@ Examples:
 	if shouldRegister("mem_stats", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_stats",
-				mcp.WithDescription("Show memory system statistics — total sessions, observations, and projects tracked."),
+				mcp.WithDescription("Show memory system statistics — total sessions, observations, prompts, and memory items tracked (by kind, scope, and status)."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Stats"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -414,6 +427,31 @@ Examples:
 				mcp.WithOpenWorldHintAnnotation(false),
 			),
 			handleStats(s),
+		)
+	}
+
+	// ─── mem_pack (profile: agent, eager) ───────────────────────────────
+	if shouldRegister("mem_pack", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_pack",
+				mcp.WithDescription("Build a token-budget-aware context pack from memory items within a token budget."),
+				mcp.WithTitleAnnotation("Build Memory Pack"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project_id",
+					mcp.Required(),
+					mcp.Description("Project ID to build context pack for"),
+				),
+				mcp.WithString("session_id",
+					mcp.Description("Optional session ID — includes postmortems from that session in the pack"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
+				),
+			),
+			handlePack(s),
 		)
 	}
 
@@ -648,40 +686,110 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 		sessionID := defaultSessionID(project)
 		activity.RecordToolCall(sessionID)
 
-		results, err := s.Search(query, store.SearchOptions{
-			Type:    typ,
-			Project: project,
-			Scope:   scope,
-			Limit:   limit,
-		})
-		if err != nil {
+		// Search both memory_items (new foundation) and observations (legacy) in parallel.
+		type searchResult struct {
+			memItems []store.MemoryItem
+			obs      []store.SearchResult
+		}
+		resultCh := make(chan searchResult, 1)
+		errCh := make(chan error, 1)
+
+		go func() {
+			memItems, memErr := s.SearchMemories(query, project, scope, typ, store.MemoryStatusActive, limit)
+			obs, obsErr := s.Search(query, store.SearchOptions{
+				Type:    typ,
+				Project: project,
+				Scope:   scope,
+				Limit:   limit,
+			})
+			if memErr != nil || obsErr != nil {
+				// Send whichever error is non-nil, preferring memErr (new foundation)
+				errToSend := memErr
+				if errToSend == nil {
+					errToSend = obsErr
+				}
+				select {
+				case errCh <- errToSend:
+				default:
+				}
+				return
+			}
+			resultCh <- searchResult{memItems: memItems, obs: obs}
+		}()
+
+		var combined searchResult
+		select {
+		case combined = <-resultCh:
+		case err := <-errCh:
 			return mcp.NewToolResultError(fmt.Sprintf("Search error: %s. Try simpler keywords.", err)), nil
+		case <-ctx.Done():
+			return mcp.NewToolResultError("Search cancelled."), nil
 		}
 
-		if len(results) == 0 {
+		hasMem := len(combined.memItems) > 0
+		hasObs := len(combined.obs) > 0
+
+		if !hasMem && !hasObs {
 			return mcp.NewToolResultText(fmt.Sprintf("No memories found for: %q", query)), nil
 		}
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "Found %d memories:\n\n", len(results))
-		anyTruncated := false
-		for i, r := range results {
-			projectDisplay := ""
-			if r.Project != nil {
-				projectDisplay = fmt.Sprintf(" | project: %s", *r.Project)
+
+		// Memory items results (new foundation)
+		if hasMem {
+			fmt.Fprintf(&b, "## Memory Items (v2 foundation)\nFound %d memory item(s):\n\n", len(combined.memItems))
+			for i, m := range combined.memItems {
+				preview := truncate(m.Body, 300)
+				if len(m.Body) > 300 {
+					preview += " [preview]"
+				}
+				supsersededNote := ""
+				if m.Status == store.MemoryStatusSuperseded {
+					supsersededNote = " [superseded]"
+				}
+				fmt.Fprintf(&b, "[%d] **%s** (%s | %s | %s)%s\n    %s\n    %s | tokens: ~%d\n\n",
+					i+1, m.Title, m.Kind, m.Scope, m.Source,
+					supsersededNote,
+					preview,
+					m.UpdatedAt,
+					estimateTokens(m.Body),
+				)
 			}
-			preview := truncate(r.Content, 300)
-			if len(r.Content) > 300 {
-				anyTruncated = true
-				preview += " [preview]"
-			}
-			fmt.Fprintf(&b, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
-				i+1, r.ID, r.Type, r.Title,
-				preview,
-				r.CreatedAt, projectDisplay, r.Scope)
 		}
-		if anyTruncated {
-			fmt.Fprintf(&b, "---\nResults above are previews (300 chars). To read the full content of a specific memory, call mem_get_observation(id: <ID>).\n")
+
+		// Observations results (legacy)
+		hasTruncation := false
+		if hasObs {
+			if hasMem {
+				b.WriteString("---\n\n## Observations (legacy)\n")
+			} else {
+				fmt.Fprintf(&b, "Found %d observation(s):\n\n", len(combined.obs))
+			}
+			for i, r := range combined.obs {
+				projectDisplay := ""
+				if r.Project != nil {
+					projectDisplay = fmt.Sprintf(" | project: %s", *r.Project)
+				}
+				preview := truncate(r.Content, 300)
+				if len(r.Content) > 300 {
+					hasTruncation = true
+					preview += " [preview]"
+				}
+				fmt.Fprintf(&b, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
+					i+1, r.ID, r.Type, r.Title,
+					preview,
+					r.CreatedAt, projectDisplay, r.Scope)
+			}
+		}
+
+		if hasMem && hasObs {
+			fmt.Fprintf(&b, "---\nSearched both memory_items (v2) and observations (legacy). Total: %d memory items + %d observations.\n",
+				len(combined.memItems), len(combined.obs))
+		}
+
+		// Only show truncation note for observations (memory_items are already limited by kind-specific body limits)
+		if hasTruncation {
+			fmt.Fprintf(&b, "\nResults above are previews (300 chars). To read the full content of an observation, call mem_get_observation(id: <ID>).\n")
 		}
 
 		if nudge := activity.NudgeIfNeeded(sessionID); nudge != "" {
@@ -900,7 +1008,6 @@ func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		project, _ := req.GetArguments()["project"].(string)
-		scope, _ := req.GetArguments()["scope"].(string)
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -911,15 +1018,26 @@ func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) ser
 		sessionID := defaultSessionID(project)
 		activity.RecordToolCall(sessionID)
 
-		context, err := s.FormatContext(project, scope)
+		budgetTokens := intArg(req, "budget_tokens", 400)
+		if budgetTokens > 800 {
+			budgetTokens = 800
+		}
+
+		// Use BuildPack (memory_items foundation) for token-budget-aware context
+		packResult, err := s.BuildPack(store.PackParams{
+			ProjectID:    project,
+			BudgetTokens: budgetTokens,
+		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to get context: " + err.Error()), nil
 		}
 
-		if context == "" {
+		packText := store.FormatPackText(packResult)
+		if packText == "" || packText == "No memory context available." {
 			return mcp.NewToolResultText("No previous session memories found."), nil
 		}
 
+		// Augment with legacy stats for backwards-compatible context
 		stats, _ := s.Stats()
 		var projects string
 		if len(stats.Projects) > 0 {
@@ -929,7 +1047,7 @@ func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) ser
 		}
 
 		result := fmt.Sprintf("%s\n---\nMemory stats: %d sessions, %d observations across projects: %s",
-			context, stats.TotalSessions, stats.TotalObservations, projects)
+			packText, stats.TotalSessions, stats.TotalObservations, projects)
 
 		if nudge := activity.NudgeIfNeeded(sessionID); nudge != "" {
 			result += nudge
@@ -941,7 +1059,7 @@ func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) ser
 
 func handleStats(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		stats, err := loadMCPStats(s)
+		stats, memStats, err := loadMCPStatsCombined(s)
 		if err != nil {
 			return mcp.NewToolResultError("Failed to get stats: " + err.Error()), nil
 		}
@@ -956,7 +1074,43 @@ func handleStats(s *store.Store) server.ToolHandlerFunc {
 		result := fmt.Sprintf("Memory System Stats:\n- Sessions: %d\n- Observations: %d\n- Prompts: %d\n- Projects: %s",
 			stats.TotalSessions, stats.TotalObservations, stats.TotalPrompts, projects)
 
+		// Augment with memory_items stats if available
+		if memStats != nil {
+			result += fmt.Sprintf("\n- Memory items: %d (total)", memStats.TotalMemoryItems)
+			if len(memStats.ByKind) > 0 {
+				var kindParts []string
+				for kind, count := range memStats.ByKind {
+					kindParts = append(kindParts, fmt.Sprintf("%s=%d", kind, count))
+				}
+				result += fmt.Sprintf(" [by kind: %s]", strings.Join(kindParts, ", "))
+			}
+		}
+
 		return mcp.NewToolResultText(result), nil
+	}
+}
+
+func handlePack(s *store.Store) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		projectID, _ := req.GetArguments()["project_id"].(string)
+		if projectID == "" {
+			return mcp.NewToolResultError("project_id is required"), nil
+		}
+
+		sessionID, _ := req.GetArguments()["session_id"].(string)
+		budgetTokens := intArg(req, "budget_tokens", 400)
+
+		result, err := s.BuildPack(store.PackParams{
+			ProjectID:    projectID,
+			SessionID:    sessionID,
+			BudgetTokens: budgetTokens,
+		})
+		if err != nil {
+			return mcp.NewToolResultError("Failed to build pack: " + err.Error()), nil
+		}
+
+		text := store.FormatPackText(result)
+		return mcp.NewToolResultText(text), nil
 	}
 }
 
@@ -1246,4 +1400,9 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "..."
+}
+
+// estimateTokens returns the estimated token count for a string.
+func estimateTokens(text string) int {
+	return token.Count(text)
 }
