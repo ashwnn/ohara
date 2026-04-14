@@ -513,6 +513,24 @@ func (s *Store) execHook(db execer, query string, args ...any) (sql.Result, erro
 	return db.Exec(query, args...)
 }
 
+// Exec runs a query against the database. Exposed so packages like maintain
+// can use the Store as a generic DB interface.
+func (s *Store) Exec(query string, args ...any) (sql.Result, error) {
+	return s.execHook(s.db, query, args...)
+}
+
+// Query runs a query and returns rows. Exposed so packages like maintain
+// can use the Store as a generic DB interface.
+func (s *Store) Query(query string, args ...any) (*sql.Rows, error) {
+	return s.queryHook(s.db, query, args...)
+}
+
+// QueryRow runs a query and returns a single row. Exposed so packages like
+// maintain can use the Store as a generic DB interface.
+func (s *Store) QueryRow(query string, args ...any) *sql.Row {
+	return s.db.QueryRow(query, args...)
+}
+
 func (s *Store) queryHook(db queryer, query string, args ...any) (*sql.Rows, error) {
 	if s.hooks.query != nil {
 		return s.hooks.query(db, query, args...)
