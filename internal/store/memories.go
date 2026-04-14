@@ -359,6 +359,113 @@ func (s *Store) scanMemoryRow(rows rowScanner) (*MemoryItem, error) {
 	return &m, nil
 }
 
+// ConflictInfo describes a detected contradiction.
+type ConflictInfo struct {
+	ExistingMemory *MemoryItem `json:"existing_memory"`
+	ConflictType   string      `json:"conflict_type"` // "title_overlap" | "body_contradiction"
+	OverlapScore   float64     `json:"overlap_score"`
+	Message        string      `json:"message"`
+}
+
+// kindsForConflictDetection returns true if the kind benefits from contradiction checking.
+func kindsForConflictDetection(kind string) bool {
+	return kind == MemoryKindDecision || kind == MemoryKindPattern || kind == MemoryKindConfig
+}
+
+// DetectConflict checks whether the proposed memory contradicts an existing one.
+// It only applies to decision, pattern, and config kinds. Returns nil if no conflict.
+func (s *Store) DetectConflict(p AddMemoryParams) (*ConflictInfo, error) {
+	if !kindsForConflictDetection(p.Kind) {
+		return nil, nil
+	}
+
+	projectID, _ := NormalizeProject(p.ProjectID)
+	existing, err := s.GetMemories(projectID, "", p.Kind, MemoryStatusActive, 50)
+	if err != nil {
+		return nil, fmt.Errorf("detect conflict: %w", err)
+	}
+
+	newWords := significantWords(p.Title)
+	if len(newWords) == 0 {
+		return nil, nil
+	}
+
+	var best *ConflictInfo
+	for i := range existing {
+		existingWords := significantWords(existing[i].Title)
+		score := keywordOverlap(newWords, existingWords)
+		if score > 0.6 {
+			ci := &ConflictInfo{
+				ExistingMemory: &existing[i],
+				ConflictType:   "title_overlap",
+				OverlapScore:   score,
+				Message: fmt.Sprintf(
+					"existing %s memory %q has %d%% keyword overlap with new title %q",
+					p.Kind, existing[i].Title, int(score*100), p.Title,
+				),
+			}
+			if best == nil || score > best.OverlapScore {
+				best = ci
+			}
+		}
+	}
+
+	return best, nil
+}
+
+// significantWords extracts lowercase words with 3+ chars, excluding common stopwords.
+func significantWords(text string) []string {
+	stopwords := map[string]bool{
+		"the": true, "and": true, "for": true, "are": true, "but": true,
+		"not": true, "you": true, "all": true, "can": true, "had": true,
+		"her": true, "was": true, "one": true, "our": true, "out": true,
+		"has": true, "have": true, "been": true, "were": true, "they": true,
+		"this": true, "that": true, "with": true, "from": true, "will": true,
+		"would": true, "there": true, "their": true, "what": true, "when": true,
+		"which": true, "your": true, "also": true, "into": true, "more": true,
+		"some": true, "them": true, "than": true, "then": true, "these": true,
+		"just": true, "like": true, "using": true, "used": true, "need": true,
+		"make": true, "made": true, "new": true, "via": true, "how": true,
+		"why": true, "who": true, "where": true, "both": true, "each": true,
+		"only": true, "over": true, "such": true, "any": true, "about": true,
+	}
+	var words []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return r == ' ' || r == '-' || r == '_' || r == '/' || r == '(' || r == ')' || r == ':' || r == ','
+	}) {
+		if len(w) >= 3 && !stopwords[w] {
+			words = append(words, w)
+		}
+	}
+	return words
+}
+
+// keywordOverlap computes the Jaccard similarity between two word sets.
+func keywordOverlap(a, b []string) float64 {
+	setA := make(map[string]bool)
+	setB := make(map[string]bool)
+	for _, w := range a {
+		setA[w] = true
+	}
+	for _, w := range b {
+		setB[w] = true
+	}
+	if len(setA) == 0 || len(setB) == 0 {
+		return 0
+	}
+	var intersection int
+	for w := range setA {
+		if setB[w] {
+			intersection++
+		}
+	}
+	union := len(setA) + len(setB) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
 // isGlobalKind returns true if the kind is a global-scope kind.
 func isGlobalKind(kind string) bool {
 	return kind == MemoryKindIdentity || kind == MemoryKindUserPreference || kind == MemoryKindGlossary

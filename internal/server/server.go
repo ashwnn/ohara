@@ -639,6 +639,19 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Contradiction detection for decision/pattern/config kinds
+	if conflict, err := s.store.DetectConflict(body); err != nil {
+		jsonError(w, http.StatusInternalServerError, "conflict detection failed: "+err.Error())
+		return
+	} else if conflict != nil {
+		jsonResponse(w, http.StatusConflict, map[string]any{
+			"error":      "contradiction detected",
+			"conflict":   conflict,
+			"suggestion": "review the conflicting memory and update or supersede it instead of creating a duplicate",
+		})
+		return
+	}
+
 	id, err := s.store.AddMemory(body)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())

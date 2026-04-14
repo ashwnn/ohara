@@ -538,3 +538,143 @@ func TestHandleDeletePrompt_BadID(t *testing.T) {
 		t.Fatalf("expected 400 for invalid prompt id, got %d", rec.Code)
 	}
 }
+
+// ─── Memory conflict detection tests ─────────────────────────────────────────
+
+func TestHandleAddMemory_NoConflict_ReturnsCreated(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision","body":"Use JWT"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAddMemory_Conflict_Returns409(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Seed an existing decision memory
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Attempt to add a conflicting decision memory
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for conflicting memory, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify conflict response body contains conflict info
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["error"] != "contradiction detected" {
+		t.Errorf("expected error 'contradiction detected', got %v", resp["error"])
+	}
+	if resp["conflict"] == nil {
+		t.Error("expected conflict info in response")
+	}
+	if resp["suggestion"] == nil {
+		t.Error("expected suggestion in response")
+	}
+}
+
+func TestHandleAddMemory_BugfixKind_BypassesConflict(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Seed an existing bugfix memory
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindBugfix,
+		Title:     "Fix tokenizer panic on edge case",
+		Body:      "Added null check",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Same title, different memory — bugfix kind bypasses conflict detection
+	body := `{"project_id":"ohara","kind":"bugfix","title":"Fix tokenizer panic on edge case","body":"Different fix"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("bugfix kind: expected 201 (no conflict check), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAddMemory_PatternConflict_Returns409(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Seed an existing pattern
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindPattern,
+		Title:     "Error handling: retry pattern for API calls",
+		Body:      "Retry up to 3 times",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Conflicting pattern
+	body := `{"project_id":"ohara","kind":"pattern","title":"Error handling: retry pattern for API requests","body":"Use exponential backoff"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for conflicting pattern, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAddMemory_ConfigConflict_Returns409(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Seed an existing config
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindConfig,
+		Title:     "Database config: use PostgreSQL for production",
+		Body:      "Connection string in env",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Conflicting config
+	body := `{"project_id":"ohara","kind":"config","title":"Database config: PostgreSQL for production settings","body":"Pool size 10"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for conflicting config, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

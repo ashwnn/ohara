@@ -4663,3 +4663,304 @@ func TestDeletePrompt_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrPromptNotFound, got: %v", err)
 	}
 }
+
+// ─── DetectConflict tests ─────────────────────────────────────────────────────
+
+func TestDetectConflict_SkipsNonCheckingKinds(t *testing.T) {
+	s := newTestStore(t)
+
+	for _, kind := range []string{MemoryKindBugfix, MemoryKindDiscovery, MemoryKindProcedure, MemoryKindPostmortem, MemoryKindIdentity, MemoryKindUserPreference, MemoryKindGlossary} {
+		ci, err := s.DetectConflict(AddMemoryParams{
+			ProjectID: "ohara",
+			Kind:      kind,
+			Title:     "Some title that would conflict",
+			Body:      "Body content",
+		})
+		if err != nil {
+			t.Fatalf("DetectConflict for kind %q: %v", kind, err)
+		}
+		if ci != nil {
+			t.Fatalf("kind %q: expected nil conflict, got %+v", kind, ci)
+		}
+	}
+}
+
+func TestDetectConflict_EmptyProjectReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision",
+		Body:      "Use JWT for auth",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci != nil {
+		t.Fatalf("empty project: expected nil conflict, got %+v", ci)
+	}
+}
+
+func TestDetectConflict_EmptyTitleReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision",
+		Body:      "Use JWT for auth",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "", // empty title
+		Body:      "Different body",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci != nil {
+		t.Fatalf("empty title: expected nil conflict, got %+v", ci)
+	}
+}
+
+func TestDetectConflict_NoExistingMemoriesReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "New auth decision",
+		Body:      "Use OAuth2",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci != nil {
+		t.Fatalf("no existing memories: expected nil conflict, got %+v", ci)
+	}
+}
+
+func TestDetectConflict_DissimilarTitlesReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use JWT for authentication",
+		Body:      "JWT-based auth is simpler to implement",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Very different title — should not conflict
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Deploy with Docker compose",
+		Body:      "Use docker-compose for local dev",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci != nil {
+		t.Fatalf("dissimilar titles: expected nil conflict, got %+v", ci)
+	}
+}
+
+func TestDetectConflict_SimilarTitlesDetectsConflict(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless and scales well",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Very similar title — should detect conflict
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision: JWT for session management",
+		Body:      "Alternative: use OAuth2",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci == nil {
+		t.Fatal("similar titles: expected conflict, got nil")
+	}
+	if ci.ConflictType != "title_overlap" {
+		t.Errorf("expected conflict type title_overlap, got %q", ci.ConflictType)
+	}
+	if ci.OverlapScore <= 0.6 {
+		t.Errorf("expected overlap score > 0.6, got %f", ci.OverlapScore)
+	}
+	if ci.ExistingMemory == nil {
+		t.Error("expected existing memory in conflict info")
+	}
+}
+
+func TestDetectConflict_PicksHighestScore(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add two memories: one weakly overlapping, one strongly overlapping
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Error handling pattern for API calls",
+		Body:      "Return errors immediately",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "API call error handling with retry",
+		Body:      "Retry failed API calls up to 3 times",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// This should match the second memory (API call error handling) more strongly
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "API call error handling and retry logic",
+		Body:      "Consider exponential backoff",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci == nil {
+		t.Fatal("expected conflict with best match")
+	}
+	// Should match "API call error handling with retry" best
+	if !strings.Contains(ci.ExistingMemory.Title, "retry") {
+		t.Errorf("expected best match to be the retry memory, got %q", ci.ExistingMemory.Title)
+	}
+}
+
+func TestDetectConflict_DifferentKindNoConflict(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use JWT for authentication",
+		Body:      "JWT-based auth",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Same title but different kind — no conflict detection for non-checking kinds
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindBugfix,
+		Title:     "Use JWT for authentication",
+		Body:      "Fix the JWT implementation",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci != nil {
+		t.Fatalf("different kind: expected nil conflict, got %+v", ci)
+	}
+}
+
+func TestDetectConflict_ConfigKindDetected(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindConfig,
+		Title:     "Database config: use PostgreSQL for production",
+		Body:      "PostgreSQL for production",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	ci, err := s.DetectConflict(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindConfig,
+		Title:     "Database config: PostgreSQL for production settings",
+		Body:      "Connection pool size 10",
+	})
+	if err != nil {
+		t.Fatalf("DetectConflict: %v", err)
+	}
+	if ci == nil {
+		t.Fatal("expected conflict for config kind with similar title")
+	}
+	if ci.ExistingMemory.Kind != MemoryKindConfig {
+		t.Errorf("expected existing memory kind config, got %q", ci.ExistingMemory.Kind)
+	}
+}
+
+// ─── significantWords and keywordOverlap tests ─────────────────────────────────
+
+func TestSignificantWords_FiltersStopwordsAndShortWords(t *testing.T) {
+	words := significantWords("The and a use JWT for authentication in production systems")
+	// stopwords: the, and, a, for, in
+	// short words (<3): use, may be kept (JWT is 3 chars)
+	wordMap := make(map[string]bool)
+	for _, w := range words {
+		wordMap[w] = true
+	}
+	// Should contain long non-stopwords
+	if !wordMap["authentication"] {
+		t.Error("expected 'authentication' in significant words")
+	}
+	if !wordMap["production"] {
+		t.Error("expected 'production' in significant words")
+	}
+	if !wordMap["systems"] {
+		t.Error("expected 'systems' in significant words")
+	}
+	// Should NOT contain short words or stopwords
+	if wordMap["the"] || wordMap["and"] || wordMap["for"] {
+		t.Error("stopwords should be filtered out")
+	}
+}
+
+func TestKeywordOverlap_JaccardSimilarity(t *testing.T) {
+	// Identical sets
+	a := []string{"auth", "jwt", "token"}
+	b := []string{"auth", "jwt", "token"}
+	score := keywordOverlap(a, b)
+	if score != 1.0 {
+		t.Errorf("identical sets: expected 1.0, got %f", score)
+	}
+
+	// Disjoint sets
+	c := []string{"auth", "jwt"}
+	d := []string{"database", "postgres"}
+	score = keywordOverlap(c, d)
+	if score != 0.0 {
+		t.Errorf("disjoint sets: expected 0.0, got %f", score)
+	}
+
+	// Partial overlap
+	e := []string{"auth", "jwt", "token", "session"}
+	f := []string{"auth", "jwt", "database"}
+	score = keywordOverlap(e, f)
+	// intersection = 2, union = 6, score = 2/6 = 0.333
+	if score < 0.3 || score > 0.4 {
+		t.Errorf("partial overlap: expected ~0.333, got %f", score)
+	}
+}
