@@ -20,8 +20,12 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 	// Normalize project
 	projectID, _ := NormalizeProject(p.ProjectID)
 
+	// Strip <private>...</private> tags before persisting anything.
+	// This is the binary-side enforcement: the plugin also strips these tags,
+	// but we need a second layer so no private content ever hits the DB.
 	// Enforce body size limit per kind using token-based truncation.
-	body := TruncateBodyToTokenLimit(p.Body, p.Kind)
+	title := stripPrivateTags(p.Title)
+	body := TruncateBodyToTokenLimit(stripPrivateTags(p.Body), p.Kind)
 
 	// Normalize scope
 	scope := p.Scope
@@ -56,7 +60,7 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 		res, err := s.execHook(tx,
 			`INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, tags, source, status, expires_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			projectID, p.ActorID, p.Kind, scope, p.Title, body, tagsJSON, p.Source, MemoryStatusActive, expiresAt,
+			projectID, p.ActorID, p.Kind, scope, title, body, tagsJSON, p.Source, MemoryStatusActive, expiresAt,
 		)
 		if err != nil {
 			return err
@@ -67,7 +71,7 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 		}
 
 		// Record initial revision
-		titleJSON, _ := json.Marshal(p.Title)
+		titleJSON, _ := json.Marshal(title)
 		bodyJSON, _ := json.Marshal(body)
 		_, err = s.execHook(tx,
 			`INSERT INTO memory_revisions (memory_id, actor_id, field, old_value, new_value, reason)
@@ -183,7 +187,7 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 		setArgs := []any{}
 
 		if p.Title != nil {
-			title := *p.Title
+			title := stripPrivateTags(*p.Title)
 			oldJSON, _ := json.Marshal(existing.Title)
 			newJSON, _ := json.Marshal(title)
 			_, err := s.execHook(tx,
@@ -198,8 +202,8 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 		}
 
 		if p.Body != nil {
-			// Enforce body limit using token-based truncation.
-			body := TruncateBodyToTokenLimit(*p.Body, existing.Kind)
+			// Strip <private>...</private> tags before persisting, then enforce body limit.
+			body := TruncateBodyToTokenLimit(stripPrivateTags(*p.Body), existing.Kind)
 			oldJSON, _ := json.Marshal(existing.Body)
 			newJSON, _ := json.Marshal(body)
 			_, err := s.execHook(tx,

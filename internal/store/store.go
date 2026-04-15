@@ -653,6 +653,9 @@ func New(cfg Config) (*Store, error) {
 		"PRAGMA busy_timeout = 5000",
 		"PRAGMA synchronous = NORMAL",
 		"PRAGMA foreign_keys = ON",
+		// WAL auto-checkpoint at 1000 pages — per Ohara v2 spec Phase 2.
+		// This ensures the WAL file doesn't grow unbounded on a busy machine.
+		"PRAGMA wal_autocheckpoint = 1000",
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {

@@ -5790,3 +5790,229 @@ func TestTruncateBodyToTokenLimit_FallsBackSafely(t *testing.T) {
 		t.Error("truncated result should have reasonable length")
 	}
 }
+
+// ─── Private-tag stripping on memory save/update ────────────────────────────────
+
+func TestAddMemory_StripsPrivateTags(t *testing.T) {
+	s := newTestStore(t)
+
+	// Memory with <private> tags in both title and body.
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use <private>super-secret-key</private> for signing",
+		Body:      "The secret key is <private>SECRET123</private> and must stay private",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+
+	// Title must not contain the private tag
+	if strings.Contains(mem.Title, "<private>") {
+		t.Errorf("stored title should not contain <private>: %q", mem.Title)
+	}
+	// Title should contain the replacement
+	if !strings.Contains(mem.Title, "[REDACTED]") {
+		t.Errorf("stored title should contain [REDACTED]: %q", mem.Title)
+	}
+
+	// Body must not contain the private tag
+	if strings.Contains(mem.Body, "<private>") {
+		t.Errorf("stored body should not contain <private>: %q", mem.Body)
+	}
+	if !strings.Contains(mem.Body, "[REDACTED]") {
+		t.Errorf("stored body should contain [REDACTED]: %q", mem.Body)
+	}
+
+	// Revision records should also be stripped
+	revs, err := s.GetMemoryRevisions(id)
+	if err != nil {
+		t.Fatalf("GetMemoryRevisions: %v", err)
+	}
+	for _, r := range revs {
+		if r.NewValue != nil && strings.Contains(*r.NewValue, "<private>") {
+			t.Errorf("revision %d field %q new_value should not contain <private>: %s", r.ID, r.Field, *r.NewValue)
+		}
+	}
+}
+
+func TestAddMemory_PrivateTagInBodyOnly(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindPattern,
+		Title:     "Normal title without private tags",
+		Body:      "API key: <private>ak-test-12345</private> — never commit this",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+
+	if strings.Contains(mem.Body, "<private>") {
+		t.Errorf("body should not contain <private> tag: %q", mem.Body)
+	}
+	if !strings.Contains(mem.Body, "[REDACTED]") {
+		t.Errorf("body should contain [REDACTED] replacement: %q", mem.Body)
+	}
+	// Title should be unchanged
+	if mem.Title != "Normal title without private tags" {
+		t.Errorf("title should be unchanged: %q", mem.Title)
+	}
+}
+
+func TestUpdateMemory_StripsPrivateTags(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindBugfix,
+		Title:     "Fixed auth issue",
+		Body:      "Original fix approach",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Update the body with a private tag
+	newBody := "Updated: <private>password=hunter2</private> was the old cred"
+	updated, err := s.UpdateMemory(id, UpdateMemoryParams{
+		Body:   &newBody,
+		Reason: "Added sensitive details to document",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+
+	if strings.Contains(updated.Body, "<private>") {
+		t.Errorf("updated body should not contain <private>: %q", updated.Body)
+	}
+	if !strings.Contains(updated.Body, "[REDACTED]") {
+		t.Errorf("updated body should contain [REDACTED]: %q", updated.Body)
+	}
+
+	// Verify the revision records the stripped value, not the original
+	revs, err := s.GetMemoryRevisions(id)
+	if err != nil {
+		t.Fatalf("GetMemoryRevisions: %v", err)
+	}
+	var bodyRev *MemoryRevision
+	for _, r := range revs {
+		if r.Field == "body" {
+			bodyRev = &r
+			break
+		}
+	}
+	if bodyRev == nil {
+		t.Fatal("expected a body revision")
+	}
+	if bodyRev.NewValue != nil && strings.Contains(*bodyRev.NewValue, "<private>") {
+		t.Errorf("body revision new_value should not contain <private>: %s", *bodyRev.NewValue)
+	}
+}
+
+func TestUpdateMemory_StripsPrivateTagsInTitle(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Original decision title",
+		Body:      "Some content",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	newTitle := "Updated: <private>internal-discussion</private> about auth"
+	updated, err := s.UpdateMemory(id, UpdateMemoryParams{
+		Title:  &newTitle,
+		Reason: "Reflecting internal notes",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+
+	if strings.Contains(updated.Title, "<private>") {
+		t.Errorf("updated title should not contain <private>: %q", updated.Title)
+	}
+	if !strings.Contains(updated.Title, "[REDACTED]") {
+		t.Errorf("updated title should contain [REDACTED]: %q", updated.Title)
+	}
+}
+
+func TestPrivateTagRegex_MatchesAcrossLines(t *testing.T) {
+	// The regex must match <private> tags that span multiple lines.
+	result := stripPrivateTags("Line1\n<private>multi\nline\nsecret</private>\nLine5")
+	if strings.Contains(result, "<private>") {
+		t.Error("multi-line <private> tag should be stripped")
+	}
+	if !strings.Contains(result, "[REDACTED]") {
+		t.Error("multi-line replacement should appear")
+	}
+	if strings.Contains(result, "multi") || strings.Contains(result, "line") {
+		t.Error("content inside <private> should be removed")
+	}
+}
+
+func TestPrivateTagRegex_CaseInsensitive(t *testing.T) {
+	result := stripPrivateTags("<PRIVATE>secret</PRIVATE> and <Private>more</Private>")
+	if strings.Contains(result, "<PRIVATE>") || strings.Contains(result, "<Private>") {
+		t.Error("case-insensitive <private> tags should be stripped")
+	}
+	if !strings.Contains(result, "[REDACTED]") {
+		t.Error("[REDACTED] should appear for each match")
+	}
+}
+
+func TestPrivateTagRegex_MultipleTags(t *testing.T) {
+	result := stripPrivateTags("<private>key1</private> and <private>key2</private> remaining")
+	if strings.Contains(result, "<private>") {
+		t.Error("multiple <private> tags should all be stripped")
+	}
+	// Should have two [REDACTED] replacements
+	count := strings.Count(result, "[REDACTED]")
+	if count != 2 {
+		t.Errorf("expected 2 [REDACTED] replacements, got %d in %q", count, result)
+	}
+}
+
+// ─── WAL auto-checkpoint pragma ─────────────────────────────────────────────────
+
+func TestWALAutocheckpointSet(t *testing.T) {
+	s := newTestStore(t)
+
+	// Verify the wal_autocheckpoint pragma was applied at store creation.
+	var checkpointPages int
+	err := s.db.QueryRow("PRAGMA wal_autocheckpoint").Scan(&checkpointPages)
+	if err != nil {
+		t.Fatalf("PRAGMA wal_autocheckpoint query: %v", err)
+	}
+	// Per Ohara v2 spec Phase 2: WAL auto-checkpoint at 1000 pages.
+	if checkpointPages != 1000 {
+		t.Errorf("expected wal_autocheckpoint=1000, got %d", checkpointPages)
+	}
+}
+
+func TestWALAutocheckpoint_JournalModeIsWAL(t *testing.T) {
+	s := newTestStore(t)
+
+	var journalMode string
+	err := s.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode)
+	if err != nil {
+		t.Fatalf("PRAGMA journal_mode query: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Errorf("expected journal_mode=wal, got %q", journalMode)
+	}
+}
