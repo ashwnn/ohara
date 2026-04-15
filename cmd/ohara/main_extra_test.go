@@ -103,7 +103,7 @@ func stubRuntimeHooks(t *testing.T) {
 	oldLoadRuntimeMaintain := loadRuntimeMaintain
 
 	storeNew = store.New
-	newHTTPServer = func(s *store.Store, _ int, _ string, _ oharasrv.PackConfig) *oharasrv.Server {
+	newHTTPServer = func(s *store.Store, _ int, _ string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 		return oharasrv.New(s, 0)
 	}
 	startHTTP = func(_ *oharasrv.Server) error { return nil }
@@ -236,7 +236,7 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 			withArgs(t, args...)
 
 			seenPort := -1
-			newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig) *oharasrv.Server {
+			newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 				seenPort = port
 				return oharasrv.New(s, 0)
 			}
@@ -277,7 +277,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":9999", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}
@@ -298,7 +298,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":1111", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}
@@ -320,7 +320,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 		}
 		seenPort := -1
 		seenSocket := ""
-		newHTTPServer = func(s *store.Store, port int, socketPath string, _ oharasrv.PackConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, socketPath string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 			seenPort = port
 			seenSocket = socketPath
 			return oharasrv.New(s, 0)
@@ -346,7 +346,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":5555", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}

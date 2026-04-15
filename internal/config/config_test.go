@@ -26,6 +26,12 @@ func TestDefault(t *testing.T) {
 	if cfg.MaxBudgetTokens != 800 {
 		t.Errorf("MaxBudgetTokens: got %d, want 800", cfg.MaxBudgetTokens)
 	}
+	if !cfg.ConflictEnabled {
+		t.Error("ConflictEnabled: got false, want true")
+	}
+	if cfg.ConflictThreshold != 0.6 {
+		t.Errorf("ConflictThreshold: got %f, want 0.6", cfg.ConflictThreshold)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -152,6 +158,53 @@ func TestLoadSyncDir(t *testing.T) {
 	}
 }
 
+func TestLoadConflictConfig(t *testing.T) {
+	tmp := t.TempDir()
+
+	t.Run("conflict_enabled false", func(t *testing.T) {
+		path := filepath.Join(tmp, "conflict-disabled.json")
+		if err := os.WriteFile(path, []byte(`{"conflict_enabled":false}`), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load conflict_enabled=false: unexpected error: %v", err)
+		}
+		if cfg.ConflictEnabled {
+			t.Error("ConflictEnabled: got true, want false")
+		}
+	})
+
+	t.Run("conflict_threshold out of range ignored", func(t *testing.T) {
+		path := filepath.Join(tmp, "conflict-badrange.json")
+		if err := os.WriteFile(path, []byte(`{"conflict_threshold":1.5}`), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load out-of-range threshold: unexpected error: %v", err)
+		}
+		// Should keep the default (0.6) when threshold is out of range.
+		if cfg.ConflictThreshold != 0.6 {
+			t.Errorf("ConflictThreshold: got %f, want 0.6 (default, out-of-range ignored)", cfg.ConflictThreshold)
+		}
+	})
+
+	t.Run("conflict_threshold boundary 0.0 and 1.0", func(t *testing.T) {
+		path := filepath.Join(tmp, "conflict-boundary.json")
+		if err := os.WriteFile(path, []byte(`{"conflict_threshold":0.0}`), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load threshold=0.0: unexpected error: %v", err)
+		}
+		if cfg.ConflictThreshold != 0.0 {
+			t.Errorf("ConflictThreshold: got %f, want 0.0", cfg.ConflictThreshold)
+		}
+	})
+}
+
 func TestLoadAllFields(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "config.json")
@@ -164,7 +217,9 @@ func TestLoadAllFields(t *testing.T) {
 		"snapshot_dir": "/opt/ohara/snapshots",
 		"retain_snapshots": 14,
 		"default_budget_tokens": 500,
-		"max_budget_tokens": 1000
+		"max_budget_tokens": 1000,
+		"conflict_enabled": false,
+		"conflict_threshold": 0.75
 	}`), 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -196,6 +251,12 @@ func TestLoadAllFields(t *testing.T) {
 	}
 	if cfg.MaxBudgetTokens != 1000 {
 		t.Errorf("MaxBudgetTokens: got %d, want 1000", cfg.MaxBudgetTokens)
+	}
+	if cfg.ConflictEnabled {
+		t.Error("ConflictEnabled: got true, want false")
+	}
+	if cfg.ConflictThreshold != 0.75 {
+		t.Errorf("ConflictThreshold: got %f, want 0.75", cfg.ConflictThreshold)
 	}
 }
 

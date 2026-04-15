@@ -43,18 +43,27 @@ type RuntimeConfig struct {
 	// MaxBudgetTokens is the maximum allowed token budget for context pack assembly.
 	// Default: 800.
 	MaxBudgetTokens int
+	// ConflictEnabled controls whether contradiction detection runs on memory add.
+	// Default: true.
+	ConflictEnabled bool
+	// ConflictThreshold is the minimum Jaccard overlap score (0.0-1.0) required to
+	// report a conflict. Only applies when ConflictEnabled is true.
+	// Default: 0.6.
+	ConflictThreshold float64
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
 type fileConfig struct {
-	HTTPAddr            string `json:"http_addr"`
-	SocketPath          string `json:"socket_path"`
-	DataDir             string `json:"data_dir"`
-	SyncDir             string `json:"sync_dir"`
-	SnapshotDir         string `json:"snapshot_dir"`
-	RetainSnapshots     int    `json:"retain_snapshots"`
-	DefaultBudgetTokens int    `json:"default_budget_tokens"`
-	MaxBudgetTokens     int    `json:"max_budget_tokens"`
+	HTTPAddr            string   `json:"http_addr"`
+	SocketPath          string   `json:"socket_path"`
+	DataDir             string   `json:"data_dir"`
+	SyncDir             string   `json:"sync_dir"`
+	SnapshotDir         string   `json:"snapshot_dir"`
+	RetainSnapshots     int      `json:"retain_snapshots"`
+	DefaultBudgetTokens int      `json:"default_budget_tokens"`
+	MaxBudgetTokens     int      `json:"max_budget_tokens"`
+	ConflictEnabled     *bool    `json:"conflict_enabled"`
+	ConflictThreshold   *float64 `json:"conflict_threshold"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -73,6 +82,8 @@ func Default() RuntimeConfig {
 		RetainSnapshots:     7,
 		DefaultBudgetTokens: 400,
 		MaxBudgetTokens:     800,
+		ConflictEnabled:     true,
+		ConflictThreshold:   0.6,
 	}
 }
 
@@ -130,6 +141,12 @@ func Load(path string) (RuntimeConfig, error) {
 		}
 		if fc.MaxBudgetTokens > 0 {
 			cfg.MaxBudgetTokens = fc.MaxBudgetTokens
+		}
+		if fc.ConflictEnabled != nil {
+			cfg.ConflictEnabled = *fc.ConflictEnabled
+		}
+		if fc.ConflictThreshold != nil && *fc.ConflictThreshold >= 0.0 && *fc.ConflictThreshold <= 1.0 {
+			cfg.ConflictThreshold = *fc.ConflictThreshold
 		}
 	}
 

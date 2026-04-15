@@ -36,13 +36,16 @@ var storeNew = store.New
 
 // newHTTPServer creates an HTTP server. Stubbed in tests.
 // socketPath is empty when TCP mode is used.
-var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg server.PackConfig) *server.Server {
+var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg server.PackConfig, conflictCfg server.ConflictConfig) *server.Server {
 	opts := []server.ServerOption{}
 	if socketPath != "" {
 		opts = append(opts, server.WithSocketPath(socketPath))
 	}
 	if packCfg.DefaultBudgetTokens > 0 || packCfg.MaxBudgetTokens > 0 {
 		opts = append(opts, server.WithPackConfig(packCfg))
+	}
+	if conflictCfg.Enabled == server.ConflictEnabledOn {
+		opts = append(opts, server.WithConflictConfig(conflictCfg))
 	}
 	return server.New(s, port, opts...)
 }
@@ -433,7 +436,14 @@ func realCmdServe(cfg store.Config) {
 		DefaultBudgetTokens: cfg2.DefaultBudgetTokens,
 		MaxBudgetTokens:     cfg2.MaxBudgetTokens,
 	}
-	srv := newHTTPServer(s, port, socketPath, packCfg)
+	conflictCfg := server.ConflictConfig{
+		Enabled:   server.ConflictEnabledOff,
+		Threshold: cfg2.ConflictThreshold,
+	}
+	if cfg2.ConflictEnabled {
+		conflictCfg.Enabled = server.ConflictEnabledOn
+	}
+	srv := newHTTPServer(s, port, socketPath, packCfg, conflictCfg)
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())
 	}
