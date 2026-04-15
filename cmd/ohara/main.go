@@ -229,9 +229,10 @@ func printUsage() {
 	fmt.Println("  --help, -h         Show this help")
 	fmt.Println()
 	fmt.Println("Environment:")
-	fmt.Println("  OHARA_DATA_DIR     Data directory (default ~/.ohara)")
-	fmt.Println("  OHARA_PORT         HTTP server port (default 7437)")
-	fmt.Println("  OHARA_SOCKET       Unix socket path (takes priority over port)")
+	fmt.Println("  OHARA_DATA_DIR     Data directory (default ~/.local/share/ohara)")
+	fmt.Println("  OHARA_HTTP_ADDR    HTTP server address (default 127.0.0.1:7331)")
+	fmt.Println("  OHARA_SOCKET      Unix socket path (takes priority over HTTP_ADDR)")
+	fmt.Println("  OHARA_SYNC_DIR    Sync chunk directory (default .ohara/ in cwd)")
 	fmt.Println("  OHARA_PROJECT     Project name for session context")
 }
 

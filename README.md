@@ -2,7 +2,7 @@
   <img src="assets/ohara.png" alt="Ohara" width="128" /><br>
   <strong>Ohara</strong><br>
   <em>Typed persistent memory with conflict detection for AI coding agents</em><br>
-  <small>OpenCode plugin + MCP only. Source-build only. No TUI, sync, or marketplace.</small>
+  <small>OpenCode plugin + MCP only. Source-build only. No TUI or marketplace.</small>
 </p>
 
 <p align="center">
@@ -31,14 +31,14 @@ A **Go binary** with SQLite + FTS5 full-text search, exposed via CLI, HTTP API, 
 
 These features improve memory quality by catching contradictions before they pollute your context, and let you audit how your project's understanding evolved over time. For agents that reason across long-running projects, this prevents drift and maintains coherent context.
 
-**This fork intentionally retains MCP** as the primary interface. Only OpenCode has a native plugin; all other agents use MCP directly. TUI, sync, marketplace, and publishing-oriented surfaces are not part of this fork's direction.
+**This fork intentionally retains MCP** as the primary interface. Only OpenCode has a native plugin; all other agents use MCP directly. TUI, marketplace, and publishing-oriented surfaces are not part of this fork's direction.
 
 ```
 Agent (OpenCode / Any MCP-compatible agent)
     ↓ MCP stdio
 Ohara (single Go binary)
     ↓
-SQLite + FTS5 (~/.ohara/ohara.db)
+SQLite + FTS5 (~/.local/share/ohara/ohara.db)
 ```
 
 ## Quick Start
@@ -103,7 +103,7 @@ Full tool reference → [DOCS.md#mcp-tools-15-tools](DOCS.md#mcp-tools-15-tools)
 | Command | Description |
 |---------|-------------|
 | `ohara setup [agent]` | Install agent integration |
-| `ohara serve [port]` | Start HTTP API (default: 7437) |
+| `ohara serve [port]` | Start HTTP API (default: 7331) |
 | `ohara mcp` | Start MCP server (stdio) |
 | `ohara search <query>` | Search memories |
 | `ohara save <title> <msg>` | Save a memory |
@@ -132,7 +132,7 @@ This is a **personal fork** maintained for individual use. It:
 
 - Retains the MCP server and HTTP API (the core memory interface)
 - Uses source-build installation only
-- Does **not** include TUI, sync, or publishing-oriented surfaces
+- Does **not** include TUI, or publishing-oriented surfaces
 - Tracks upstream Engram selectively
 
 For the original project with full features (TUI, sync, etc.), see [**Gentleman-Programming/engram**](https://github.com/Gentleman-Programming/engram).

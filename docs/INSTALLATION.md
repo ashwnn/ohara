@@ -67,8 +67,8 @@ The binary includes SQLite (via [modernc.org/sqlite](https://pkg.go.dev/modernc.
 
 | Variable | Description | Default |
 |---|---|---|
-| `OHARA_DATA_DIR` | Data directory | `~/.ohara` (Windows: `%USERPROFILE%\.ohara`) |
-| `OHARA_PORT` | HTTP server port | `7437` |
+| `OHARA_DATA_DIR` | Data directory | `~/.local/share/ohara` (Windows: `%USERPROFILE%\.ohara`) |
+| `OHARA_HTTP_ADDR` | HTTP server address | `127.0.0.1:7331` |
 
 ---
 
@@ -80,7 +80,7 @@ When using `ohara setup opencode`, config files are written to platform-appropri
 |-----------|---------------|---------|
 | OpenCode plugin | `~/.config/opencode/plugins/` | `%APPDATA%\opencode\plugins\` |
 | OpenCode config | `~/.config/opencode/opencode.json` | `%APPDATA%\opencode\opencode.json` |
-| Data directory | `~/.ohara/` | `%USERPROFILE%\.ohara\` |
+| Data directory | `~/.local/share/ohara/` | `%USERPROFILE%\.ohara\` |
 
 ---
 

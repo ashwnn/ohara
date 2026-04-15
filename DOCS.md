@@ -50,7 +50,7 @@ For other docs:
 
 ## HTTP API Endpoints
 
-All endpoints return JSON. Server listens on `127.0.0.1:7437`.
+All endpoints return JSON. Server listens on `127.0.0.1:7331`.
 
 ### Health
 
@@ -109,8 +109,10 @@ All endpoints return JSON. Server listens on `127.0.0.1:7437`.
 
 | Variable | Description | Default |
 |---|---|---|
-| `OHARA_DATA_DIR` | Override data directory | `~/.ohara` |
-| `OHARA_PORT` | Override HTTP server port | `7437` |
+| `OHARA_DATA_DIR` | Override data directory | `~/.local/share/ohara` |
+| `OHARA_HTTP_ADDR` | Override HTTP server address | `127.0.0.1:7331` |
+| `OHARA_SOCKET` | Override Unix socket path | (none — TCP by default) |
+| `OHARA_SYNC_DIR` | Override sync directory | `.ohara/` in cwd |
 | `OHARA_PROJECT` | Override project name for MCP server | auto-detected via git |
 
 ---
@@ -330,7 +332,7 @@ All memory comes from the agent — no firehose of raw tool calls. The agent's c
 ### Using systemd
 
 1. Move binary to `~/.local/bin` (ensure in `$PATH`)
-2. Create directories: `mkdir -p ~/.ohara ~/.config/systemd/user`
+2. Create directories: `mkdir -p ~/.local/share/ohara ~/.config/systemd/user`
 3. Create `~/.config/systemd/user/ohara.service`:
 
 ```ini
@@ -343,7 +345,7 @@ WorkingDirectory=%h
 ExecStart=%h/.local/bin/ohara serve
 Restart=always
 RestartSec=3
-Environment=OHARA_DATA_DIR=%h/.ohara
+Environment=OHARA_DATA_DIR=%h/.local/share/ohara
 
 [Install]
 WantedBy=default.target

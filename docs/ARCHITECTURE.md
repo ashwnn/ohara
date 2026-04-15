@@ -114,7 +114,7 @@ ohara/
 ├── cmd/ohara/main.go               # CLI entrypoint (binary: ohara)
 ├── internal/
 │   ├── store/store.go              # Core: SQLite + FTS5 + data ops
-│   ├── server/server.go            # HTTP REST API (port 7437)
+│   ├── server/server.go            # HTTP REST API (port 7331)
 │   ├── mcp/mcp.go                  # MCP stdio server (15 tools)
 │   ├── setup/setup.go              # Agent plugin installer
 │   └── project/                    # Project name detection
@@ -124,7 +124,7 @@ ohara/
 └── go.mod / go.sum
 ```
 
-**Note:** This fork focuses on MCP and HTTP API. TUI and sync features from upstream are not included.
+**Note:** This fork focuses on MCP and HTTP API. TUI features from upstream are not included.
 
 ---
 
@@ -132,7 +132,7 @@ ohara/
 
 ```
 ohara setup [agent]       Install/setup agent integration
-ohara serve [port]        Start HTTP API server (default: 7437)
+ohara serve [port]        Start HTTP API server (default: 7331)
 ohara mcp                 Start MCP server (stdio transport)
 ohara search <query>      Search memories
 ohara save <title> <msg>  Save a memory
