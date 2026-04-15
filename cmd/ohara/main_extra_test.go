@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/config"
 	"github.com/ashwnn/ohara/internal/mcp"
 	oharasrv "github.com/ashwnn/ohara/internal/server"
 	"github.com/ashwnn/ohara/internal/setup"
@@ -98,6 +99,7 @@ func stubRuntimeHooks(t *testing.T) {
 	oldNewTeaProgram := newTeaProgram
 	oldRunTeaProgram := runTeaProgram
 	oldStoreConsolidate := storeConsolidate
+	oldLoadRuntimeConfig := loadRuntimeConfig
 
 	storeNew = store.New
 	newHTTPServer = func(s *store.Store, _ int, _ string) *oharasrv.Server { return oharasrv.New(s, 0) }
@@ -128,6 +130,9 @@ func stubRuntimeHooks(t *testing.T) {
 	storeExport = func(s *store.Store) (*store.ExportData, error) { return s.Export() }
 	storeConsolidate = func(s *store.Store, sources []string, canonical string) (*store.MergeResult, error) {
 		return s.MergeProjects(sources, canonical)
+	}
+	loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+		return config.RuntimeConfig{HTTPAddr: ":7437", SocketPath: ""}, nil
 	}
 	jsonMarshalIndent = json.MarshalIndent
 	syncStatus = func(sy *oharasync.Syncer) (localChunks int, remoteChunks int, pendingImport int, err error) {
@@ -166,6 +171,7 @@ func stubRuntimeHooks(t *testing.T) {
 		syncExport = oldSyncExport
 		checkForUpdates = oldCheckForUpdates
 		storeConsolidate = oldStoreConsolidate
+		loadRuntimeConfig = oldLoadRuntimeConfig
 	})
 }
 
@@ -189,28 +195,27 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 	stubRuntimeHooks(t)
 
 	tests := []struct {
-		name      string
-		envPort   string
-		argPort   string
-		wantPort  int
-		startErr  error
-		wantFatal bool
+		name       string
+		httpAddr   string
+		argPort    string
+		wantPort   int
+		wantSocket string
+		startErr   error
+		wantFatal  bool
 	}{
-		{name: "default port", wantPort: 7437},
-		{name: "env port", envPort: "8123", wantPort: 8123},
-		{name: "arg overrides env", envPort: "8123", argPort: "9001", wantPort: 9001},
-		{name: "invalid env keeps default", envPort: "nope", wantPort: 7437},
-		{name: "invalid arg keeps env", envPort: "8123", argPort: "bad", wantPort: 8123},
-		{name: "start failure", wantPort: 7437, startErr: errors.New("listen failed"), wantFatal: true},
+		{name: "default port from config stub", httpAddr: ":7437", wantPort: 7437},
+		{name: "config http_addr", httpAddr: ":8123", wantPort: 8123},
+		{name: "arg overrides config port", httpAddr: ":8123", argPort: "9001", wantPort: 9001},
+		{name: "config socket path", httpAddr: ":7437", wantSocket: "/tmp/ohara.sock", wantPort: 7437},
+		{name: "start failure", httpAddr: ":7437", wantPort: 7437, startErr: errors.New("listen failed"), wantFatal: true},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			stubExitWithPanic(t)
-			if tc.envPort != "" {
-				t.Setenv("OHARA_PORT", tc.envPort)
-			} else {
-				t.Setenv("OHARA_PORT", "")
+			// Override the config stub for this subtest.
+			loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+				return config.RuntimeConfig{HTTPAddr: tc.httpAddr, SocketPath: tc.wantSocket}, nil
 			}
 
 			args := []string{"ohara", "serve"}
@@ -247,6 +252,120 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCmdServeUsesConfigLoader(t *testing.T) {
+	// Test that cmdServe uses the config loader and respects precedence:
+	// config file < CLI positional < --port/--socket flags.
+	cfg := testConfig(t)
+	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
+
+	t.Run("positional arg overrides config http_addr", func(t *testing.T) {
+		loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+			return config.RuntimeConfig{HTTPAddr: ":9999", SocketPath: ""}, nil
+		}
+		seenPort := -1
+		newHTTPServer = func(s *store.Store, port int, _ string) *oharasrv.Server {
+			seenPort = port
+			return oharasrv.New(s, 0)
+		}
+		startHTTP = func(_ *oharasrv.Server) error { return nil }
+
+		withArgs(t, "ohara", "serve", "7777")
+		_, _, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+		if recovered != nil {
+			t.Fatalf("unexpected panic: %v", recovered)
+		}
+		if seenPort != 7777 {
+			t.Fatalf("port: got %d, want 7777 (positional override)", seenPort)
+		}
+	})
+
+	t.Run("--port flag overrides config http_addr", func(t *testing.T) {
+		loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+			return config.RuntimeConfig{HTTPAddr: ":1111", SocketPath: ""}, nil
+		}
+		seenPort := -1
+		newHTTPServer = func(s *store.Store, port int, _ string) *oharasrv.Server {
+			seenPort = port
+			return oharasrv.New(s, 0)
+		}
+		startHTTP = func(_ *oharasrv.Server) error { return nil }
+
+		withArgs(t, "ohara", "serve", "--port", "2222")
+		_, _, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+		if recovered != nil {
+			t.Fatalf("unexpected panic: %v", recovered)
+		}
+		if seenPort != 2222 {
+			t.Fatalf("port: got %d, want 2222 (--port flag override)", seenPort)
+		}
+	})
+
+	t.Run("--socket flag overrides config", func(t *testing.T) {
+		loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+			return config.RuntimeConfig{HTTPAddr: ":9999", SocketPath: ""}, nil
+		}
+		seenPort := -1
+		seenSocket := ""
+		newHTTPServer = func(s *store.Store, port int, socketPath string) *oharasrv.Server {
+			seenPort = port
+			seenSocket = socketPath
+			return oharasrv.New(s, 0)
+		}
+		startHTTP = func(_ *oharasrv.Server) error { return nil }
+
+		withArgs(t, "ohara", "serve", "--socket", "/run/ohara.sock")
+		_, _, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+		if recovered != nil {
+			t.Fatalf("unexpected panic: %v", recovered)
+		}
+		if seenSocket != "/run/ohara.sock" {
+			t.Fatalf("socket: got %q, want /run/ohara.sock", seenSocket)
+		}
+		// Port is still set from config.
+		if seenPort != 9999 {
+			t.Fatalf("port: got %d, want 9999 (from config, socket override)", seenPort)
+		}
+	})
+
+	t.Run("invalid positional arg keeps config port", func(t *testing.T) {
+		loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+			return config.RuntimeConfig{HTTPAddr: ":5555", SocketPath: ""}, nil
+		}
+		seenPort := -1
+		newHTTPServer = func(s *store.Store, port int, _ string) *oharasrv.Server {
+			seenPort = port
+			return oharasrv.New(s, 0)
+		}
+		startHTTP = func(_ *oharasrv.Server) error { return nil }
+
+		withArgs(t, "ohara", "serve", "not-a-port")
+		_, _, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+		if recovered != nil {
+			t.Fatalf("unexpected panic: %v", recovered)
+		}
+		if seenPort != 5555 {
+			t.Fatalf("port: got %d, want 5555 (config kept after invalid arg)", seenPort)
+		}
+	})
+
+	t.Run("loadRuntimeConfig error propagates to fatal", func(t *testing.T) {
+		loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+			return config.RuntimeConfig{}, errors.New("config file unreadable")
+		}
+		startHTTP = func(_ *oharasrv.Server) error { return nil }
+
+		withArgs(t, "ohara", "serve")
+		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+		if _, ok := recovered.(exitCode); !ok {
+			t.Fatalf("expected fatal exit, got %v", recovered)
+		}
+		if !strings.Contains(stderr, "config file unreadable") {
+			t.Fatalf("stderr missing config error: %q", stderr)
+		}
+	})
 }
 
 func TestCmdMCPAndTUIBranches(t *testing.T) {

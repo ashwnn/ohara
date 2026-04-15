@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ashwnn/ohara/internal/config"
 	"github.com/ashwnn/ohara/internal/maintain"
 	"github.com/ashwnn/ohara/internal/mcp"
 	"github.com/ashwnn/ohara/internal/server"
@@ -130,6 +131,11 @@ var storeConsolidate = func(s *store.Store, sources []string, canonical string) 
 
 // newObsidianWatcher creates an obsidian watcher. Stubbed in tests.
 var newObsidianWatcher = func(c interface{}) interface{} { return nil }
+
+// loadRuntimeConfig loads the runtime config. Stubbed in tests.
+var loadRuntimeConfig = func(cfgPath string) (config.RuntimeConfig, error) {
+	return config.Load(cfgPath)
+}
 
 // newTUIModel creates a TUI model. Stubbed in tests.
 var newTUIModel = func(s *store.Store) interface{} { return nil }
@@ -334,27 +340,31 @@ func realCmdCheck(cfg store.Config) {
 // ─── Stub implementations for other commands ─────────────────────────────────
 
 func realCmdServe(cfg store.Config) {
-	// Determine port: OHARA_PORT env → default 7437 → positional arg (if valid).
-	defaultPort := 7437
-	port := defaultPort
-
-	if envPort := os.Getenv("OHARA_PORT"); envPort != "" {
-		if p, err := strconv.Atoi(envPort); err == nil {
-			port = p
-		}
+	// Load config from {DataDir}/config.json with env-var overrides.
+	// First load with empty path to get DataDir (which may be overridden by env).
+	baseCfg, err := loadRuntimeConfig("")
+	if err != nil {
+		fatal("config: " + err.Error())
+	}
+	// Resolve the config file path from the resolved DataDir and reload.
+	configFile := filepath.Join(baseCfg.DataDir, config.DefaultConfigFile)
+	cfg2, err := loadRuntimeConfig(configFile)
+	if err != nil {
+		fatal("config: " + err.Error())
 	}
 
-	// Determine socket path: OHARA_SOCKET env → --socket flag.
-	socketPath := os.Getenv("OHARA_SOCKET")
+	// Extract port from http_addr.
+	_, port := config.HTTPAddrParts(cfg2.HTTPAddr)
+	socketPath := cfg2.SocketPath
 
-	// Check for positional port argument (e.g., "ohara serve 9001").
+	// Positional port argument overrides config (e.g., "ohara serve 9001").
 	if len(os.Args) >= 3 {
 		if p, err := strconv.Atoi(os.Args[2]); err == nil {
 			port = p
 		}
 	}
 
-	// Check for --port and --socket arguments.
+	// --port and --socket flags override config/env.
 	for i, arg := range os.Args[2:] {
 		if arg == "--socket" && i+1 < len(os.Args[2:]) {
 			socketPath = os.Args[2:][i+1]
