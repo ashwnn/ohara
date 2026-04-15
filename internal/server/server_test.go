@@ -1158,3 +1158,94 @@ func TestGetSessionContext_SessionNotFound(t *testing.T) {
 		t.Fatalf("expected 404 for missing session, got %d", rec.Code)
 	}
 }
+
+// ─── Pack Config tests ─────────────────────────────────────────────────────────
+
+func TestHandlePack_UsesPackConfigDefaultBudget(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0, WithPackConfig(PackConfig{
+		DefaultBudgetTokens: 600,
+		MaxBudgetTokens:     900,
+	}))
+	h := srv.Handler()
+
+	// Ensure a session exists so pack can reference a project.
+	_ = st.CreateSession("pack-session", "ohara", "")
+
+	// Request with no budget_tokens → should use PackConfig default (600).
+	body := `{"project_id":"ohara","session_id":"pack-session"}`
+	req := httptest.NewRequest(http.MethodPost, "/pack", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp store.PackResult
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.BudgetTokens != 600 {
+		t.Errorf("expected BudgetTokens=600 (PackConfig default), got %d", resp.BudgetTokens)
+	}
+}
+
+func TestHandlePack_CapsBudgetAtPackConfigMaxBudget(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0, WithPackConfig(PackConfig{
+		DefaultBudgetTokens: 200,
+		MaxBudgetTokens:     500,
+	}))
+	h := srv.Handler()
+
+	_ = st.CreateSession("pack-session2", "ohara", "")
+
+	// Request with budget_tokens=99999 → should be capped to PackConfig max (500).
+	body := `{"project_id":"ohara","session_id":"pack-session2","budget_tokens":99999}`
+	req := httptest.NewRequest(http.MethodPost, "/pack", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp store.PackResult
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.BudgetTokens != 500 {
+		t.Errorf("expected BudgetTokens=500 (PackConfig max cap), got %d", resp.BudgetTokens)
+	}
+}
+
+func TestHandlePack_ZeroPackConfigFallsBackToSpecDefaults(t *testing.T) {
+	st := newServerTestStore(t)
+	// No PackConfig → zero values → handlePack falls back to spec defaults (400/800).
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	_ = st.CreateSession("pack-session3", "ohara", "")
+
+	// No budget_tokens → uses fallback default of 400.
+	body := `{"project_id":"ohara","session_id":"pack-session3"}`
+	req := httptest.NewRequest(http.MethodPost, "/pack", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp store.PackResult
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.BudgetTokens != 400 {
+		t.Errorf("expected BudgetTokens=400 (spec fallback default), got %d", resp.BudgetTokens)
+	}
+}

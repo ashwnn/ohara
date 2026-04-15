@@ -20,6 +20,12 @@ func TestDefault(t *testing.T) {
 	if cfg.RetainSnapshots != 7 {
 		t.Errorf("RetainSnapshots: got %d, want 7", cfg.RetainSnapshots)
 	}
+	if cfg.DefaultBudgetTokens != 400 {
+		t.Errorf("DefaultBudgetTokens: got %d, want 400", cfg.DefaultBudgetTokens)
+	}
+	if cfg.MaxBudgetTokens != 800 {
+		t.Errorf("MaxBudgetTokens: got %d, want 800", cfg.MaxBudgetTokens)
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -156,7 +162,9 @@ func TestLoadAllFields(t *testing.T) {
 		"data_dir": "/opt/ohara",
 		"sync_dir": "/opt/ohara/sync",
 		"snapshot_dir": "/opt/ohara/snapshots",
-		"retain_snapshots": 14
+		"retain_snapshots": 14,
+		"default_budget_tokens": 500,
+		"max_budget_tokens": 1000
 	}`), 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -182,6 +190,12 @@ func TestLoadAllFields(t *testing.T) {
 	}
 	if cfg.RetainSnapshots != 14 {
 		t.Errorf("RetainSnapshots: got %d, want 14", cfg.RetainSnapshots)
+	}
+	if cfg.DefaultBudgetTokens != 500 {
+		t.Errorf("DefaultBudgetTokens: got %d, want 500", cfg.DefaultBudgetTokens)
+	}
+	if cfg.MaxBudgetTokens != 1000 {
+		t.Errorf("MaxBudgetTokens: got %d, want 1000", cfg.MaxBudgetTokens)
 	}
 }
 

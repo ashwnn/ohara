@@ -47,6 +47,17 @@ func WithSocketPath(path string) ServerOption {
 	return func(s *Server) { s.socketPath = path }
 }
 
+// PackConfig holds the configurable parameters for context pack assembly.
+type PackConfig struct {
+	DefaultBudgetTokens int
+	MaxBudgetTokens     int
+}
+
+// WithPackConfig sets the pack assembly configuration.
+func WithPackConfig(cfg PackConfig) ServerOption {
+	return func(s *Server) { s.packConfig = cfg }
+}
+
 type Server struct {
 	store      *store.Store
 	mux        *http.ServeMux
@@ -56,6 +67,7 @@ type Server struct {
 	serve      func(net.Listener, http.Handler) error
 	onWrite    func() // called after successful local writes (for autosync notification)
 	syncStatus SyncStatusProvider
+	packConfig PackConfig
 }
 
 func New(s *store.Store, port int, opts ...ServerOption) *Server {
@@ -927,8 +939,20 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "project_id is required")
 		return
 	}
+	// Use config-driven defaults when budget is not specified by the caller.
+	defaultBudget := s.packConfig.DefaultBudgetTokens
+	if defaultBudget <= 0 {
+		defaultBudget = 400 // fallback to spec-safe default
+	}
+	maxBudget := s.packConfig.MaxBudgetTokens
+	if maxBudget <= 0 {
+		maxBudget = 800 // fallback to spec-safe maximum
+	}
 	if body.BudgetTokens <= 0 {
-		body.BudgetTokens = 400
+		body.BudgetTokens = defaultBudget
+	}
+	if body.BudgetTokens > maxBudget {
+		body.BudgetTokens = maxBudget
 	}
 
 	result, err := s.store.BuildPack(body)

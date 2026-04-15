@@ -37,16 +37,24 @@ type RuntimeConfig struct {
 	// RetainSnapshots is the number of daily snapshots to retain.
 	// Default: 7.
 	RetainSnapshots int
+	// DefaultBudgetTokens is the default token budget for context pack assembly.
+	// Default: 400.
+	DefaultBudgetTokens int
+	// MaxBudgetTokens is the maximum allowed token budget for context pack assembly.
+	// Default: 800.
+	MaxBudgetTokens int
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
 type fileConfig struct {
-	HTTPAddr        string `json:"http_addr"`
-	SocketPath      string `json:"socket_path"`
-	DataDir         string `json:"data_dir"`
-	SyncDir         string `json:"sync_dir"`
-	SnapshotDir     string `json:"snapshot_dir"`
-	RetainSnapshots int    `json:"retain_snapshots"`
+	HTTPAddr            string `json:"http_addr"`
+	SocketPath          string `json:"socket_path"`
+	DataDir             string `json:"data_dir"`
+	SyncDir             string `json:"sync_dir"`
+	SnapshotDir         string `json:"snapshot_dir"`
+	RetainSnapshots     int    `json:"retain_snapshots"`
+	DefaultBudgetTokens int    `json:"default_budget_tokens"`
+	MaxBudgetTokens     int    `json:"max_budget_tokens"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -57,12 +65,14 @@ func Default() RuntimeConfig {
 		dataDir = filepath.Join(home, ".ohara")
 	}
 	return RuntimeConfig{
-		HTTPAddr:        ":7437",
-		SocketPath:      "",
-		DataDir:         dataDir,
-		SyncDir:         "",
-		SnapshotDir:     filepath.Join(dataDir, "snapshots"),
-		RetainSnapshots: 7,
+		HTTPAddr:            ":7437",
+		SocketPath:          "",
+		DataDir:             dataDir,
+		SyncDir:             "",
+		SnapshotDir:         filepath.Join(dataDir, "snapshots"),
+		RetainSnapshots:     7,
+		DefaultBudgetTokens: 400,
+		MaxBudgetTokens:     800,
 	}
 }
 
@@ -114,6 +124,12 @@ func Load(path string) (RuntimeConfig, error) {
 		}
 		if fc.RetainSnapshots > 0 {
 			cfg.RetainSnapshots = fc.RetainSnapshots
+		}
+		if fc.DefaultBudgetTokens > 0 {
+			cfg.DefaultBudgetTokens = fc.DefaultBudgetTokens
+		}
+		if fc.MaxBudgetTokens > 0 {
+			cfg.MaxBudgetTokens = fc.MaxBudgetTokens
 		}
 	}
 

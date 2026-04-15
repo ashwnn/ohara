@@ -36,11 +36,15 @@ var storeNew = store.New
 
 // newHTTPServer creates an HTTP server. Stubbed in tests.
 // socketPath is empty when TCP mode is used.
-var newHTTPServer = func(s *store.Store, port int, socketPath string) *server.Server {
+var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg server.PackConfig) *server.Server {
+	opts := []server.ServerOption{}
 	if socketPath != "" {
-		return server.New(s, port, server.WithSocketPath(socketPath))
+		opts = append(opts, server.WithSocketPath(socketPath))
 	}
-	return server.New(s, port)
+	if packCfg.DefaultBudgetTokens > 0 || packCfg.MaxBudgetTokens > 0 {
+		opts = append(opts, server.WithPackConfig(packCfg))
+	}
+	return server.New(s, port, opts...)
 }
 
 // startHTTP starts the HTTP server. Stubbed in tests.
@@ -425,7 +429,11 @@ func realCmdServe(cfg store.Config) {
 	}
 	defer s.Close()
 
-	srv := newHTTPServer(s, port, socketPath)
+	packCfg := server.PackConfig{
+		DefaultBudgetTokens: cfg2.DefaultBudgetTokens,
+		MaxBudgetTokens:     cfg2.MaxBudgetTokens,
+	}
+	srv := newHTTPServer(s, port, socketPath, packCfg)
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())
 	}
