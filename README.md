@@ -1,6 +1,6 @@
 <p align="center">
   <strong>Ohara</strong><br>
-  <em>Persistent memory for AI coding agents</em><br>
+  <em>Typed persistent memory with conflict detection for AI coding agents</em><br>
   <small>OpenCode plugin + MCP only. Source-build only. No TUI, sync, or marketplace.</small>
 </p>
 
@@ -18,6 +18,17 @@
 Your AI coding agent forgets everything when the session ends. Ohara gives it a brain.
 
 A **Go binary** with SQLite + FTS5 full-text search, exposed via CLI, HTTP API, and **MCP server**. Supports **OpenCode** via native plugin, plus any agent that speaks MCP.
+
+**What makes Ohara different from standard Engram:**
+
+| Feature | Standard Engram | Ohara |
+|---------|----------------|-------|
+| **Typed memory** | Free-form strings | Structured memory types (`decision`, `bugfix`, `pattern`, `learned`) |
+| **Conflict detection** | None — silent overwrites | Save-time contradiction detection with revision history |
+| **Revisions** | Single version | Full revision history with `mem_timeline` |
+| **Expiry/Archive** | Manual cleanup | Automatic lifecycle: `active` → `expired` → `archived` |
+
+These features improve memory quality by catching contradictions before they pollute your context, and let you audit how your project's understanding evolved over time. For agents that reason across long-running projects, this prevents drift and maintains coherent context.
 
 **This fork intentionally retains MCP** as the primary interface. Only OpenCode has a native plugin; all other agents use MCP directly. TUI, sync, marketplace, and publishing-oriented surfaces are not part of this fork's direction.
 
