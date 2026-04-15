@@ -735,6 +735,170 @@ func TestHandleAddMemory_PatternConflict_ReturnsCreatedWithConflict(t *testing.T
 	}
 }
 
+// ─── Conflict Config tests ───────────────────────────────────────────────────────
+
+func TestHandleAddMemory_ConflictConfigDisabled_NoConflictReturned(t *testing.T) {
+	st := newServerTestStore(t)
+	// Explicitly disable conflict detection.
+	srv := New(st, 0, WithConflictConfig(ConflictConfig{Enabled: ConflictEnabledOff, Threshold: 0.6}))
+	h := srv.Handler()
+
+	// Seed an existing decision memory.
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Attempt to add a conflicting decision memory — but conflict detection is disabled.
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 (save still succeeds), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["id"] == nil {
+		t.Error("expected id in response")
+	}
+	if resp["conflict"] != nil {
+		t.Error("expected no conflict field when ConflictConfig.Enabled=false, got conflict metadata")
+	}
+}
+
+func TestHandleAddMemory_ConflictConfigEnabled_SkipsLowConfidenceConflicts(t *testing.T) {
+	st := newServerTestStore(t)
+	// Set a very high threshold (0.99) so even high-overlap conflicts are suppressed.
+	srv := New(st, 0, WithConflictConfig(ConflictConfig{Enabled: ConflictEnabledOn, Threshold: 0.99}))
+	h := srv.Handler()
+
+	// Seed an existing decision memory.
+	existingID, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Attempt to add a conflicting decision memory.
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 (save succeeds), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	// Save succeeded with a different ID.
+	if resp["id"] == nil {
+		t.Error("expected id in response")
+	}
+	// Conflict is suppressed because threshold (0.99) is above the actual score (~0.67).
+	if resp["conflict"] != nil {
+		t.Error("expected no conflict when score < threshold, got conflict metadata")
+	}
+	// Verify we have 2 decision memories (the new one was saved).
+	memories, err := st.GetMemories("ohara", "", "decision", "active", 10)
+	if err != nil {
+		t.Fatalf("get memories: %v", err)
+	}
+	if len(memories) != 2 {
+		t.Fatalf("expected 2 decision memories, got %d", len(memories))
+	}
+	_ = existingID // referenced for documentation; not asserted here.
+}
+
+func TestHandleAddMemory_ConflictConfigDefaultThreshold_ReportsConflicts(t *testing.T) {
+	st := newServerTestStore(t)
+	// Enabled with default threshold (0.6 via server code fallback).
+	srv := New(st, 0, WithConflictConfig(ConflictConfig{Enabled: ConflictEnabledOn, Threshold: 0.6}))
+	h := srv.Handler()
+
+	// Seed an existing decision memory.
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Add a conflicting decision memory — threshold matches the algorithm default.
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["conflict"] == nil {
+		t.Error("expected conflict metadata with Enabled=true and Threshold=0.6")
+	}
+}
+
+func TestHandleAddMemory_ConflictConfigEnabled_ZeroThresholdUsesDefault(t *testing.T) {
+	st := newServerTestStore(t)
+	// Enabled but Threshold=0 — the server code falls back to 0.6 default.
+	srv := New(st, 0, WithConflictConfig(ConflictConfig{Enabled: ConflictEnabledOn, Threshold: 0.0}))
+	h := srv.Handler()
+
+	// Seed an existing decision memory.
+	_, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Add a conflicting decision memory.
+	body := `{"project_id":"ohara","kind":"decision","title":"Auth decision: JWT for session management","body":"Alternative approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	// With Threshold=0 (fallback to 0.6), conflict should be reported.
+	if resp["conflict"] == nil {
+		t.Error("expected conflict metadata with Threshold=0 (server defaults to 0.6)")
+	}
+}
+
 func TestHandleAddMemory_ConfigConflict_ReturnsCreatedWithConflict(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
@@ -1247,5 +1411,87 @@ func TestHandlePack_ZeroPackConfigFallsBackToSpecDefaults(t *testing.T) {
 	}
 	if resp.BudgetTokens != 400 {
 		t.Errorf("expected BudgetTokens=400 (spec fallback default), got %d", resp.BudgetTokens)
+	}
+}
+
+// ─── DELETE /memories/:id tests ─────────────────────────────────────────────────
+
+func TestHandleDeleteMemory_Returns405(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// DELETE on any memory ID must return 405 — memories are never hard-deleted.
+	req := httptest.NewRequest(http.MethodDelete, "/memories/1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE /memories/:id: expected 405, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Error("expected error field in 405 response body")
+	}
+}
+
+func TestHandleDeleteMemory_Returns405ForNonExistentID(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Even for a non-existent ID, DELETE must return 405 (not 404).
+	// This is per spec: the DELETE method itself is disallowed, not the resource.
+	req := httptest.NewRequest(http.MethodDelete, "/memories/999999", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE /memories/999999: expected 405 (method not resource), got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteMemory_PATCHStillWorks(t *testing.T) {
+	// Verify that PATCH (archive via status) still works after DELETE is registered as 405.
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// First create a memory.
+	createBody := `{"project_id":"ohara","kind":"decision","title":"Temp decision","body":"Delete me via PATCH"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	var createResp map[string]any
+	if err := json.NewDecoder(createRec.Body).Decode(&createResp); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	memID := int(createResp["id"].(float64))
+
+	// Archive it via PATCH — this is the correct way to "delete".
+	patchBody := fmt.Sprintf(`{"status":"archived","reason":"testing archive flow"}`)
+	patchReq := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/memories/%d", memID), strings.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchRec := httptest.NewRecorder()
+	h.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("PATCH archive: expected 200, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	// DELETE must still return 405.
+	delReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/memories/%d", memID), nil)
+	delRec := httptest.NewRecorder()
+	h.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE after archive: expected 405, got %d", delRec.Code)
 	}
 }

@@ -1,0 +1,16 @@
+[Unit]
+Description=ohara memory server
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ohara serve
+Restart=always
+RestartSec=2
+Nice=10
+Environment=HOME=%h
+MemoryMax=512M
+MemoryHigh=256M
+
+[Install]
+WantedBy=default.target

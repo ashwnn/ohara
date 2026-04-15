@@ -82,3 +82,28 @@ When using `ohara setup opencode`, config files are written to platform-appropri
 | OpenCode config | `~/.config/opencode/opencode.json` | `%APPDATA%\opencode\opencode.json` |
 | Data directory | `~/.ohara/` | `%USERPROFILE%\.ohara\` |
 
+---
+
+## Systemd User Service (Linux)
+
+For Linux systems with systemd, user service files are provided in the repository:
+
+```bash
+# Copy service files to user systemd directory
+mkdir -p ~/.config/systemd/user/
+cp systemd/ohara.service ~/.config/systemd/user/
+cp systemd/ohara-maintain.timer ~/.config/systemd/user/
+cp systemd/ohara-maintain.service ~/.config/systemd/user/
+
+# Enable and start services
+systemctl --user daemon-reload
+systemctl --user enable --now ohara.service
+systemctl --user enable --now ohara-maintain.timer
+```
+
+This configures:
+- `ohara.service` — runs the memory server continuously with 512M memory limit
+- `ohara-maintain.timer` — nightly maintenance at 02:00 (archive, backup, integrity check)
+
+See the spec section 8 for full details on the maintenance schedule and resource limits.
+

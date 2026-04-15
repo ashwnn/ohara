@@ -58,16 +58,42 @@ func WithPackConfig(cfg PackConfig) ServerOption {
 	return func(s *Server) { s.packConfig = cfg }
 }
 
+// ConflictEnabled controls whether conflict detection runs.
+// Zero value is ConflictEnabledOn (conflict detection enabled by default).
+//
+//go:generate stringer -type=ConflictEnabled -linecomment
+type ConflictEnabled int
+
+const (
+	ConflictEnabledOn  ConflictEnabled = iota // enabled (also the zero value)
+	ConflictEnabledOff                        // explicitly disabled
+)
+
+// ConflictConfig holds the configurable parameters for memory contradiction detection.
+// The zero value is ConflictEnabledDefault (detection enabled by default).
+type ConflictConfig struct {
+	Enabled   ConflictEnabled
+	Threshold float64 // minimum Jaccard overlap (0.0-1.0) to report a conflict
+}
+
+// WithConflictConfig sets the conflict detection configuration.
+// When Enabled is ConflictEnabledOff, no contradiction checking is performed.
+// Default (zero value) or ConflictEnabledOn enables it with the configured threshold.
+func WithConflictConfig(cfg ConflictConfig) ServerOption {
+	return func(s *Server) { s.conflictConfig = cfg }
+}
+
 type Server struct {
-	store      *store.Store
-	mux        *http.ServeMux
-	port       int
-	socketPath string
-	listen     func(network, address string) (net.Listener, error)
-	serve      func(net.Listener, http.Handler) error
-	onWrite    func() // called after successful local writes (for autosync notification)
-	syncStatus SyncStatusProvider
-	packConfig PackConfig
+	store          *store.Store
+	mux            *http.ServeMux
+	port           int
+	socketPath     string
+	listen         func(network, address string) (net.Listener, error)
+	serve          func(net.Listener, http.Handler) error
+	onWrite        func() // called after successful local writes (for autosync notification)
+	syncStatus     SyncStatusProvider
+	packConfig     PackConfig
+	conflictConfig ConflictConfig
 }
 
 func New(s *store.Store, port int, opts ...ServerOption) *Server {
@@ -192,6 +218,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /memories/{id}", s.handleUpdateMemory)
 	s.mux.HandleFunc("GET /memories/{id}/timeline", s.handleMemoryTimeline)
 	s.mux.HandleFunc("GET /memories/{id}/revisions", s.handleMemoryRevisions)
+	s.mux.HandleFunc("DELETE /memories/{id}", s.handleDeleteMemory)
 
 	// Pack (context pack assembly)
 	s.mux.HandleFunc("POST /pack", s.handlePack)
@@ -752,12 +779,23 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	// Contradiction detection for decision/pattern/config kinds — returns conflict info
 	// without blocking the save. The caller can decide whether to supersede/archive the
 	// older memory based on the warning in the response.
+	// The zero value (ConflictEnabledDefault=0) means disabled; pass Enabled=ConflictEnabledOn
+	// to explicitly enable with configurable threshold.
 	var conflictWarning *store.ConflictInfo
-	if conflict, err := s.store.DetectConflict(body); err != nil {
-		jsonError(w, http.StatusInternalServerError, "conflict detection failed: "+err.Error())
-		return
-	} else if conflict != nil {
-		conflictWarning = conflict
+	if s.conflictConfig.Enabled == ConflictEnabledOn {
+		if conflict, err := s.store.DetectConflict(body); err != nil {
+			jsonError(w, http.StatusInternalServerError, "conflict detection failed: "+err.Error())
+			return
+		} else if conflict != nil {
+			// Apply configurable threshold. If threshold is unset (0.0), use 0.6 default.
+			threshold := s.conflictConfig.Threshold
+			if threshold <= 0.0 {
+				threshold = 0.6
+			}
+			if conflict.OverlapScore >= threshold {
+				conflictWarning = conflict
+			}
+		}
 	}
 
 	id, err := s.store.AddMemory(body)
@@ -927,6 +965,15 @@ func (s *Server) handleMemoryRevisions(w http.ResponseWriter, r *http.Request) {
 		revisions = []store.MemoryRevision{}
 	}
 	jsonResponse(w, http.StatusOK, revisions)
+}
+
+// handleDeleteMemory implements DELETE /memories/:id per the Ohara v2 spec.
+// Memories are never hard-deleted; they are archived via PATCH. This handler
+// always returns 405 Method Not Allowed to enforce that policy explicitly.
+func (s *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
+	// Deliberately do nothing with the path value — we never delete memories.
+	_ = r.PathValue("id")
+	jsonError(w, http.StatusMethodNotAllowed, "memories cannot be deleted; use PATCH to set status to archived")
 }
 
 func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {

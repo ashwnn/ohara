@@ -1,0 +1,9 @@
+[Unit]
+Description=ohara maintenance run
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ohara maintain
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=256M
