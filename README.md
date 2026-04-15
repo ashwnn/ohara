@@ -1,4 +1,5 @@
 <p align="center">
+  <img src="assets/ohara.png" alt="Ohara" width="128" /><br>
   <strong>Ohara</strong><br>
   <em>Typed persistent memory with conflict detection for AI coding agents</em><br>
   <small>OpenCode plugin + MCP only. Source-build only. No TUI, sync, or marketplace.</small>
