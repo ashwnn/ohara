@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -51,19 +52,26 @@ var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg se
 }
 
 // startHTTP starts the HTTP server. Stubbed in tests.
-var startHTTP = func(srv *server.Server) error { return nil }
+var startHTTP = func(srv *server.Server) error { return srv.Start() }
 
 // newMCPServer creates an MCP server. Stubbed in tests.
-var newMCPServer = func(s *store.Store) *mcpserver.MCPServer { return nil }
+var newMCPServer = func(s *store.Store) *mcpserver.MCPServer { return mcp.NewServer(s) }
 
 // newMCPServerWithTools creates an MCP server with tools. Stubbed in tests.
-var newMCPServerWithTools = func(s *store.Store, allowlist map[string]bool) *mcpserver.MCPServer { return nil }
+var newMCPServerWithTools = func(s *store.Store, allowlist map[string]bool) *mcpserver.MCPServer {
+	return mcp.NewServerWithTools(s, allowlist)
+}
 
 // newMCPServerWithConfig creates an MCP server with config. Stubbed in tests.
-var newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer { return nil }
+var newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
+	return mcp.NewServerWithConfig(s, mcpCfg, allowlist)
+}
 
 // serveMCP starts the MCP stdio server. Stubbed in tests.
-var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) error { return nil }
+var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) error {
+	stdio := mcpserver.NewStdioServer(srv)
+	return stdio.Listen(context.Background(), os.Stdin, os.Stdout)
+}
 
 // setupSupportedAgents lists supported agents. Stubbed in tests.
 var setupSupportedAgents = func() []setup.Agent { return nil }
