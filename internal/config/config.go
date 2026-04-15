@@ -20,13 +20,13 @@ const DefaultConfigFile = "config.json"
 // RuntimeConfig holds the core runtime settings for Ohara.
 type RuntimeConfig struct {
 	// HTTPAddr is the TCP address the server listens on.
-	// Default: ":7437".
+	// Default: ":7331".
 	HTTPAddr string
 	// SocketPath is a unix socket path. When set, the server listens on this
 	// socket instead of HTTPAddr.
 	SocketPath string
 	// DataDir is the Ohara data directory (SQLite DB, snapshots, etc.).
-	// Default: ~/.ohara.
+	// Default: ~/.local/share/ohara.
 	DataDir string
 	// SyncDir is the directory used for cloud sync chunks.
 	// Default: "", which means .ohara/ relative to cwd.
@@ -69,13 +69,14 @@ type fileConfig struct {
 // Default returns a RuntimeConfig with all sensible defaults.
 func Default() RuntimeConfig {
 	home, _ := os.UserHomeDir()
-	dataDir := "~/.ohara"
+	dataDir := "~/.local/share/ohara"
 	if home != "" {
-		dataDir = filepath.Join(home, ".ohara")
+		dataDir = filepath.Join(home, ".local/share/ohara")
 	}
+	uid := fmt.Sprintf("%d", os.Getuid())
 	return RuntimeConfig{
-		HTTPAddr:            ":7437",
-		SocketPath:          "",
+		HTTPAddr:            "127.0.0.1:7331",
+		SocketPath:          "/run/user/" + uid + "/ohara.sock",
 		DataDir:             dataDir,
 		SyncDir:             "",
 		SnapshotDir:         filepath.Join(dataDir, "snapshots"),
@@ -182,11 +183,11 @@ func expandHome(path string) string {
 	return path
 }
 
-// HTTPAddrParts splits an HTTPAddr like ":7437" or "127.0.0.1:8080" into
-// host and port. Returns ("", 7437) for ":7437".
+// HTTPAddrParts splits an HTTPAddr like ":7331" or "127.0.0.1:8080" into
+// host and port. Returns ("", 7331) for ":7331".
 func HTTPAddrParts(addr string) (host string, port int) {
 	if addr == "" {
-		addr = ":7437"
+		addr = ":7331"
 	}
 	// Remove leading colon if host is empty.
 	if strings.HasPrefix(addr, ":") {

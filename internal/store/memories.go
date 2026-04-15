@@ -277,7 +277,7 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 
 	// Composite ranking: FTS relevance * kind_boost * recency_boost
 	// - Kind boost: decision(1.5), pattern(1.4), bugfix(1.3), discovery(1.2), procedure(1.1), others(1.0)
-	// - Recency boost: exponential decay over 90 days (1.0 at now, 0.5 at 90 days old)
+	// - Recency boost (Ohara v2 spec): 1.15x within 7 days, 1.05x within 30 days, 1.0 beyond 30 days
 	sqlQ := `
 		SELECT mi.id, mi.created_at, mi.updated_at, mi.project_id, mi.actor_id, mi.kind, mi.scope,
 		       mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at
@@ -317,7 +317,11 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind string, stat
 				WHEN 'procedure' THEN 1.1
 				ELSE 1.0
 			  END
-			* MAX(0.1, 1.0 - (CAST(julianday('now') - julianday(mi.updated_at) AS REAL) / 90.0 * 0.9))
+			* CASE
+				WHEN CAST(julianday('now') - julianday(mi.updated_at) AS REAL) <= 7.0 THEN 1.15
+				WHEN CAST(julianday('now') - julianday(mi.updated_at) AS REAL) <= 30.0 THEN 1.05
+				ELSE 1.0
+			  END
 		) DESC LIMIT ?`
 	args = append(args, limit)
 

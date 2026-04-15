@@ -475,7 +475,7 @@ func DefaultConfig() (Config, error) {
 		return Config{}, fmt.Errorf("ohara: determine home directory: %w", err)
 	}
 	return Config{
-		DataDir:              filepath.Join(home, ".ohara"),
+		DataDir:              filepath.Join(home, ".local/share/ohara"),
 		MaxObservationLength: 50000,
 		MaxContextResults:    20,
 		MaxSearchResults:     20,

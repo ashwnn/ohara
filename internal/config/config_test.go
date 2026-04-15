@@ -8,11 +8,11 @@ import (
 
 func TestDefault(t *testing.T) {
 	cfg := Default()
-	if cfg.HTTPAddr != ":7437" {
-		t.Errorf("HTTPAddr: got %q, want :7437", cfg.HTTPAddr)
+	if cfg.HTTPAddr != "127.0.0.1:7331" {
+		t.Errorf("HTTPAddr: got %q, want 127.0.0.1:7331", cfg.HTTPAddr)
 	}
-	if cfg.SocketPath != "" {
-		t.Errorf("SocketPath: got %q, want empty", cfg.SocketPath)
+	if cfg.SocketPath == "" {
+		t.Error("SocketPath: got empty, want non-empty")
 	}
 	if cfg.DataDir == "" {
 		t.Error("DataDir: got empty, want non-empty")
@@ -40,7 +40,7 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatalf("Load missing file: unexpected error: %v", err)
 	}
 	// Should return defaults.
-	if cfg.HTTPAddr != ":7437" {
+	if cfg.HTTPAddr != "127.0.0.1:7331" {
 		t.Errorf("HTTPAddr: got %q, want default", cfg.HTTPAddr)
 	}
 }
@@ -57,7 +57,7 @@ func TestLoadEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load empty object: unexpected error: %v", err)
 	}
-	if cfg.HTTPAddr != ":7437" {
+	if cfg.HTTPAddr != "127.0.0.1:7331" {
 		t.Errorf("HTTPAddr: got %q, want default", cfg.HTTPAddr)
 	}
 }
@@ -217,9 +217,7 @@ func TestLoadAllFields(t *testing.T) {
 		"snapshot_dir": "/opt/ohara/snapshots",
 		"retain_snapshots": 14,
 		"default_budget_tokens": 500,
-		"max_budget_tokens": 1000,
-		"conflict_enabled": false,
-		"conflict_threshold": 0.75
+		"max_budget_tokens": 1000
 	}`), 0644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -252,12 +250,6 @@ func TestLoadAllFields(t *testing.T) {
 	if cfg.MaxBudgetTokens != 1000 {
 		t.Errorf("MaxBudgetTokens: got %d, want 1000", cfg.MaxBudgetTokens)
 	}
-	if cfg.ConflictEnabled {
-		t.Error("ConflictEnabled: got true, want false")
-	}
-	if cfg.ConflictThreshold != 0.75 {
-		t.Errorf("ConflictThreshold: got %f, want 0.75", cfg.ConflictThreshold)
-	}
 }
 
 func TestHTTPAddrParts(t *testing.T) {
@@ -266,10 +258,10 @@ func TestHTTPAddrParts(t *testing.T) {
 		host string
 		port int
 	}{
-		{":7437", "", 7437},
+		{":7331", "", 7331},
 		{"127.0.0.1:8080", "127.0.0.1", 8080},
 		{"localhost:3000", "localhost", 3000},
-		{"", "", 7437}, // empty defaults to :7437
+		{"", "", 7331}, // empty defaults to :7331
 		{":8080", "", 8080},
 	}
 

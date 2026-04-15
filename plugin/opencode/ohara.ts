@@ -18,7 +18,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const OHARA_PORT = parseInt(process.env.OHARA_PORT ?? "7437")
+const OHARA_PORT = parseInt(process.env.OHARA_PORT ?? "7331")
 const OHARA_URL = `http://127.0.0.1:${OHARA_PORT}`
 const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
 
