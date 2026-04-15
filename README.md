@@ -14,7 +14,7 @@
 
 ---
 
-> **Ohara** is a personal fork of [Engram](https://github.com/Gentleman-Programming/engram) — persistent memory for AI coding agents. All credit for the original concept goes to the Engram authors.
+> **Ohara** is a renamed personal fork of [**Engram**](https://github.com/Gentleman-Programming/engram), originally created by [**Gentleman-Programming**](https://github.com/Gentleman-Programming). The entire foundation of this project — the core memory system, MCP architecture, and concept of persistent agent memory — was built by the Engram authors. This fork adds ecosystem-specific features (typed memory, conflict detection, automatic lifecycle management) for personal use; the original work and all credit belong to Gentleman-Programming.
 
 Your AI coding agent forgets everything when the session ends. Ohara gives it a brain.
 
