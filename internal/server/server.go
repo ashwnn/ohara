@@ -129,7 +129,9 @@ func (s *Server) routes() {
 
 	// Sessions
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
-	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleEndSession)
+	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleEndSession)    // spec-aligned
+	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleEndSession) // legacy alias
+	s.mux.HandleFunc("GET /sessions/{id}/context", s.handleGetSessionContext)
 	s.mux.HandleFunc("GET /sessions/recent", s.handleRecentSessions)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 
@@ -196,25 +198,41 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID        string `json:"id"`
-		Project   string `json:"project"`
+		Project   string `json:"project"`    // legacy field name
+		ProjectID string `json:"project_id"` // spec field name
 		Directory string `json:"directory"`
+		ActorID   string `json:"actor_id"` // spec field (not persisted)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	if body.ID == "" || body.Project == "" {
+	// Prefer spec field name, fall back to legacy.
+	project := body.ProjectID
+	if project == "" {
+		project = body.Project
+	}
+	if body.ID == "" || project == "" {
 		jsonError(w, http.StatusBadRequest, "id and project are required")
 		return
 	}
 
-	if err := s.store.CreateSession(body.ID, body.Project, body.Directory); err != nil {
+	// Check if session already exists to return correct "created" flag.
+	_, err := s.store.GetSession(body.ID)
+	alreadyExists := err == nil // nil error means session exists
+
+	if err := s.store.CreateSession(body.ID, project, body.Directory); err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	s.notifyWrite()
-	jsonResponse(w, http.StatusCreated, map[string]string{"id": body.ID, "status": "created"})
+	// Spec response: { "id": "...", "created": bool }
+	// Idempotent: if session already existed, returns { "created": false }.
+	jsonResponse(w, http.StatusCreated, map[string]any{
+		"id":      body.ID,
+		"created": !alreadyExists,
+	})
 }
 
 func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +263,57 @@ func (s *Server) handleRecentSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, sessions)
+}
+
+// handleGetSessionContext implements GET /sessions/:id/context per the spec.
+// It returns context from the most recent completed session in the same project,
+// which is used during session compaction recovery.
+func (s *Server) handleGetSessionContext(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+
+	// Get the session to find its project.
+	session, err := s.store.GetSession(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	// Get the most recent completed session for the same project (excluding the current one).
+	// A session is "completed" if it has an ended_at timestamp.
+	recent, err := s.store.RecentSessions(session.Project, 5)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var prevSummary string
+	var found bool
+	for _, s := range recent {
+		// Skip the current session itself; find the most recent completed one.
+		if s.ID == id {
+			continue
+		}
+		if s.EndedAt != nil {
+			// Found the most recent completed session.
+			if s.Summary != nil {
+				prevSummary = *s.Summary
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// No previous completed session found.
+		jsonResponse(w, http.StatusOK, map[string]string{"context": ""})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"context": prevSummary})
 }
 
 func (s *Server) handleAddObservation(w http.ResponseWriter, r *http.Request) {

@@ -900,3 +900,261 @@ func TestNewSignatureVariadic(t *testing.T) {
 	_ = New(nil, 7777, WithSocketPath("/a.sock"))                            // one option
 	_ = New(nil, 7777, WithSocketPath("/a.sock"), WithSocketPath("/b.sock")) // last wins
 }
+
+// ─── Session API spec-alignment tests ─────────────────────────────────────────
+
+func TestCreateSession_ProjectIDField(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Spec uses project_id, not project.
+	body := `{"id":"ses-pid","project_id":"ohara-spec"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["id"] != "ses-pid" {
+		t.Errorf("expected id=ses-pid, got %v", resp["id"])
+	}
+	if resp["created"] != true {
+		t.Errorf("expected created=true on first create, got %v", resp["created"])
+	}
+}
+
+func TestCreateSession_IdempotentCreatedFalse(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// First create.
+	body := `{"id":"ses-idemp","project_id":"ohara"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first create: expected 201, got %d", rec.Code)
+	}
+
+	// Same ID again — should be idempotent.
+	body = `{"id":"ses-idemp","project_id":"ohara"}`
+	req = httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("idempotent create: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["id"] != "ses-idemp" {
+		t.Errorf("expected id=ses-idemp, got %v", resp["id"])
+	}
+	// created should be false because the session already existed.
+	if resp["created"] != false {
+		t.Errorf("expected created=false on idempotent create, got %v", resp["created"])
+	}
+}
+
+func TestCreateSession_LegacyProjectField(t *testing.T) {
+	// Legacy field name "project" must still work for backward compat.
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	body := `{"id":"ses-legacy","project":"ohara-legacy"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with legacy project field, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp["created"] != true {
+		t.Errorf("expected created=true, got %v", resp["created"])
+	}
+}
+
+func TestCreateSession_ActorIDIgnored(t *testing.T) {
+	// Spec includes actor_id but we don't persist it — just ensure it doesn't break.
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	body := `{"id":"ses-actor","project_id":"ohara","actor_id":"human"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with actor_id, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPatchSession_BehavesAsEndAlias(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Create a session.
+	createReq := httptest.NewRequest(http.MethodPost, "/sessions",
+		strings.NewReader(`{"id":"ses-patch","project":"ohara"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", createRec.Code)
+	}
+
+	// PATCH /sessions/{id} ends the session (same as POST /sessions/{id}/end).
+	patchReq := httptest.NewRequest(http.MethodPatch, "/sessions/ses-patch",
+		strings.NewReader(`{"summary":"done","status":"completed"}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchRec := httptest.NewRecorder()
+	h.ServeHTTP(patchRec, patchReq)
+
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("PATCH session: expected 200, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	var patchResp map[string]any
+	if err := json.NewDecoder(patchRec.Body).Decode(&patchResp); err != nil {
+		t.Fatalf("parse PATCH response: %v", err)
+	}
+	if patchResp["status"] != "completed" {
+		t.Errorf("expected status=completed, got %v", patchResp["status"])
+	}
+	if patchResp["id"] != "ses-patch" {
+		t.Errorf("expected id=ses-patch, got %v", patchResp["id"])
+	}
+
+	// Also verify POST /sessions/{id}/end still works as legacy alias.
+	endReq := httptest.NewRequest(http.MethodPost, "/sessions/ses-patch/end",
+		strings.NewReader(`{"summary":"done2"}`))
+	endReq.Header.Set("Content-Type", "application/json")
+	endRec := httptest.NewRecorder()
+	h.ServeHTTP(endRec, endReq)
+	if endRec.Code != http.StatusOK {
+		t.Fatalf("POST /end legacy alias: expected 200, got %d", endRec.Code)
+	}
+}
+
+func TestGetSessionContext_WithPriorCompletedSession(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Create and end the first session (completed).
+	createReq := httptest.NewRequest(http.MethodPost, "/sessions",
+		strings.NewReader(`{"id":"ses-prev","project_id":"ohara"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create prev session: expected 201, got %d", createRec.Code)
+	}
+
+	endReq := httptest.NewRequest(http.MethodPatch, "/sessions/ses-prev",
+		strings.NewReader(`{"summary":"previous work done"}`))
+	endReq.Header.Set("Content-Type", "application/json")
+	endRec := httptest.NewRecorder()
+	h.ServeHTTP(endRec, endReq)
+	if endRec.Code != http.StatusOK {
+		t.Fatalf("end prev session: expected 200, got %d", endRec.Code)
+	}
+
+	// Create a second session (not ended yet — current session).
+	createReq2 := httptest.NewRequest(http.MethodPost, "/sessions",
+		strings.NewReader(`{"id":"ses-current","project_id":"ohara"}`))
+	createReq2.Header.Set("Content-Type", "application/json")
+	createRec2 := httptest.NewRecorder()
+	h.ServeHTTP(createRec2, createReq2)
+	if createRec2.Code != http.StatusCreated {
+		t.Fatalf("create current session: expected 201, got %d", createRec2.Code)
+	}
+
+	// GET /sessions/ses-current/context should return the prior session's summary.
+	ctxReq := httptest.NewRequest(http.MethodGet, "/sessions/ses-current/context", nil)
+	ctxRec := httptest.NewRecorder()
+	h.ServeHTTP(ctxRec, ctxReq)
+
+	if ctxRec.Code != http.StatusOK {
+		t.Fatalf("GET context: expected 200, got %d: %s", ctxRec.Code, ctxRec.Body.String())
+	}
+
+	var ctxResp map[string]any
+	if err := json.NewDecoder(ctxRec.Body).Decode(&ctxResp); err != nil {
+		t.Fatalf("parse context response: %v", err)
+	}
+	if ctxResp["context"] == nil {
+		t.Fatal("expected context field in response")
+	}
+	if ctxResp["context"] != "previous work done" {
+		t.Errorf("expected context='previous work done', got %v", ctxResp["context"])
+	}
+}
+
+func TestGetSessionContext_NoPriorCompletedSession(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	// Create a session but do NOT end it — no prior completed session.
+	createReq := httptest.NewRequest(http.MethodPost, "/sessions",
+		strings.NewReader(`{"id":"ses-alone","project_id":"ohara"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", createRec.Code)
+	}
+
+	ctxReq := httptest.NewRequest(http.MethodGet, "/sessions/ses-alone/context", nil)
+	ctxRec := httptest.NewRecorder()
+	h.ServeHTTP(ctxRec, ctxReq)
+
+	if ctxRec.Code != http.StatusOK {
+		t.Fatalf("GET context with no prior: expected 200, got %d: %s", ctxRec.Code, ctxRec.Body.String())
+	}
+
+	var ctxResp map[string]any
+	if err := json.NewDecoder(ctxRec.Body).Decode(&ctxResp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if ctxResp["context"] != "" {
+		t.Errorf("expected empty context when no prior session, got %v", ctxResp["context"])
+	}
+}
+
+func TestGetSessionContext_SessionNotFound(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/sessions/does-not-exist/context", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session, got %d", rec.Code)
+	}
+}
