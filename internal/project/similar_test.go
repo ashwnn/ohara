@@ -131,14 +131,14 @@ func TestFindSimilar_NothingSimilar(t *testing.T) {
 }
 
 func TestFindSimilar_LevenshteinHit(t *testing.T) {
-	existing := []string{"ohar"} // distance 1 from "ohara"
+	existing := []string{"ahara"} // distance 1 from "ohara"; not a substring
 	matches := FindSimilar("ohara", existing, 2)
 
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 levenshtein match, got %d: %v", len(matches), matches)
 	}
-	if matches[0].Name != "ohar" {
-		t.Errorf("match name = %q; want ohar", matches[0].Name)
+	if matches[0].Name != "ahara" {
+		t.Errorf("match name = %q; want ahara", matches[0].Name)
 	}
 	if matches[0].MatchType != "levenshtein" {
 		t.Errorf("match type = %q; want levenshtein", matches[0].MatchType)
@@ -161,7 +161,7 @@ func TestFindSimilar_LevenshteinBeyondMaxDistance(t *testing.T) {
 func TestFindSimilar_OrderingCaseFirst(t *testing.T) {
 	// Verify ordering: case-insensitive → substring → levenshtein
 	existing := []string{
-		"ohar",      // levenshtein distance 1
+		"ahara",     // levenshtein distance 1; not a substring
 		"Ohara",     // case-insensitive
 		"ohara-old", // substring
 	}
@@ -193,7 +193,7 @@ func TestFindSimilar_ZeroMaxDistance(t *testing.T) {
 	// With maxDistance=0, only exact levenshtein=0 would match — but those are
 	// caught by the case-insensitive check first. Verify levenshtein matches
 	// at distance > 0 are excluded.
-	existing := []string{"ohar"} // distance 1
+	existing := []string{"ahara"} // distance 1; not a substring of "ohara"
 	matches := FindSimilar("ohara", existing, 0)
 
 	if len(matches) != 0 {
