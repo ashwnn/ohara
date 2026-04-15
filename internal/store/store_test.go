@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/token"
 	_ "modernc.org/sqlite"
 )
 
@@ -5604,5 +5605,188 @@ func TestMemoryExpiresAt_HelperFunction(t *testing.T) {
 		if MemoryTTL(kind) != 0 {
 			t.Errorf("kind %s TTL should be 0, got %d", kind, MemoryTTL(kind))
 		}
+	}
+}
+
+// ─── Token-Aware Body Limit Tests ──────────────────────────────────────────────
+
+func TestTruncateBodyToTokenLimit_NoTruncationWhenUnderLimit(t *testing.T) {
+	// Glossary has 200 token limit. Short text should not be truncated.
+	shortText := "This is a brief glossary entry."
+	result := TruncateBodyToTokenLimit(shortText, MemoryKindGlossary)
+	if result != shortText {
+		t.Errorf("expected no truncation for short text, got %q", result)
+	}
+	if strings.HasSuffix(result, "... [truncated]") {
+		t.Error("short text should not have truncation suffix")
+	}
+}
+
+func TestTruncateBodyToTokenLimit_TruncatesWhenOverLimit(t *testing.T) {
+	// Glossary has 200 token limit. Create text that exceeds it.
+	// Repeating a word many times will exceed the token budget.
+	longText := strings.Repeat("tokenization ", 300) // ~300+ tokens
+
+	result := TruncateBodyToTokenLimit(longText, MemoryKindGlossary)
+
+	// Should be truncated
+	if !strings.HasSuffix(result, "... [truncated]") {
+		t.Errorf("expected truncation suffix, got %q", result)
+	}
+
+	// The result should fit within the token limit
+	if token.CountStrict(result) > MemoryBodyLimit(MemoryKindGlossary) {
+		t.Errorf("truncated result exceeds token limit: got %d tokens for %d limit",
+			token.CountStrict(result), MemoryBodyLimit(MemoryKindGlossary))
+	}
+
+	// Original should be longer than result
+	if len(result) >= len(longText) {
+		t.Error("truncated result should be shorter than original")
+	}
+}
+
+func TestTruncateBodyToTokenLimit_EmptyText(t *testing.T) {
+	result := TruncateBodyToTokenLimit("", MemoryKindDecision)
+	if result != "" {
+		t.Errorf("expected empty string, got %q", result)
+	}
+}
+
+func TestTruncateBodyToTokenLimit_UnknownKindNoLimit(t *testing.T) {
+	// Unknown kinds have limit=0 (unlimited), so no truncation
+	longText := strings.Repeat("x", 10000)
+	result := TruncateBodyToTokenLimit(longText, "unknown_kind")
+	if result != longText {
+		t.Errorf("unknown kind should not truncate, got %q", result)
+	}
+}
+
+func TestTruncateBodyToTokenLimit_DifferentKindsRespectLimits(t *testing.T) {
+	// Create text that exceeds glossary limit (200) but not decision limit (1000)
+	// "word " is roughly 1 token, so 300 repetitions = ~300 tokens
+	mediumText := strings.Repeat("word ", 300)
+
+	// Test glossary (200 token limit) - should truncate
+	glossaryResult := TruncateBodyToTokenLimit(mediumText, MemoryKindGlossary)
+	if !strings.HasSuffix(glossaryResult, "... [truncated]") {
+		t.Error("glossary should truncate text exceeding 200 token limit")
+	}
+
+	// Test decision (1000 token limit) - should NOT truncate (300 < 1000)
+	decisionResult := TruncateBodyToTokenLimit(mediumText, MemoryKindDecision)
+	if strings.HasSuffix(decisionResult, "... [truncated]") {
+		t.Error("decision should not truncate 300-token text (1000 token limit)")
+	}
+
+	// Verify token counts
+	if token.CountStrict(glossaryResult) > MemoryBodyLimit(MemoryKindGlossary) {
+		t.Error("glossary result exceeds its token limit")
+	}
+}
+
+func TestAddMemory_TruncatesBodyByTokenCount(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create a body that exceeds the glossary token limit (200)
+	longBody := strings.Repeat("tokenization test ", 300)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindGlossary,
+		Title:     "Long glossary entry",
+		Body:      longBody,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+
+	// Should be truncated
+	if !strings.HasSuffix(mem.Body, "... [truncated]") {
+		t.Errorf("expected truncated body, got %q", mem.Body)
+	}
+
+	// Should fit within token limit
+	if token.CountStrict(mem.Body) > MemoryBodyLimit(MemoryKindGlossary) {
+		t.Errorf("stored body exceeds token limit: got %d tokens",
+			token.CountStrict(mem.Body))
+	}
+}
+
+func TestUpdateMemory_TruncatesBodyByTokenCount(t *testing.T) {
+	s := newTestStore(t)
+
+	// First create a memory
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindGlossary,
+		Title:     "Glossary entry",
+		Body:      "Short body",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Now update with a long body that exceeds the limit
+	longBody := strings.Repeat("tokenization update ", 300)
+	updated, err := s.UpdateMemory(id, UpdateMemoryParams{
+		Body: &longBody,
+	})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+
+	// Should be truncated
+	if !strings.HasSuffix(updated.Body, "... [truncated]") {
+		t.Errorf("expected truncated body after update, got %q", updated.Body)
+	}
+
+	// Should fit within token limit
+	if token.CountStrict(updated.Body) > MemoryBodyLimit(MemoryKindGlossary) {
+		t.Errorf("updated body exceeds token limit: got %d tokens",
+			token.CountStrict(updated.Body))
+	}
+
+	// Verify revision was recorded
+	revs, err := s.GetMemoryRevisions(id)
+	if err != nil {
+		t.Fatalf("GetMemoryRevisions: %v", err)
+	}
+
+	foundBodyRev := false
+	for _, r := range revs {
+		if r.Field == "body" {
+			foundBodyRev = true
+			break
+		}
+	}
+	if !foundBodyRev {
+		t.Error("expected body revision to be recorded")
+	}
+}
+
+func TestTruncateBodyToTokenLimit_FallsBackSafely(t *testing.T) {
+	// Test that the function works even with the fallback estimator
+	// (when tiktoken is unavailable). CountStrict overestimates, so
+	// we may truncate slightly more conservatively, but it should still work.
+
+	text := strings.Repeat("word ", 1000) // Definitely over any limit
+
+	// Test with a kind that has a small limit
+	result := TruncateBodyToTokenLimit(text, MemoryKindGlossary)
+
+	// Should have truncation marker
+	if !strings.HasSuffix(result, "... [truncated]") {
+		t.Error("should truncate even with fallback estimator")
+	}
+
+	// Result should be reasonable length (not empty, not full text)
+	if len(result) == 0 || len(result) >= len(text) {
+		t.Error("truncated result should have reasonable length")
 	}
 }

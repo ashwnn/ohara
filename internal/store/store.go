@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/token"
 	sqlite "modernc.org/sqlite"
 )
 
@@ -347,6 +348,50 @@ func MemoryBodyLimit(kind string) int {
 		return limit
 	}
 	return 0
+}
+
+// TruncateBodyToTokenLimit truncates text to fit within the token budget for the
+// given memory kind. It uses token.CountStrict() for accurate BPE token counting,
+// with a safe fallback if the tokenizer is unavailable. Returns the original text
+// if it already fits within the limit.
+//
+// The returned body includes "... [truncated]" at the end if truncation was applied.
+func TruncateBodyToTokenLimit(text string, kind string) (body string) {
+	limit := MemoryBodyLimit(kind)
+	if limit <= 0 {
+		return text
+	}
+
+	// Quick check: if total tokens fit, return as-is.
+	if token.CountStrict(text) <= limit {
+		return text
+	}
+
+	// Binary search for the maximum character prefix that fits within the limit.
+	// token.CountStrict is monotonically non-decreasing, so binary search is valid.
+	// Use a generous safety margin (5 tokens) to account for tokenizer estimate error
+	// and the overhead of the "... [truncated]" suffix (~3 tokens).
+	safetyMargin := 5
+	effectiveLimit := limit - safetyMargin
+	if effectiveLimit < 1 {
+		effectiveLimit = 1
+	}
+
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2 // round up to bias toward accepting more
+		if token.CountStrict(text[:mid]) <= effectiveLimit {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+
+	if lo == 0 {
+		return text
+	}
+
+	return text[:lo] + "... [truncated]"
 }
 
 // Memory kind TTLs (spec-defined expiry windows from creation).

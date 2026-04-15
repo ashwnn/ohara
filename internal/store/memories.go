@@ -20,11 +20,8 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 	// Normalize project
 	projectID, _ := NormalizeProject(p.ProjectID)
 
-	// Enforce body size limit per kind
-	body := p.Body
-	if limit := MemoryBodyLimit(p.Kind); limit > 0 && len(body) > limit {
-		body = body[:limit] + "... [truncated]"
-	}
+	// Enforce body size limit per kind using token-based truncation.
+	body := TruncateBodyToTokenLimit(p.Body, p.Kind)
 
 	// Normalize scope
 	scope := p.Scope
@@ -201,11 +198,8 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 		}
 
 		if p.Body != nil {
-			// Enforce body limit
-			body := *p.Body
-			if limit := MemoryBodyLimit(existing.Kind); limit > 0 && len(body) > limit {
-				body = body[:limit] + "... [truncated]"
-			}
+			// Enforce body limit using token-based truncation.
+			body := TruncateBodyToTokenLimit(*p.Body, existing.Kind)
 			oldJSON, _ := json.Marshal(existing.Body)
 			newJSON, _ := json.Marshal(body)
 			_, err := s.execHook(tx,
