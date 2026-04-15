@@ -137,6 +137,23 @@ var loadRuntimeConfig = func(cfgPath string) (config.RuntimeConfig, error) {
 	return config.Load(cfgPath)
 }
 
+// loadRuntimeMaintain loads the runtime config for maintenance commands.
+// Uses the same two-phase loading as cmdServe (env-derived DataDir → config file).
+// Stubbed in tests.
+var loadRuntimeMaintain = func() (config.RuntimeConfig, error) {
+	baseCfg, err := loadRuntimeConfig("")
+	if err != nil {
+		return config.RuntimeConfig{}, err
+	}
+	// OHARA_DATA_DIR is applied by loadRuntimeConfig, but we also need to
+	// apply it here for the store.Config used by maintain/backup.
+	if env := os.Getenv("OHARA_DATA_DIR"); env != "" {
+		baseCfg.DataDir = env
+	}
+	configFile := filepath.Join(baseCfg.DataDir, config.DefaultConfigFile)
+	return loadRuntimeConfig(configFile)
+}
+
 // newTUIModel creates a TUI model. Stubbed in tests.
 var newTUIModel = func(s *store.Store) interface{} { return nil }
 
@@ -246,7 +263,21 @@ func realCmdMaintain(cfg store.Config) {
 	}
 	defer s.Close()
 
+	// Load RuntimeConfig for SnapshotDir and RetainSnapshots.
+	// This follows the same two-phase loading as cmdServe.
+	runtimeCfg, err := loadRuntimeMaintain()
+	if err != nil {
+		fatal("config: " + err.Error())
+	}
+
 	opts := maintain.DefaultOptions(cfg.DataDir)
+	// Override maintain.Options from RuntimeConfig when set.
+	if runtimeCfg.SnapshotDir != "" {
+		opts.SnapshotDir = runtimeCfg.SnapshotDir
+	}
+	if runtimeCfg.RetainSnapshots > 0 {
+		opts.RetainDays = runtimeCfg.RetainSnapshots
+	}
 
 	for _, arg := range os.Args[2:] {
 		if arg == "--dry-run" || arg == "-n" {
@@ -310,7 +341,17 @@ func realCmdBackup(cfg store.Config) {
 	}
 	defer s.Close()
 
-	snapshotDir := filepath.Join(cfg.DataDir, "snapshots")
+	// Load RuntimeConfig for SnapshotDir. Uses same two-phase loading as cmdServe.
+	runtimeCfg, err := loadRuntimeMaintain()
+	if err != nil {
+		fatal("config: " + err.Error())
+	}
+
+	snapshotDir := runtimeCfg.SnapshotDir
+	if snapshotDir == "" {
+		// Fallback: derive from DataDir if RuntimeConfig didn't set it.
+		snapshotDir = filepath.Join(cfg.DataDir, "snapshots")
+	}
 	path, err := maintain.Backup(s, snapshotDir)
 	if err != nil {
 		fatal("backup: " + err.Error())
