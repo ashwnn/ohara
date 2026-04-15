@@ -1691,6 +1691,88 @@ func TestHandleSaveNoSimilarWarningWhenProjectExists(t *testing.T) {
 	}
 }
 
+func TestHandleSaveConflictWarningSurfacesWithoutBlocking(t *testing.T) {
+	s := newMCPTestStore(t)
+	h := handleSave(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
+
+	// Seed an existing decision memory (via AddMemory so it's in memory_items table)
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Attempt to save a conflicting decision memory — should succeed with warning
+	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+		"title":   "Auth decision: JWT for session management",
+		"content": "Alternative approach",
+		"type":    "decision",
+		"project": "ohara",
+	}}}
+
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	// Save should succeed (not an error response)
+	if res.IsError {
+		t.Fatalf("expected successful save despite conflict, got error: %s", callResultText(t, res))
+	}
+
+	text := callResultText(t, res)
+	// Should surface conflict warning
+	if !strings.Contains(text, "Conflict detected") {
+		t.Fatalf("expected conflict warning in response, got: %s", text)
+	}
+	if !strings.Contains(text, "similarity:") {
+		t.Fatalf("expected similarity score in conflict warning, got: %s", text)
+	}
+	if !strings.Contains(text, "mem_update") {
+		t.Fatalf("expected suggestion to use mem_update in conflict warning, got: %s", text)
+	}
+}
+
+func TestHandleSaveNoConflictWarningForNonConflictKinds(t *testing.T) {
+	s := newMCPTestStore(t)
+	h := handleSave(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
+
+	// Seed an existing decision memory
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "Auth decision: Use JWT for session management",
+		Body:      "JWT is stateless",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Save a bugfix (not decision/pattern/config) — should NOT show conflict warning
+	req := mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+		"title":   "Auth decision: JWT for session management",
+		"content": "Fixed a bug in auth",
+		"type":    "bugfix",
+		"project": "ohara",
+	}}}
+
+	res, err := h(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", callResultText(t, res))
+	}
+
+	text := callResultText(t, res)
+	if strings.Contains(text, "Conflict detected") {
+		t.Fatalf("unexpected conflict warning for bugfix type, got: %s", text)
+	}
+}
+
 func TestHandleMergeProjects(t *testing.T) {
 	s := newMCPTestStore(t)
 

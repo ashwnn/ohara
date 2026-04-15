@@ -848,6 +848,24 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 			}
 		}
 
+		// Conflict detection for decision/pattern/config kinds — surfaces warning without blocking save.
+		// Mirrors the server's /memories endpoint behavior so MCP and HTTP paths are aligned.
+		var conflictWarning string
+		if typ == store.MemoryKindDecision || typ == store.MemoryKindPattern || typ == store.MemoryKindConfig {
+			conflict, err := s.DetectConflict(store.AddMemoryParams{
+				ProjectID: project,
+				Kind:      typ,
+				Title:     title,
+				Body:      content,
+			})
+			if err != nil {
+				// Non-fatal: log and continue with save
+				conflictWarning = ""
+			} else if conflict != nil {
+				conflictWarning = fmt.Sprintf("⚠️ Conflict detected: %s (similarity: %.0f%%). Consider using mem_update to revise the existing memory instead of creating a duplicate.", conflict.Message, conflict.OverlapScore*100)
+			}
+		}
+
 		// Ensure the session exists
 		s.CreateSession(sessionID, project, "")
 
@@ -880,6 +898,9 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		}
 		if similarWarning != "" {
 			msg += "\n" + similarWarning
+		}
+		if conflictWarning != "" {
+			msg += "\n" + conflictWarning
 		}
 		return mcp.NewToolResultText(msg), nil
 	}
