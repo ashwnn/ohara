@@ -83,6 +83,8 @@ func stubRuntimeHooks(t *testing.T) {
 	oldServeMCP := serveMCP
 	oldSetupSupportedAgents := setupSupportedAgents
 	oldSetupInstallAgent := setupInstallAgent
+	oldSetupCheckAgent := setupCheckAgent
+	oldSetupRemoveAgent := setupRemoveAgent
 	oldScanInputLine := scanInputLine
 	oldStoreSearch := storeSearch
 	oldStoreAddObservation := storeAddObservation
@@ -116,6 +118,8 @@ func stubRuntimeHooks(t *testing.T) {
 	serveMCP = func(_ *mcpserver.MCPServer, _ ...mcpserver.StdioOption) error { return nil }
 	setupSupportedAgents = setup.SupportedAgents
 	setupInstallAgent = setup.Install
+	setupCheckAgent = setup.Check
+	setupRemoveAgent = setup.Remove
 	scanInputLine = fmt.Scanln
 	storeSearch = func(s *store.Store, query string, opts store.SearchOptions) ([]store.SearchResult, error) {
 		return s.Search(query, opts)
@@ -168,6 +172,8 @@ func stubRuntimeHooks(t *testing.T) {
 		runTeaProgram = oldRunTeaProgram
 		setupSupportedAgents = oldSetupSupportedAgents
 		setupInstallAgent = oldSetupInstallAgent
+		setupCheckAgent = oldSetupCheckAgent
+		setupRemoveAgent = oldSetupRemoveAgent
 		scanInputLine = oldScanInputLine
 		storeSearch = oldStoreSearch
 		storeAddObservation = oldStoreAddObservation
@@ -471,6 +477,131 @@ func TestCmdSetupDirectAndInteractive(t *testing.T) {
 	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
 	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "Invalid choice") {
 		t.Fatalf("expected invalid choice exit, panic=%v stderr=%q", recovered, errOut)
+	}
+}
+
+func TestCmdSetupCheck(t *testing.T) {
+	cfg := testConfig(t)
+	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
+
+	setupCheckAgent = func(agent string) (*setup.ConfigStatus, error) {
+		if agent == "broken" {
+			return nil, errors.New("check failed")
+		}
+		if agent == "opencode" {
+			return &setup.ConfigStatus{
+				Agent:      "opencode",
+				Configured: true,
+				Status:     "configured",
+				Message:    "ohara is configured",
+			}, nil
+		}
+		return &setup.ConfigStatus{
+			Agent:      agent,
+			Configured: false,
+			Status:     "not_found",
+			Message:    "config file does not exist",
+		}, nil
+	}
+
+	// Check configured agent
+	withArgs(t, "ohara", "setup", "--check", "opencode")
+	out, errOut, recovered := captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if recovered != nil || errOut != "" {
+		t.Fatalf("check should succeed, panic=%v stderr=%q", recovered, errOut)
+	}
+	if !strings.Contains(out, "opencode: configured") {
+		t.Fatalf("unexpected check output: %q", out)
+	}
+
+	// Check unconfigured agent
+	withArgs(t, "ohara", "setup", "--check", "cursor")
+	out, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if recovered != nil || errOut != "" {
+		t.Fatalf("check should succeed, panic=%v stderr=%q", recovered, errOut)
+	}
+	if !strings.Contains(out, "cursor: not configured") {
+		t.Fatalf("unexpected check output: %q", out)
+	}
+
+	// Check error
+	setupCheckAgent = func(agent string) (*setup.ConfigStatus, error) {
+		return nil, errors.New("check failed")
+	}
+	withArgs(t, "ohara", "setup", "--check", "opencode")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "check failed") {
+		t.Fatalf("expected check error, panic=%v stderr=%q", recovered, errOut)
+	}
+
+	// Check unknown agent
+	setupCheckAgent = func(agent string) (*setup.ConfigStatus, error) {
+		return &setup.ConfigStatus{Agent: agent, Configured: false, Status: "not_found", Message: ""}, nil
+	}
+	withArgs(t, "ohara", "setup", "--check", "unknown-agent")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "unknown agent") {
+		t.Fatalf("expected unknown agent error, panic=%v stderr=%q", recovered, errOut)
+	}
+
+	// Check missing agent arg
+	withArgs(t, "ohara", "setup", "--check")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "usage: ohara setup --check") {
+		t.Fatalf("expected usage error, panic=%v stderr=%q", recovered, errOut)
+	}
+}
+
+func TestCmdSetupRemove(t *testing.T) {
+	cfg := testConfig(t)
+	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
+
+	// Override supported agents to include "broken"
+	setupSupportedAgents = func() []setup.Agent {
+		return []setup.Agent{
+			{Name: "opencode", Description: "OpenCode", InstallDir: "/tmp/opencode"},
+			{Name: "broken", Description: "Broken", InstallDir: "/tmp/broken"},
+		}
+	}
+
+	setupRemoveAgent = func(agent string) error {
+		if agent == "broken" {
+			return errors.New("remove failed")
+		}
+		return nil
+	}
+
+	// Remove success
+	withArgs(t, "ohara", "setup", "--remove", "opencode")
+	out, errOut, recovered := captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if recovered != nil || errOut != "" {
+		t.Fatalf("remove should succeed, panic=%v stderr=%q", recovered, errOut)
+	}
+	if !strings.Contains(out, "Removed opencode configuration") {
+		t.Fatalf("unexpected remove output: %q", out)
+	}
+
+	// Remove error
+	withArgs(t, "ohara", "setup", "--remove", "broken")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "remove failed") {
+		t.Fatalf("expected remove error, panic=%v stderr=%q", recovered, errOut)
+	}
+
+	// Remove unknown agent
+	withArgs(t, "ohara", "setup", "--remove", "unknown-agent")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "unknown agent") {
+		t.Fatalf("expected unknown agent error, panic=%v stderr=%q", recovered, errOut)
+	}
+
+	// Remove missing agent arg
+	withArgs(t, "ohara", "setup", "--remove")
+	_, errOut, recovered = captureOutputAndRecover(t, func() { cmdSetup(cfg) })
+	if _, ok := recovered.(exitCode); !ok || !strings.Contains(errOut, "usage: ohara setup --remove") {
+		t.Fatalf("expected usage error, panic=%v stderr=%q", recovered, errOut)
 	}
 }
 

@@ -871,3 +871,95 @@ func TestCmdSyncUsesDetectProject(t *testing.T) {
 		t.Fatalf("expected detectProject result in output, got: %q", stdout)
 	}
 }
+
+func TestCmdConsolidateDryRunNoCandidates(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Stub candidate generation to return no candidates
+	old := storeConsolidateCandidates
+	t.Cleanup(func() { storeConsolidateCandidates = old })
+	storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+		return 0, nil, nil
+	}
+
+	withArgs(t, "ohara", "consolidate", "--dry-run")
+	stdout, stderr := captureOutput(t, func() { cmdConsolidate(cfg) })
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stdout, "consolidate (dry-run): no candidate groups found") {
+		t.Fatalf("unexpected output: %q", stdout)
+	}
+}
+
+func TestCmdConsolidateDryRunWithCandidates(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Stub candidate generation to return candidates
+	old := storeConsolidateCandidates
+	t.Cleanup(func() { storeConsolidateCandidates = old })
+	storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+		return 2, []string{
+			"Group 1: mem1, mem2 → decision: consolidate these",
+			"Group 2: mem3, mem4 → decision: consolidate these",
+		}, nil
+	}
+
+	withArgs(t, "ohara", "consolidate", "--dry-run")
+	stdout, stderr := captureOutput(t, func() { cmdConsolidate(cfg) })
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stdout, "Group 1: mem1, mem2") {
+		t.Fatalf("expected candidate summary in output, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Group 2: mem3, mem4") {
+		t.Fatalf("expected candidate summary in output, got: %q", stdout)
+	}
+}
+
+func TestCmdConsolidateCreateCandidates(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Stub candidate generation to return candidates
+	old := storeConsolidateCandidates
+	t.Cleanup(func() { storeConsolidateCandidates = old })
+	storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+		return 2, []string{
+			"Created: mem1+mem2",
+			"Created: mem3+mem4",
+		}, nil
+	}
+
+	withArgs(t, "ohara", "consolidate")
+	stdout, stderr := captureOutput(t, func() { cmdConsolidate(cfg) })
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stdout, "consolidate: created 2 candidate(s)") {
+		t.Fatalf("expected created message, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Created: mem1+mem2") {
+		t.Fatalf("expected candidate detail in output, got: %q", stdout)
+	}
+}
+
+func TestCmdConsolidateNoCandidatesCreated(t *testing.T) {
+	cfg := testConfig(t)
+
+	// Stub candidate generation to return 0 created
+	old := storeConsolidateCandidates
+	t.Cleanup(func() { storeConsolidateCandidates = old })
+	storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+		return 0, nil, nil
+	}
+
+	withArgs(t, "ohara", "consolidate")
+	stdout, stderr := captureOutput(t, func() { cmdConsolidate(cfg) })
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stdout, "consolidate: no candidates created") {
+		t.Fatalf("expected no-candidates message, got: %q", stdout)
+	}
+}

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashwnn/ohara/internal/config"
 	"github.com/ashwnn/ohara/internal/maintain"
@@ -74,10 +76,16 @@ var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) err
 }
 
 // setupSupportedAgents lists supported agents. Stubbed in tests.
-var setupSupportedAgents = func() []setup.Agent { return nil }
+var setupSupportedAgents = setup.SupportedAgents
 
 // setupInstallAgent installs an agent plugin. Stubbed in tests.
-var setupInstallAgent = func(agent string) (*setup.Result, error) { return nil, nil }
+var setupInstallAgent = setup.Install
+
+// setupCheckAgent checks agent configuration. Stubbed in tests.
+var setupCheckAgent = setup.Check
+
+// setupRemoveAgent removes agent configuration. Stubbed in tests.
+var setupRemoveAgent = setup.Remove
 
 // scanInputLine reads a line from stdin. Stubbed in tests.
 var scanInputLine = func(a ...interface{}) (int, error) { return 0, nil }
@@ -144,6 +152,11 @@ var storeConsolidate = func(s *store.Store, sources []string, canonical string) 
 	return s.MergeProjects(sources, canonical)
 }
 
+// storeConsolidateCandidates runs consolidation candidate generation. Stubbed in tests.
+var storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+	return s.GenerateConsolidationCandidates(project, domain, dryRun)
+}
+
 // newObsidianWatcher creates an obsidian watcher. Stubbed in tests.
 var newObsidianWatcher = func(c interface{}) interface{} { return nil }
 
@@ -199,6 +212,11 @@ var cmdMaintain = realCmdMaintain
 var cmdBackup = realCmdBackup
 var cmdCheck = realCmdCheck
 var cmdServe = realCmdServe
+var cmdPrime = realCmdPrime
+var cmdValidate = realCmdValidate
+var cmdDoctor = realCmdDoctor
+var cmdConsolidate = realCmdConsolidate
+var cmdTools = realCmdTools
 
 // ─── fatal / exit helpers ────────────────────────────────────────────────────
 
@@ -230,8 +248,13 @@ func printUsage() {
 	fmt.Println("  maintain          Run maintenance (archive, backup, integrity)")
 	fmt.Println("  backup             Create a database snapshot")
 	fmt.Println("  check              Run integrity checks")
+	fmt.Println("  tools [profile]    List MCP tool names (agent, admin, all)")
 	fmt.Println("  setup [agent]      Set up plugin for an agent")
 	fmt.Println("  obsidian-export    Export memories to Obsidian vault")
+	fmt.Println("  prime [project]   Build AI-optimised context pack for injection")
+	fmt.Println("  validate          Validate database schema and data integrity")
+	fmt.Println("  doctor [--fix]   Run health checks with optional auto-fix")
+	fmt.Println("  consolidate       Generate consolidation candidates from observational memories")
 	fmt.Println()
 	fmt.Println("Flags:")
 	fmt.Println("  --help, -h         Show this help")
@@ -435,6 +458,27 @@ func realCmdServe(cfg store.Config) {
 		}
 	}
 
+	// Apply config-file retrieval settings to the store config (env vars
+	// already handled by store.DefaultConfig, config.json values are not).
+	if cfg2.RetrievalMode != "" {
+		cfg.RetrievalMode = cfg2.RetrievalMode
+	}
+	if cfg2.EmbeddingBackend != "" {
+		cfg.EmbeddingBackend = cfg2.EmbeddingBackend
+	}
+	if cfg2.EmbeddingModel != "" {
+		cfg.EmbeddingModel = cfg2.EmbeddingModel
+	}
+	if cfg2.EmbeddingDim > 0 {
+		cfg.EmbeddingDim = cfg2.EmbeddingDim
+	}
+	if cfg2.HybridAlpha > 0 {
+		cfg.HybridAlpha = cfg2.HybridAlpha
+	}
+	if cfg2.OllamaURL != "" {
+		cfg.OllamaURL = cfg2.OllamaURL
+	}
+
 	s, err := storeNew(cfg)
 	if err != nil {
 		fatal("store: " + err.Error())
@@ -470,18 +514,12 @@ func realCmdMCP(cfg store.Config) {
 	for i, arg := range os.Args[2:] {
 		if strings.HasPrefix(arg, "--tools=") {
 			tools := strings.TrimPrefix(arg, "--tools=")
-			allowlist = make(map[string]bool)
-			for _, t := range strings.Split(tools, ",") {
-				allowlist[strings.TrimSpace(t)] = true
-			}
+			allowlist = mcp.ResolveTools(tools)
 			break
 		}
 		if arg == "--tools" && i+1 < len(os.Args[2:]) {
 			tools := os.Args[2:][i+1]
-			allowlist = make(map[string]bool)
-			for _, t := range strings.Split(tools, ",") {
-				allowlist[strings.TrimSpace(t)] = true
-			}
+			allowlist = mcp.ResolveTools(tools)
 			break
 		}
 	}
@@ -522,6 +560,56 @@ func realCmdTUI(cfg store.Config) {
 	if _, err := runTeaProgram(program); err != nil {
 		fatal("tui: " + err.Error())
 	}
+}
+
+func realCmdTools(_ store.Config) {
+	profile := "all"
+	if len(os.Args) >= 3 && strings.TrimSpace(os.Args[2]) != "" {
+		profile = strings.TrimSpace(os.Args[2])
+	}
+
+	sortedKeys := func(m map[string]bool) []string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	printList := func(title string, names []string) {
+		fmt.Printf("%s (%d)\n", title, len(names))
+		for _, name := range names {
+			fmt.Printf("  - %s\n", name)
+		}
+		fmt.Println()
+	}
+
+	agentTools := sortedKeys(mcp.ProfileAgent)
+	adminTools := sortedKeys(mcp.ProfileAdmin)
+
+	switch profile {
+	case "agent":
+		printList("MCP agent tools", agentTools)
+	case "admin":
+		printList("MCP admin tools", adminTools)
+	case "all":
+		union := make(map[string]bool)
+		for _, name := range agentTools {
+			union[name] = true
+		}
+		for _, name := range adminTools {
+			union[name] = true
+		}
+		printList("MCP tools", sortedKeys(union))
+		printList("MCP agent tools", agentTools)
+		printList("MCP admin tools", adminTools)
+	default:
+		fatal("usage: ohara tools [agent|admin|all]")
+	}
+
+	fmt.Println("Use with: ohara mcp --tools=<profile-or-comma-list>")
+	fmt.Println("Examples: ohara mcp --tools=agent | ohara mcp --tools=mem_search,mem_save")
 }
 
 func realCmdSearch(cfg store.Config) {
@@ -780,6 +868,474 @@ func realCmdStats(cfg store.Config) {
 	}
 }
 
+// realCmdPrime builds an AI-optimised context pack for system prompt injection.
+func realCmdPrime(cfg store.Config) {
+	args := os.Args[2:]
+	project := ""
+	domain := ""
+	budget := 2000
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "--project=") {
+			project = strings.TrimPrefix(arg, "--project=")
+		} else if arg == "--project" && i+1 < len(args) {
+			project = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--domain=") {
+			domain = strings.TrimPrefix(arg, "--domain=")
+		} else if arg == "--domain" && i+1 < len(args) {
+			domain = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--budget=") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--budget=")); err == nil {
+				budget = n
+			}
+		} else if !strings.HasPrefix(arg, "--") && project == "" {
+			project = arg
+		}
+	}
+
+	if project == "" {
+		project = os.Getenv("OHARA_PROJECT")
+	}
+	if project == "" {
+		fatal("project is required (use --project or OHARA_PROJECT)")
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	// Query memory items filtered by project
+	items, err := s.GetMemories(project, "", "", store.MemoryStatusActive, 100)
+	if err != nil {
+		fatal("prime: " + err.Error())
+	}
+
+	// Filter by domain
+	if domain != "" {
+		filtered := make([]store.MemoryItem, 0)
+		for _, it := range items {
+			if it.Domain == domain {
+				filtered = append(filtered, it)
+			}
+		}
+		items = filtered
+	}
+
+	// Separate knowledge (foundational/tactical) vs episode (observational)
+	var knowledge, episode []store.MemoryItem
+	for _, it := range items {
+		if it.Classification == "observational" {
+			episode = append(episode, it)
+		} else {
+			knowledge = append(knowledge, it)
+		}
+	}
+
+	sections := []struct {
+		title string
+		kind  string
+		items []store.MemoryItem
+	}{
+		{"Decisions", store.MemoryKindDecision, nil},
+		{"Patterns", store.MemoryKindPattern, nil},
+		{"Known Failures", store.MemoryKindBugfix, nil},
+		{"Procedures", store.MemoryKindProcedure, nil},
+	}
+	kindToIdx := map[string]int{
+		store.MemoryKindDecision:  0,
+		store.MemoryKindPattern:   1,
+		store.MemoryKindBugfix:    2,
+		store.MemoryKindProcedure: 3,
+	}
+
+	for _, it := range knowledge {
+		if idx, ok := kindToIdx[it.Kind]; ok {
+			sections[idx].items = append(sections[idx].items, it)
+		}
+	}
+	// Episode tier: append to all sections after knowledge
+	for _, it := range episode {
+		if idx, ok := kindToIdx[it.Kind]; ok {
+			sections[idx].items = append(sections[idx].items, it)
+		}
+	}
+
+	// Estimate token count (rough: 1 token ≈ 4 chars)
+	usedTokens := 0
+	estimateTokens := func(s string) int { return (len(s) / 4) + 1 }
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## Ohara Context: %s", project))
+	if domain != "" {
+		sb.WriteString(fmt.Sprintf(" [%s]", domain))
+	}
+	sb.WriteString(fmt.Sprintf("\nGenerated: %s | Budget: %d tokens\n\n",
+		time.Now().Format(time.RFC3339), budget))
+
+	for _, sec := range sections {
+		if len(sec.items) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("### %s\n", sec.title))
+		for _, it := range sec.items {
+			tags := ""
+			if len(it.Tags) > 0 {
+				tags = " [" + strings.Join(it.Tags, ", ") + "]"
+			}
+			line := fmt.Sprintf("- **%s**%s (%s)\n%s\n\n",
+				it.Title, tags, it.Kind, it.Body)
+			if usedTokens+estimateTokens(line) > budget {
+				break
+			}
+			sb.WriteString(line)
+			usedTokens += estimateTokens(line)
+		}
+		sb.WriteString("\n")
+	}
+
+	fmt.Print(sb.String())
+}
+
+// realCmdValidate checks schema and data integrity. Exits non-zero on failures.
+func realCmdValidate(cfg store.Config) {
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	failures := 0
+
+	// Check 1: required fields, valid kind, valid classification
+	rows, err := s.Query(`
+		SELECT id, kind, classification, trust_level, tags, evidence_json, related_json
+		FROM memory_items`)
+	if err != nil {
+		fatal("validate: " + err.Error())
+	}
+	defer rows.Close()
+
+	validClassifications := map[string]bool{"foundational": true, "tactical": true, "observational": true}
+	validTrustLevels := map[string]bool{"user": true, "system": true, "tool": true, "untrusted": true}
+	validKinds := store.ValidMemoryKinds
+
+	for rows.Next() {
+		var id int64
+		var kind, classification, trustLevel, tagsJSON, evidenceJSON, relatedJSON string
+		if err := rows.Scan(&id, &kind, &classification, &trustLevel, &tagsJSON, &evidenceJSON, &relatedJSON); err != nil {
+			continue
+		}
+		if !validKinds[kind] {
+			fmt.Printf("[FAIL] id=%d: invalid kind %q\n", id, kind)
+			failures++
+		}
+		if !validClassifications[classification] {
+			fmt.Printf("[FAIL] id=%d: invalid classification %q\n", id, classification)
+			failures++
+		}
+		if !validTrustLevels[trustLevel] {
+			fmt.Printf("[FAIL] id=%d: invalid trust_level %q\n", id, trustLevel)
+			failures++
+		}
+		// JSON validity checks
+		if tagsJSON != "" && tagsJSON != "[]" {
+			var tags []string
+			if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+				fmt.Printf("[FAIL] id=%d: tags is not valid JSON: %v\n", id, err)
+				failures++
+			}
+		}
+		if evidenceJSON != "" && evidenceJSON != "{}" {
+			var v any
+			if err := json.Unmarshal([]byte(evidenceJSON), &v); err != nil {
+				fmt.Printf("[FAIL] id=%d: evidence_json is not valid JSON: %v\n", id, err)
+				failures++
+			}
+		}
+		if relatedJSON != "" && relatedJSON != "{}" {
+			var v any
+			if err := json.Unmarshal([]byte(relatedJSON), &v); err != nil {
+				fmt.Printf("[FAIL] id=%d: related_json is not valid JSON: %v\n", id, err)
+				failures++
+			}
+		}
+	}
+
+	// Check 2: memory_revisions reference valid memory_items ids
+	revRows, err := s.Query(`
+		SELECT COUNT(*) FROM memory_revisions mr
+		LEFT JOIN memory_items mi ON mi.id = mr.memory_id
+		WHERE mi.id IS NULL`)
+	if err == nil && revRows.Next() {
+		var orphanCount int
+		revRows.Scan(&orphanCount)
+		if orphanCount > 0 {
+			fmt.Printf("[FAIL] %d orphaned memory_revisions rows (no matching memory_items)\n", orphanCount)
+			failures++
+		}
+		revRows.Close()
+	}
+
+	if failures == 0 {
+		fmt.Println("[PASS] All validation checks passed.")
+	} else {
+		fmt.Printf("\n%d failure(s). Run 'ohara doctor' for health analysis.\n", failures)
+		exitFunc(1)
+	}
+}
+
+// realCmdDoctor runs health checks with optional auto-fix.
+func realCmdDoctor(cfg store.Config) {
+	args := os.Args[2:]
+	doFix := false
+	project := ""
+	for _, arg := range args {
+		if arg == "--fix" {
+			doFix = true
+		} else if strings.HasPrefix(arg, "--project=") {
+			project = strings.TrimPrefix(arg, "--project=")
+		} else if !strings.HasPrefix(arg, "--") {
+			project = arg
+		}
+	}
+	if project == "" {
+		project = os.Getenv("OHARA_PROJECT")
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	warnings := 0
+	failures := 0
+
+	// Check 1: orphaned revisions
+	{
+		var count int
+		row := s.QueryRow(`
+			SELECT COUNT(*) FROM memory_revisions mr
+			LEFT JOIN memory_items mi ON mi.id = mr.memory_id
+			WHERE mi.id IS NULL`)
+		row.Scan(&count)
+		if count > 0 {
+			fmt.Printf("[WARN] %d orphaned memory_revisions — run with --fix to delete.\n", count)
+			warnings++
+			if doFix {
+				s.Exec(`DELETE FROM memory_revisions WHERE memory_id IN (SELECT mr.id FROM memory_revisions mr LEFT JOIN memory_items mi ON mi.id = mr.memory_id WHERE mi.id IS NULL)`)
+				fmt.Printf("[PASS] Orphaned revisions removed.\n")
+				warnings--
+			}
+		} else {
+			fmt.Println("[PASS] No orphaned revisions.")
+		}
+	}
+
+	// Check 2: stuck lifecycle (active but never accessed in 180+ days)
+	{
+		var count int
+		row := s.QueryRow(`
+			SELECT COUNT(*) FROM memory_items
+			WHERE status = 'active'
+			AND access_count = 0
+			AND updated_at < datetime('now', '-180 days')`)
+		row.Scan(&count)
+		if count > 0 {
+			fmt.Printf("[WARN] %d memories not accessed in 180+ days — run with --fix to expire.\n", count)
+			warnings++
+			if doFix {
+				s.Exec(`
+					UPDATE memory_items
+					SET status = 'archived', updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+					WHERE status = 'active' AND access_count = 0
+					AND updated_at < datetime('now', '-180 days')`)
+				fmt.Printf("[PASS] Stuck memories expired.\n")
+				warnings--
+			}
+		} else {
+			fmt.Println("[PASS] No stuck lifecycle memories.")
+		}
+	}
+
+	// Check 3: stale procedures/config (not updated in 90+ days)
+	{
+		var count int
+		row := s.QueryRow(`
+			SELECT COUNT(*) FROM memory_items
+			WHERE kind IN ('procedure', 'config')
+			AND status = 'active'
+			AND updated_at < datetime('now', '-90 days')`)
+		row.Scan(&count)
+		if count > 0 {
+			fmt.Printf("[WARN] %d stale procedure/config memories not updated in 90+ days.\n", count)
+			warnings++
+		} else {
+			fmt.Println("[PASS] No stale procedure/config memories.")
+		}
+	}
+
+	// Check 4: duplicate active memory content (same normalized body in same project/domain)
+	{
+		var dupCount int
+		row := s.QueryRow(`
+			SELECT COUNT(*)
+			FROM memory_items a
+			JOIN memory_items b ON a.id < b.id
+			WHERE a.status = 'active' AND b.status = 'active'
+			  AND a.project_id = b.project_id
+			  AND ifnull(a.domain,'') = ifnull(b.domain,'')
+			  AND lower(trim(a.body)) = lower(trim(b.body))`)
+		row.Scan(&dupCount)
+		if dupCount > 0 {
+			fmt.Printf("[FAIL] %d duplicate active memory pair(s) detected (same normalized content).\n", dupCount)
+			failures++
+		} else {
+			fmt.Println("[PASS] No duplicate active memory pairs.")
+		}
+	}
+
+	// Check 5: memories with no domain set (flag only)
+	{
+		var count int
+		projectCond := ""
+		if project != "" {
+			projectCond = fmt.Sprintf(" AND project_id = '%s'", project)
+		}
+		row := s.QueryRow(`
+			SELECT COUNT(*) FROM memory_items
+			WHERE status = 'active' AND domain = ''` + projectCond)
+		row.Scan(&count)
+		if count > 0 {
+			fmt.Printf("[INFO] %d active memories have no domain set (consider adding one).\n", count)
+		}
+	}
+
+	fmt.Println()
+
+	fmt.Println("Conflict Resolution Guide (mem_resolve_conflict):")
+	fmt.Println("  add         — Both memories are correct, describing different things")
+	fmt.Println("  merge       — Partial overlap; should be one canonical memory")
+	fmt.Println("  invalidate  — Old memory is actively wrong; new one replaces it")
+	fmt.Println("  relate      — Memories are complementary, not contradictory")
+	fmt.Println("  suppress    — Known acceptable coexistence of contradictory facts")
+	fmt.Println()
+
+	if failures > 0 {
+		fmt.Printf("%d failure(s), %d warning(s).\n", failures, warnings)
+		fmt.Println("Run 'ohara validate' for schema correctness checks.")
+		exitFunc(1)
+	} else if warnings > 0 {
+		fmt.Printf("0 failures, %d warning(s). Run --fix to auto-remediate.\n", warnings)
+	} else {
+		fmt.Println("All health checks passed.")
+	}
+}
+
+// RunConsolidationSweep performs one consolidation sweep and returns results.
+// Extracted so it can be called by both the one-shot and daemon command paths.
+func RunConsolidationSweep(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
+	return storeConsolidateCandidates(s, project, domain, dryRun)
+}
+
+func realCmdConsolidate(cfg store.Config) {
+	args := os.Args[2:]
+	project := ""
+	domain := ""
+	dryRun := false
+	daemon := false
+	intervalMinutes := 60
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--dry-run" || arg == "-n" {
+			dryRun = true
+		} else if arg == "--daemon" {
+			daemon = true
+		} else if strings.HasPrefix(arg, "--domain=") {
+			domain = strings.TrimPrefix(arg, "--domain=")
+		} else if arg == "--domain" && i+1 < len(args) {
+			domain = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--interval=") {
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--interval=")); err == nil && v > 0 {
+				intervalMinutes = v
+			}
+		} else if arg == "--interval" && i+1 < len(args) {
+			if v, err := strconv.Atoi(args[i+1]); err == nil && v > 0 {
+				intervalMinutes = v
+			}
+			i++
+		} else if !strings.HasPrefix(arg, "--") && project == "" {
+			project = arg
+		}
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	if daemon {
+		fmt.Printf("consolidation daemon: starting (interval=%d min, project=%q, domain=%q)\n",
+			intervalMinutes, project, domain)
+		// Run one immediate sweep.
+		created, summaries, err := RunConsolidationSweep(s, project, domain, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "consolidation daemon: initial sweep error: %v\n", err)
+		} else if created > 0 {
+			fmt.Printf("consolidation daemon: created %d candidate(s)\n", created)
+			for _, line := range summaries {
+				fmt.Printf("  %s\n", line)
+			}
+		}
+		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			created, summaries, err := RunConsolidationSweep(s, project, domain, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "consolidation daemon: sweep error: %v\n", err)
+			} else if created > 0 {
+				fmt.Printf("consolidation daemon: created %d candidate(s)\n", created)
+				for _, line := range summaries {
+					fmt.Printf("  %s\n", line)
+				}
+			}
+		}
+	}
+
+	// One-shot mode.
+	created, summaries, err := RunConsolidationSweep(s, project, domain, dryRun)
+	if err != nil {
+		fatal("consolidate: " + err.Error())
+	}
+	if dryRun {
+		if len(summaries) == 0 {
+			fmt.Println("consolidate (dry-run): no candidate groups found")
+		} else {
+			for _, line := range summaries {
+				fmt.Println(line)
+			}
+		}
+		return
+	}
+	if created == 0 {
+		fmt.Println("consolidate: no candidates created")
+		return
+	}
+	fmt.Printf("consolidate: created %d candidate(s)\n", created)
+	for _, line := range summaries {
+		fmt.Printf("  %s\n", line)
+	}
+}
+
 func realCmdExport(cfg store.Config) {
 	path := "ohara-export.json"
 	if len(os.Args) >= 3 {
@@ -880,11 +1436,19 @@ func realCmdSync(cfg store.Config) {
 
 	// Handle --status
 	if showStatus {
-		localChunks, remoteChunks, pendingImport, err := syncStatus(sy)
+		localChunks, manifestChunks, pendingImport, err := syncStatus(sy)
 		if err != nil {
 			fatal("sync status: " + err.Error())
 		}
-		fmt.Printf("Sync status: %d local chunks, %d remote chunks, %d pending import\n", localChunks, remoteChunks, pendingImport)
+		fmt.Printf("Sync status: %d local records, %d manifest chunks, %d pending import\n", localChunks, manifestChunks, pendingImport)
+		// Show drift when counts diverge (local != manifest means some chunks haven't been pushed, or manifest has unpulled entries).
+		if localChunks != manifestChunks {
+			diff := localChunks - manifestChunks
+			if diff < 0 {
+				diff = -diff
+			}
+			fmt.Printf("drift: %d chunk(s) — run 'ohara sync --all' to push or 'ohara sync --import' to pull\n", diff)
+		}
 		return
 	}
 
@@ -960,12 +1524,53 @@ func realCmdSetup(cfg store.Config) {
 		agentSet[a.Name] = true
 	}
 
-	// Direct agent setup: ohara setup <agent>
 	if len(os.Args) >= 3 {
-		agentName := os.Args[2]
-		if agentSet[agentName] {
-			// Known agent: attempt direct install; fatal on failure.
-			result, err := setupInstallAgent(agentName)
+		arg := os.Args[2]
+
+		// Check for --check or --remove flag
+		if arg == "--check" {
+			if len(os.Args) < 4 {
+				fatal("usage: ohara setup --check <agent>")
+			}
+			agentName := os.Args[3]
+			if !agentSet[agentName] {
+				fatal("unknown agent: " + agentName)
+			}
+			status, err := setupCheckAgent(agentName)
+			if err != nil {
+				fatal("setup --check: " + err.Error())
+			}
+			if status.Configured {
+				fmt.Printf("%s: configured\n", status.Agent)
+				fmt.Printf("  Status: %s\n", status.Status)
+				fmt.Printf("  Message: %s\n", status.Message)
+			} else {
+				fmt.Printf("%s: not configured\n", status.Agent)
+				fmt.Printf("  Status: %s\n", status.Status)
+				fmt.Printf("  Message: %s\n", status.Message)
+			}
+			return
+		}
+
+		if arg == "--remove" {
+			if len(os.Args) < 4 {
+				fatal("usage: ohara setup --remove <agent>")
+			}
+			agentName := os.Args[3]
+			if !agentSet[agentName] {
+				fatal("unknown agent: " + agentName)
+			}
+			err := setupRemoveAgent(agentName)
+			if err != nil {
+				fatal("setup --remove: " + err.Error())
+			}
+			fmt.Printf("Removed %s configuration\n", agentName)
+			return
+		}
+
+		// Direct agent setup: ohara setup <agent>
+		if agentSet[arg] {
+			result, err := setupInstallAgent(arg)
 			if err != nil {
 				fatal("setup: " + err.Error())
 			}
@@ -973,7 +1578,7 @@ func realCmdSetup(cfg store.Config) {
 			fmt.Printf("Destination: %s\n", result.Destination)
 			return
 		}
-		// Unknown agent (including flags like --help): fall through to
+		// Unknown arg (including flags like --help): fall through to
 		// interactive mode so the user can pick from the supported list.
 	}
 
@@ -1248,7 +1853,8 @@ func main() {
 		return
 	case "serve", "mcp", "tui", "search", "save", "timeline",
 		"context", "stats", "export", "import", "sync",
-		"setup", "projects", "obsidian-export":
+		"setup", "projects", "obsidian-export",
+		"prime", "validate", "doctor", "consolidate", "tools":
 		cfg, err := store.DefaultConfig()
 		if err != nil {
 			fatal("config: " + err.Error())
@@ -1286,6 +1892,16 @@ func main() {
 			cmdProjects(cfg)
 		case "obsidian-export":
 			cmdObsidianExport(cfg)
+		case "prime":
+			cmdPrime(cfg)
+		case "validate":
+			cmdValidate(cfg)
+		case "doctor":
+			cmdDoctor(cfg)
+		case "consolidate":
+			cmdConsolidate(cfg)
+		case "tools":
+			cmdTools(cfg)
 		}
 		return
 	default:
