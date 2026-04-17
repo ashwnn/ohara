@@ -294,6 +294,7 @@ const (
 	MemoryStatusActive     = "active"
 	MemoryStatusArchived   = "archived"
 	MemoryStatusSuperseded = "superseded"
+	MemoryStatusCandidate  = "candidate"
 )
 
 // MemoryItem represents a curated, typed, versioned memory record.
@@ -313,6 +314,80 @@ type MemoryItem struct {
 	Status       string   `json:"status"`
 	SupersededBy *int64   `json:"superseded_by,omitempty"`
 	ExpiresAt    *string  `json:"expires_at,omitempty"`
+
+	// P0 fields (migrations 001-003)
+	Domain         string `json:"domain,omitempty"`          // domain/namespace scoping
+	EvidenceJSON   string `json:"evidence_json,omitempty"`   // { "commit": "...", "issue": "...", "file": "...", "url": "..." }
+	AppliesToJSON  string `json:"applies_to_json,omitempty"` // { "files": [...], "paths": [...], "commands": [...] }
+	RelatedJSON    string `json:"related_json,omitempty"`    // { "relates_to": [...], "supersedes": [...], "derived_from": [...] }
+	Classification string `json:"classification,omitempty"`  // foundational | tactical | observational
+
+	// P1 fields (migrations 004-007)
+	AccessCount  int     `json:"access_count,omitempty"`  // number of times retrieved
+	LastAccessed *string `json:"last_accessed,omitempty"` // last retrieval timestamp
+	ValidFrom    *string `json:"valid_from,omitempty"`    // when knowledge became true
+	ValidTo      *string `json:"valid_to,omitempty"`      // when knowledge stopped being true
+	SupersededAt *string `json:"superseded_at,omitempty"`
+	SessionID    string  `json:"session_id,omitempty"`  // session that created this memory
+	TrustLevel   string  `json:"trust_level,omitempty"` // user | system | tool | untrusted
+	IngestedAt   string  `json:"ingested_at,omitempty"` // when record was ingested (immutable — never updated)
+	WrittenBy    string  `json:"written_by,omitempty"`  // user | agent | consolidation | import | system
+
+	// P2 fields
+	TriggerCondition string `json:"trigger_condition,omitempty"` // trigger for procedure kind
+
+	// P3 fields
+	UtilityWeight    float64 `json:"utility_weight,omitempty"`    // RL-influenced weight
+	ConsolidatedFrom string  `json:"consolidated_from,omitempty"` // comma-separated source obs_ids
+
+	// Computed at query time — not stored
+	RelevanceScore float64 `json:"relevance_score,omitempty"` // FTS composite score (0 for non-search queries)
+}
+
+// MemoryRelation represents a typed, directional link between two memory items.
+// This implements the relation graph from Ohara v2 spec P2 (Section 6.3).
+type MemoryRelation struct {
+	ID        int64  `json:"id"`
+	FromID    int64  `json:"from_id"`  // source memory item ID
+	ToID      int64  `json:"to_id"`    // target memory item ID
+	Relation  string `json:"relation"` // one of the valid relation types
+	CreatedAt string `json:"created_at"`
+}
+
+// ValidRelationTypes maps relation type strings to their display names.
+const (
+	RelationCaused      = "caused"
+	RelationResolves    = "resolves"
+	RelationSupersedes  = "supersedes"
+	RelationRelatedTo   = "related_to"
+	RelationImplements  = "implements"
+	RelationContradicts = "contradicts"
+)
+
+// ValidRelations is the set of all valid memory relation type values.
+var ValidRelations = map[string]bool{
+	RelationCaused:      true,
+	RelationResolves:    true,
+	RelationSupersedes:  true,
+	RelationRelatedTo:   true,
+	RelationImplements:  true,
+	RelationContradicts: true,
+}
+
+// RelationLabel returns a human-readable label for a relation type.
+func RelationLabel(relation string) string {
+	labels := map[string]string{
+		RelationCaused:      "caused",
+		RelationResolves:    "resolves",
+		RelationSupersedes:  "supersedes",
+		RelationRelatedTo:   "related to",
+		RelationImplements:  "implements",
+		RelationContradicts: "contradicts",
+	}
+	if label, ok := labels[relation]; ok {
+		return label
+	}
+	return relation
 }
 
 // MemoryRevision represents an append-only version history entry for a memory item.
@@ -434,6 +509,8 @@ type PackParams struct {
 	ProjectID    string `json:"project_id"`
 	SessionID    string `json:"session_id,omitempty"`
 	BudgetTokens int    `json:"budget_tokens"`
+	Domain       string `json:"domain,omitempty"`
+	Asof         string `json:"asof,omitempty"`
 }
 
 // AddMemoryParams holds the parameters for creating a new memory item.
@@ -446,6 +523,22 @@ type AddMemoryParams struct {
 	Tags      []string `json:"tags"`
 	Source    string   `json:"source"`
 	ActorID   string   `json:"actor_id"`
+
+	// P0 fields
+	Domain        string `json:"domain,omitempty"`
+	EvidenceJSON  string `json:"evidence_json,omitempty"`
+	AppliesToJSON string `json:"applies_to_json,omitempty"`
+	RelatedJSON   string `json:"related_json,omitempty"`
+
+	// P1 fields
+	SessionID        string  `json:"session_id,omitempty"`
+	TrustLevel       string  `json:"trust_level,omitempty"`
+	Classification   string  `json:"classification,omitempty"`
+	WrittenBy        string  `json:"written_by,omitempty"`
+	ExpiresAt        string  `json:"expires_at,omitempty"`
+	TriggerCondition string  `json:"trigger_condition,omitempty"`
+	UtilityWeight    float64 `json:"utility_weight,omitempty"`
+	ConsolidatedFrom string  `json:"consolidated_from,omitempty"`
 }
 
 // UpdateMemoryParams holds the parameters for updating a memory item.
@@ -457,6 +550,21 @@ type UpdateMemoryParams struct {
 	SupersededBy *int64   `json:"superseded_by,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
 	ActorID      string   `json:"actor_id"`
+
+	// P0 fields
+	Domain         *string `json:"domain,omitempty"`
+	EvidenceJSON   *string `json:"evidence_json,omitempty"`
+	AppliesToJSON  *string `json:"applies_to_json,omitempty"`
+	RelatedJSON    *string `json:"related_json,omitempty"`
+	Classification *string `json:"classification,omitempty"`
+
+	// P1 fields
+	SessionID        *string  `json:"session_id,omitempty"`
+	TrustLevel       *string  `json:"trust_level,omitempty"`
+	WrittenBy        *string  `json:"written_by,omitempty"`
+	ExpiresAt        *string  `json:"expires_at,omitempty"`
+	TriggerCondition *string  `json:"trigger_condition,omitempty"`
+	UtilityWeight    *float64 `json:"utility_weight,omitempty"`
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -467,6 +575,12 @@ type Config struct {
 	MaxContextResults    int
 	MaxSearchResults     int
 	DedupeWindow         time.Duration
+	RetrievalMode        string
+	EmbeddingBackend     string
+	EmbeddingModel       string
+	EmbeddingDim         int
+	HybridAlpha          float64
+	OllamaURL            string
 }
 
 func DefaultConfig() (Config, error) {
@@ -474,13 +588,42 @@ func DefaultConfig() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("ohara: determine home directory: %w", err)
 	}
-	return Config{
+	cfg := Config{
 		DataDir:              filepath.Join(home, ".local/share/ohara"),
 		MaxObservationLength: 50000,
 		MaxContextResults:    20,
 		MaxSearchResults:     20,
 		DedupeWindow:         15 * time.Minute,
-	}, nil
+		RetrievalMode:        "fts5",
+		EmbeddingBackend:     "ollama",
+		EmbeddingModel:       "nomic-embed-text",
+		EmbeddingDim:         768,
+		HybridAlpha:          0.6,
+		OllamaURL:            "http://localhost:11434",
+	}
+	if mode := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MODE")); mode != "" {
+		cfg.RetrievalMode = mode
+	}
+	if backend := strings.TrimSpace(os.Getenv("OHARA_EMBEDDING_BACKEND")); backend != "" {
+		cfg.EmbeddingBackend = backend
+	}
+	if model := strings.TrimSpace(os.Getenv("OHARA_EMBEDDING_MODEL")); model != "" {
+		cfg.EmbeddingModel = model
+	}
+	if dimStr := strings.TrimSpace(os.Getenv("OHARA_EMBEDDING_DIM")); dimStr != "" {
+		if dim, convErr := strconv.Atoi(dimStr); convErr == nil && dim > 0 {
+			cfg.EmbeddingDim = dim
+		}
+	}
+	if alphaStr := strings.TrimSpace(os.Getenv("OHARA_HYBRID_ALPHA")); alphaStr != "" {
+		if alpha, convErr := strconv.ParseFloat(alphaStr, 64); convErr == nil && alpha >= 0 && alpha <= 1 {
+			cfg.HybridAlpha = alpha
+		}
+	}
+	if ollamaURL := strings.TrimSpace(os.Getenv("OHARA_OLLAMA_URL")); ollamaURL != "" {
+		cfg.OllamaURL = ollamaURL
+	}
+	return cfg, nil
 }
 
 // FallbackConfig returns a Config with the given DataDir and default values.
@@ -493,6 +636,12 @@ func FallbackConfig(dataDir string) Config {
 		MaxContextResults:    20,
 		MaxSearchResults:     20,
 		DedupeWindow:         15 * time.Minute,
+		RetrievalMode:        "fts5",
+		EmbeddingBackend:     "ollama",
+		EmbeddingModel:       "nomic-embed-text",
+		EmbeddingDim:         768,
+		HybridAlpha:          0.6,
+		OllamaURL:            "http://localhost:11434",
 	}
 }
 
@@ -680,7 +829,20 @@ func (s *Store) Close() error {
 
 // ─── Migrations ──────────────────────────────────────────────────────────────
 
+// Current schema version — increment by 1 for each new migration.
+const currentSchemaVersion = 22
+
 func (s *Store) migrate() error {
+	// Bootstrap schema_version table first so we can track applied migrations.
+	if _, err := s.execHook(s.db, `
+		CREATE TABLE IF NOT EXISTS schema_version (
+			version    INTEGER PRIMARY KEY,
+			applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+		)`); err != nil {
+		return fmt.Errorf("create schema_version table: %w", err)
+	}
+
+	// Bootstrap core schema
 	schema := `
 			CREATE TABLE IF NOT EXISTS sessions (
 				id         TEXT PRIMARY KEY,
@@ -958,7 +1120,9 @@ func (s *Store) migrate() error {
 			source          TEXT NOT NULL DEFAULT 'agent',
 			status          TEXT NOT NULL DEFAULT 'active',
 			superseded_by   INTEGER REFERENCES memory_items(id),
-			expires_at      TEXT
+			expires_at      TEXT,
+			ingested_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			written_by      TEXT NOT NULL DEFAULT 'agent'
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_mem_project ON memory_items(project_id, status);
@@ -1034,6 +1198,403 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// Run all migrations in order (after base memory_items table exists).
+	if err := s.runMigrations(); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+
+	return nil
+}
+
+// runMigrations applies all pending schema migrations in order.
+// Each migration is idempotent: it checks the schema_version table and only
+// applies migrations that haven't been recorded yet.
+func (s *Store) runMigrations() error {
+	// Get current version
+	var currentVersion int
+	err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&currentVersion)
+	if err != nil {
+		return fmt.Errorf("get schema version: %w", err)
+	}
+
+	// Apply migrations 1 through currentSchemaVersion
+	for v := currentVersion + 1; v <= currentSchemaVersion; v++ {
+		if err := s.applyMigration(v); err != nil {
+			return fmt.Errorf("migration %d: %w", v, err)
+		}
+	}
+	return nil
+}
+
+// applyMigration runs a single numbered migration. All migrations are additive.
+func (s *Store) applyMigration(version int) error {
+	switch version {
+	case 1:
+		// Migration 001: Domain field (P0 - 4.1)
+		if err := s.addColumnIfNotExists("memory_items", "domain", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_mem_project_domain ON memory_items(project_id, domain)`); err != nil {
+			return err
+		}
+		// Backfill empty domain for existing rows
+		if _, err := s.execHook(s.db, `UPDATE memory_items SET domain = '' WHERE domain IS NULL`); err != nil {
+			return err
+		}
+
+	case 2:
+		// Migration 002: Evidence and provenance (P0 - 4.2)
+		if err := s.addColumnIfNotExists("memory_items", "evidence_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "applies_to_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "related_json", "TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return err
+		}
+
+	case 3:
+		// Migration 003: Classification tiers (P0 - 4.5)
+		if err := s.addColumnIfNotExists("memory_items", "classification", "TEXT NOT NULL DEFAULT 'tactical'"); err != nil {
+			return err
+		}
+		// Default classification mapping per kind
+		type kindClass struct{ kind, class string }
+		defaults := []kindClass{
+			{MemoryKindDecision, "foundational"},
+			{MemoryKindProcedure, "foundational"},
+			{MemoryKindPattern, "tactical"},
+			{MemoryKindBugfix, "tactical"},
+			{MemoryKindDiscovery, "observational"},
+		}
+		for _, dc := range defaults {
+			if _, err := s.execHook(s.db,
+				`UPDATE memory_items SET classification = ? WHERE kind = ? AND classification = 'tactical'`,
+				dc.class, dc.kind); err != nil {
+				return err
+			}
+		}
+
+	case 4:
+		// Migration 004: Temporal decay fields (P1 - 5.1)
+		if err := s.addColumnIfNotExists("memory_items", "access_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "last_accessed", "TEXT"); err != nil {
+			return err
+		}
+
+	case 5:
+		// Migration 005: Usage tracking table (P1 - 5.1)
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS memory_usage (
+				id         INTEGER PRIMARY KEY AUTOINCREMENT,
+				memory_id  INTEGER NOT NULL REFERENCES memory_items(id),
+				event      TEXT NOT NULL CHECK(event IN ('retrieved', 'used')),
+				session_id TEXT,
+				ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_usage_memory ON memory_usage(memory_id)`); err != nil {
+			return err
+		}
+
+	case 6:
+		// Migration 006: Outcome tracking table (P1 - 5.2)
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS memory_outcomes (
+				id        INTEGER PRIMARY KEY AUTOINCREMENT,
+				memory_id INTEGER NOT NULL REFERENCES memory_items(id),
+				status    TEXT NOT NULL CHECK(status IN ('success', 'failure', 'unknown')),
+				notes     TEXT,
+				actor_id  TEXT,
+				ts        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_outcomes_memory ON memory_outcomes(memory_id)`); err != nil {
+			return err
+		}
+
+	case 7:
+		// Migration 007: Temporal fields (P1 - 5.5)
+		if err := s.addColumnIfNotExists("memory_items", "valid_from", "TEXT"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "valid_to", "TEXT"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "superseded_at", "TEXT"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		// Set valid_from = created_at for existing rows
+		if _, err := s.execHook(s.db,
+			`UPDATE memory_items SET valid_from = created_at WHERE valid_from IS NULL AND created_at IS NOT NULL`); err != nil {
+			return err
+		}
+
+	case 8:
+		// Migration 008: Security (P1 - section 8)
+		if err := s.addColumnIfNotExists("memory_items", "trust_level", "TEXT NOT NULL DEFAULT 'system'"); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS audit_log (
+				id         INTEGER PRIMARY KEY AUTOINCREMENT,
+				obs_id     TEXT NOT NULL,
+				action     TEXT NOT NULL CHECK(action IN ('create', 'update', 'delete', 'archive')),
+				actor_id   TEXT,
+				session_id TEXT,
+				trust_level TEXT,
+				ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+				snapshot   TEXT
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_audit_obs ON audit_log(obs_id)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id)`); err != nil {
+			return err
+		}
+
+	case 9:
+		// Migration 009: P2 fields — trigger_condition (P2 - trigger for procedure kind)
+		if err := s.addColumnIfNotExists("memory_items", "trigger_condition", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+
+	case 10:
+		// Migration 010: P3 fields — utility_weight and consolidated_from (P3)
+		if err := s.addColumnIfNotExists("memory_items", "utility_weight", "REAL NOT NULL DEFAULT 0.0"); err != nil {
+			return err
+		}
+		if err := s.addColumnIfNotExists("memory_items", "consolidated_from", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+
+	case 11:
+		// Migration 011: Consolidation provenance (P3 - 7.1) — source column already in base table
+		// No-op: source column was added in the base CREATE TABLE
+
+	case 12:
+		// Migration 012: RL utility weight (P3 - 7.4) — utility_weight already added in migration 10
+		// No-op: utility_weight column already exists
+
+	case 13:
+		// Migration 013: Embedding sidecar (P3 - 7.2, optional)
+		// No-op: implemented only when hybrid retrieval is enabled via config
+
+	case 14:
+		// Migration 014: Entity graph (P3 - 7.3, optional)
+		// No-op: implemented only if mem_related proves insufficient at scale
+
+	case 15:
+		// Migration 015: Bi-temporal model (P1 - 5.7)
+		// ingested_at: when this record was ingested into the DB (immutable — never updated)
+		if err := s.addColumnIfNotExists("memory_items", "ingested_at", "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))"); err != nil {
+			return err
+		}
+		// Backfill: set ingested_at = created_at for existing rows
+		if _, err := s.execHook(s.db, `UPDATE memory_items SET ingested_at = created_at WHERE ingested_at IS NULL OR ingested_at = ''`); err != nil {
+			return err
+		}
+
+	case 16:
+		// Migration 016: Actor-aware writes (P1 - 5.8)
+		if err := s.addColumnIfNotExists("memory_items", "written_by", "TEXT NOT NULL DEFAULT 'agent'"); err != nil {
+			return err
+		}
+		// Valid values: user, agent, consolidation, import, system
+		// Backfill: existing rows were written by 'agent'
+		if _, err := s.execHook(s.db, `UPDATE memory_items SET written_by = 'agent' WHERE written_by IS NULL OR written_by = ''`); err != nil {
+			return err
+		}
+
+	case 17:
+		// Migration 017: Store-time TTL (P1 - 5.9)
+		// expires_at already exists in the base CREATE TABLE — no column add needed.
+		// No-op: expires_at column already exists
+
+	case 18:
+		// Migration 018: memory_relations table for typed inter-memory relationships
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS memory_relations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				from_obs_id TEXT NOT NULL,
+				to_obs_id TEXT NOT NULL,
+				relation TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(from_obs_id, to_obs_id, relation)
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_relations_from ON memory_relations(from_obs_id)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_relations_to ON memory_relations(to_obs_id)`); err != nil {
+			return err
+		}
+
+	case 19:
+		// Migration 019: Add trigger_condition to memory_items FTS5 index.
+		// FTS5 virtual tables do not support ALTER TABLE ADD COLUMN,
+		// so we must rebuild the table if the column is not yet present.
+		if err := s.migrateMemFTSTriggerCondition(); err != nil {
+			return err
+		}
+
+	case 20:
+		// Migration 020: Embedding sidecar for hybrid retrieval (P3 - 7.2)
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS obs_embeddings (
+				obs_id INTEGER PRIMARY KEY REFERENCES memory_items(id),
+				embedding BLOB NOT NULL,
+				model TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_obs_embeddings_model ON obs_embeddings(model)`); err != nil {
+			return err
+		}
+
+	case 21:
+		// Migration 021: Entity graph tables (P3 - 7.3 optional index)
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS entities (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT NOT NULL,
+				type TEXT NOT NULL,
+				project_key TEXT NOT NULL,
+				UNIQUE(name, type, project_key)
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS obs_entities (
+				obs_id INTEGER NOT NULL REFERENCES memory_items(id),
+				entity_id INTEGER NOT NULL REFERENCES entities(id),
+				PRIMARY KEY (obs_id, entity_id)
+			)`); err != nil {
+			return err
+		}
+
+	case 22:
+		// Migration 022: Feedback table for RL-informed utility updates (P3 - 7.4 groundwork)
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS memory_feedback (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				memory_id INTEGER NOT NULL REFERENCES memory_items(id),
+				reward REAL NOT NULL,
+				notes TEXT,
+				actor_id TEXT,
+				ts DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_feedback_memory ON memory_feedback(memory_id)`); err != nil {
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unknown migration version %d (current: %d)", version, currentSchemaVersion)
+	}
+
+	// Record the migration in schema_version.
+	if _, err := s.execHook(s.db,
+		`INSERT INTO schema_version (version, applied_at) VALUES (?, strftime('%Y-%m-%dT%H:%M:%f','now'))`,
+		version); err != nil {
+		return fmt.Errorf("record migration %d: %w", version, err)
+	}
+	return nil
+}
+
+// migrateMemFTSTriggerCondition rebuilds memory_items_fts to include the
+// trigger_condition column. FTS5 does not support ALTER TABLE ADD COLUMN,
+// so this uses the drop-create-backfill approach within a single transaction.
+func (s *Store) migrateMemFTSTriggerCondition() error {
+	// Check if the FTS table already has trigger_condition.
+	var colCount int
+	if err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_xinfo('memory_items_fts') WHERE name = 'trigger_condition'",
+	).Scan(&colCount); err != nil {
+		return fmt.Errorf("check trigger_condition column: %w", err)
+	}
+	if colCount > 0 {
+		return nil // Already migrated
+	}
+
+	// Rebuild FTS table within a transaction so it is atomic.
+	tx, err := s.beginTxHook()
+	if err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Drop old triggers and FTS table.
+	if _, err := s.execHook(tx, `
+		DROP TRIGGER IF EXISTS mem_fts_insert;
+		DROP TRIGGER IF EXISTS mem_fts_delete;
+		DROP TRIGGER IF EXISTS mem_fts_update;
+		DROP TABLE IF EXISTS memory_items_fts;
+	`); err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: drop old fts: %w", err)
+	}
+
+	// Create new FTS table with trigger_condition as 4th indexed column.
+	if _, err := s.execHook(tx, `
+		CREATE VIRTUAL TABLE memory_items_fts USING fts5(
+			title,
+			body,
+			tags,
+			trigger_condition,
+			content='memory_items',
+			content_rowid='id',
+			tokenize='porter unicode61'
+		);
+	`); err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: create new fts: %w", err)
+	}
+
+	// Backfill all existing memory_items rows into the new FTS table.
+	if _, err := s.execHook(tx, `
+		INSERT INTO memory_items_fts(rowid, title, body, tags, trigger_condition)
+		SELECT id, title, body, tags, trigger_condition FROM memory_items
+	`); err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: backfill: %w", err)
+	}
+
+	// Recreate the three triggers with trigger_condition.
+	if _, err := s.execHook(tx, `
+		CREATE TRIGGER mem_fts_insert AFTER INSERT ON memory_items BEGIN
+			INSERT INTO memory_items_fts(rowid, title, body, tags, trigger_condition)
+			VALUES (new.id, new.title, new.body, new.tags, new.trigger_condition);
+		END;
+
+		CREATE TRIGGER mem_fts_delete AFTER DELETE ON memory_items BEGIN
+			INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags, trigger_condition)
+			VALUES ('delete', old.id, old.title, old.body, old.tags, old.trigger_condition);
+		END;
+
+		CREATE TRIGGER mem_fts_update AFTER UPDATE ON memory_items BEGIN
+			INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags, trigger_condition)
+			VALUES ('delete', old.id, old.title, old.body, old.tags, old.trigger_condition);
+			INSERT INTO memory_items_fts(rowid, title, body, tags, trigger_condition)
+			VALUES (new.id, new.title, new.body, new.tags, new.trigger_condition);
+		END;
+	`); err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: create triggers: %w", err)
+	}
+
+	if err := s.commitHook(tx); err != nil {
+		return fmt.Errorf("migrate mem fts trigger_condition: commit: %w", err)
+	}
 	return nil
 }
 
