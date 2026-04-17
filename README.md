@@ -1,144 +1,219 @@
 <p align="center">
   <img src="assets/ohara.png" alt="Ohara" width="128" /><br>
   <strong>Ohara</strong><br>
-  <em>Typed persistent memory with conflict detection for AI coding agents</em><br>
-  <small>OpenCode plugin + MCP only. Source-build only. No TUI or marketplace.</small>
-</p>
-
-<p align="center">
-  <a href="docs/INSTALLATION.md">Installation</a> &bull;
-  <a href="docs/AGENT-SETUP.md">Agent Setup</a> &bull;
-  <a href="docs/ARCHITECTURE.md">Architecture</a> &bull;
-  <a href="DOCS.md">Full Docs</a>
+  <em>Persistent memory with typed retrieval, conflict detection, and context injection for AI coding agents</em>
 </p>
 
 ---
 
-> **Ohara** is a renamed personal fork of [**Engram**](https://github.com/Gentleman-Programming/engram), originally created by [**Gentleman-Programming**](https://github.com/Gentleman-Programming). The entire foundation of this project — the core memory system, MCP architecture, and concept of persistent agent memory — was built by the Engram authors. This fork adds ecosystem-specific features (typed memory, conflict detection, automatic lifecycle management) for personal use; the original work and all credit belong to Gentleman-Programming.
+> **Ohara** is a fork of [**Engram**](https://github.com/Gentleman-Programming/engram) by [**Gentleman-Programming**](https://github.com/Gentleman-Programming). The core memory system and MCP architecture were built by the Engram authors. This fork adds typed memory, conflict detection, relation graphs, hybrid search, and context injection for multi-project, multi-agent workflows.
 
-Your AI coding agent forgets everything when the session ends. Ohara gives it a brain.
+---
 
-A **Go binary** with SQLite + FTS5 full-text search, exposed via CLI, HTTP API, and **MCP server**. Supports **OpenCode** via native plugin, plus any agent that speaks MCP.
+## What It Is
 
-**What makes Ohara different from standard Engram:**
+A single Go binary that gives AI coding agents persistent, searchable, structured memory across sessions and projects. One binary, one SQLite file. No runtime dependencies.
 
-| Feature | Standard Engram | Ohara |
-|---------|----------------|-------|
-| **Typed memory** | Free-form strings | Structured memory types (`decision`, `bugfix`, `pattern`, `learned`) |
-| **Conflict detection** | None — silent overwrites | Save-time contradiction detection with revision history |
-| **Revisions** | Single version | Full revision history with `mem_timeline` |
-| **Expiry/Archive** | Manual cleanup | Automatic lifecycle: `active` → `expired` → `archived` |
+Agents forget everything when a session ends. Ohara stores what they learn — architectural decisions, bug fixes, patterns, procedures — and injects relevant context at the start of the next session so they don't repeat mistakes or re-discover what was already known.
 
-These features improve memory quality by catching contradictions before they pollute your context, and let you audit how your project's understanding evolved over time. For agents that reason across long-running projects, this prevents drift and maintains coherent context.
+## Architecture
 
-**This fork intentionally retains MCP** as the primary interface. Only OpenCode has a native plugin; all other agents use MCP directly. TUI, marketplace, and publishing-oriented surfaces are not part of this fork's direction.
+```mermaid
+graph TB
+    subgraph Agents
+        OC[OpenCode]
+        CC[Claude Code]
+        GC[Gemini CLI]
+        ANY[Any MCP client]
+    end
 
+    subgraph "Ohara (single binary)"
+        CLI[CLI<br/>search, save, prime,<br/>validate, doctor, consolidate]
+        MCP["MCP Server<br/>31 tools via stdio"]
+        HTTP["HTTP API<br/>port 7331"]
+    end
+
+    subgraph "Storage Layer"
+        DB["SQLite + FTS5<br/>~/.local/share/ohara/ohara.db"]
+        EMB["Embedding Sidecar<br/>obs_embeddings<br/>(opt-in, Ollama)"]
+        REL["Relation Graph<br/>memory_relations<br/>6 relation types"]
+        AUDIT["Audit Log<br/>append-only"]
+    end
+
+    subgraph "Output Formats"
+        PACK["Context Pack<br/>token-budgeted JSON"]
+        PRIME["Prime Pack<br/>markdown for system prompt"]
+        SYNC["Git Sync<br/>.ohara/*.jsonl"]
+    end
+
+    OC -->|native plugin| MCP
+    CC -->|MCP stdio| MCP
+    GC -->|MCP stdio| MCP
+    ANY -->|MCP stdio| MCP
+    CLI --> DB
+
+    MCP --> DB
+    HTTP --> DB
+
+    DB --> EMB
+    DB --> REL
+    DB --> AUDIT
+
+    DB --> PACK
+    DB --> PRIME
+    DB --> SYNC
 ```
-Agent (OpenCode / Any MCP-compatible agent)
-    ↓ MCP stdio
-Ohara (single Go binary)
-    ↓
-SQLite + FTS5 (~/.local/share/ohara/ohara.db)
-```
-
-## Quick Start
-
-### Install (Source Build Only)
-
-```bash
-git clone https://github.com/ashwnn/ohara.git
-cd ohara
-go build -o ohara ./cmd/ohara
-```
-
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for full build instructions.
-
-### Setup Your Agent
-
-**OpenCode** (recommended — full plugin with session management):
-```bash
-ohara setup opencode
-```
-
-**Any MCP-compatible agent** (bare MCP, no plugin):
-```json
-{
-  "mcpServers": {
-    "ohara": {
-      "command": "ohara",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-Full setup details and Memory Protocol → [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md)
-
-That's it. **One binary, one SQLite file.**
 
 ## How It Works
 
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant O as Ohara
+    participant S as SQLite
+
+    Note over A,S: Session 1
+    A->>O: mem_save("Fixed N+1 in UserList", type=bugfix, domain=database)
+    O->>S: Persist with FTS5 index + audit log
+    O->>O: Run conflict detection against existing memories
+    O->>O: Async: embed text via Ollama (if hybrid mode)
+    A->>O: mem_session_summary(Goal, Discoveries, Accomplished)
+    O->>S: Store session summary
+
+    Note over A,S: Session 2 (hours/days later)
+    A->>O: mem_prime(project="myapp", budget=2000)
+    O->>S: Query knowledge-tier memories, sort by relevance
+    O-->>A: Markdown block: Decisions, Patterns, Procedures, Conflicts
+    A->>O: mem_search("auth middleware", domain=auth)
+    O->>S: FTS5 + optional embedding hybrid search
+    O->>O: Compute relevance score (decay × access × outcomes)
+    O-->>A: Ranked results with relevance scores
 ```
-1. Agent completes significant work (bugfix, architecture decision, etc.)
-2. Agent calls mem_save → title, type, What/Why/Where/Learned
-3. Ohara persists to SQLite with FTS5 indexing
-4. Next session: agent searches memory, gets relevant context
+
+### Memory lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: mem_save
+    Active --> Active: mem_update (revision++)
+    Active --> Expired: relevance_score &lt; floor OR expires_at reached
+    Active --> Archived: mem_forget (with reason)
+    Active --> Superseded: newer memory replaces it
+    Active --> Candidate: consolidation heuristic groups episodes
+    Candidate --> Active: agent reviews + approves
+    Expired --> Archived: background sweep
+    Superseded --> Archived: background sweep
 ```
 
-Full details on session lifecycle → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+## Memory Model
 
-## MCP Tools (15)
+Ohara uses typed memory kinds, each with different durability and injection priority:
 
-| Category | Tools |
-|----------|-------|
-| **Save & Update** | `mem_save`, `mem_update`, `mem_delete`, `mem_suggest_topic_key` |
-| **Search & Retrieve** | `mem_search`, `mem_context`, `mem_timeline`, `mem_get_observation` |
-| **Session Lifecycle** | `mem_session_start`, `mem_session_end`, `mem_session_summary` |
-| **Utilities** | `mem_save_prompt`, `mem_stats`, `mem_capture_passive`, `mem_merge_projects` |
+| Kind | What it stores | Default classification | Included in `prime` |
+|------|---------------|----------------------|:---:|
+| `decision` | Architectural or design choices | foundational | always |
+| `procedure` | Verified step-by-step workflows | foundational | always |
+| `pattern` | Recurring solutions and conventions | tactical | always |
+| `bugfix` | Root cause + resolution of bugs | tactical | always |
+| `learned` | Non-obvious discoveries and gotchas | tactical | always |
+| `discovery` | Raw session notes and observations | observational | only with `--include-episodes` |
 
-Full tool reference → [DOCS.md#mcp-tools-15-tools](DOCS.md#mcp-tools-15-tools)
+**Classification tiers** control shelf life and injection priority:
+- **foundational** — never auto-pruned, always included in context injection
+- **tactical** — pruned when relevance decays below threshold
+- **observational** — short TTL, excluded from injection by default
 
-## CLI Reference
+## Feature Reasoning
 
-| Command | Description |
-|---------|-------------|
-| `ohara setup [agent]` | Install agent integration |
-| `ohara serve [port]` | Start HTTP API (default: 7331) |
-| `ohara mcp` | Start MCP server (stdio) |
-| `ohara search <query>` | Search memories |
-| `ohara save <title> <msg>` | Save a memory |
-| `ohara timeline <obs_id>` | Chronological context |
-| `ohara context [project]` | Recent session context |
-| `ohara stats` | Memory statistics |
-| `ohara export [file]` | Export to JSON |
-| `ohara import <file>` | Import from JSON |
-| `ohara projects list\|consolidate\|prune` | Manage project names |
-| `ohara version` | Show version |
+Each feature was motivated by a specific failure mode identified through comparative analysis of [Mulch](https://github.com/jayminwest/mulch), [Graphiti/Zep](https://github.com/getzep/graphiti), [Mem0](https://github.com/mem0ai/mem0), [Letta/MemGPT](https://github.com/letta-ai/letta), and current agent memory research (CoALA, Mem0, MemRL, AgeMem surveys).
 
-Full CLI → [docs/ARCHITECTURE.md#cli-reference](docs/ARCHITECTURE.md#cli-reference)
+### Domain scoping
 
-## Documentation
+**Problem**: All memories for a project queried together. As projects grow, search returns noise across unrelated subsystems — auth results mixed with deployment results mixed with database results.
 
-| Doc | Description |
-|-----|-------------|
-| [Installation](docs/INSTALLATION.md) | Build from source |
-| [Agent Setup](docs/AGENT-SETUP.md) | Per-agent configuration + Memory Protocol |
-| [Architecture](docs/ARCHITECTURE.md) | How it works + MCP tools + project structure |
-| [Full Docs](DOCS.md) | Complete technical reference |
+**Why**: Every subsequent feature (consolidation, conflict detection, context injection) becomes more useful when scoped to a domain rather than operating across a flat global pool. Domain is the single highest-leverage field.
+
+### Evidence and provenance fields
+
+**Problem**: Memories have no machine-readable link to commits, issues, or files that justify them. Over time it becomes impossible to audit whether a `decision` is still valid or which file it applies to.
+
+**Why**: Mulch treats evidence as first-class schema. It enables file-targeted context packs, reduces irrelevant retrieval, and makes memories maintainable across code churn.
+
+### Context injection (`ohara prime`)
+
+**Problem**: Raw JSON retrieval wastes context tokens on scaffolding. Agents spend tokens parsing structure instead of acting on substance.
+
+**Why**: Mulch's `prime` emits compact markdown designed for direct injection into a system prompt. The two-tier model (Knowledge tier injected by default, Episode tier opt-in) prevents session noise from crowding out high-signal decisions and patterns.
+
+### Relevance scoring with temporal decay
+
+**Problem**: Two `active` memories treated as equally relevant regardless of access patterns. An 8-month-old unaccessed memory ranks the same as one used yesterday.
+
+**Why**: Research on temporal decay (AgeMem, MemoryAgentBench) shows that scoring by recency + access frequency materially improves retrieval precision. The formula `fts5_rank × decay_factor × log(1 + access_count) × outcome_boost` gives four independent signals.
+
+### Outcome tracking
+
+**Problem**: No feedback loop on whether a memory was *correct*. A bugfix whose resolution was wrong is treated identically to one verified ten times.
+
+**Why**: Evo-Memory research identifies outcome tracking as the simplest precursor to RL scoring. Success/failure counts feed into `outcome_boost` in the relevance formula.
+
+### Actor-aware writes (`written_by`)
+
+**Problem**: Multiple agents (OpenCode, Claude Code, consolidation jobs, git imports) write to the same DB with no source tracking. A consolidation job's inference is treated as user ground-truth at retrieval time.
+
+**Why**: Mem0 Group-Chat v2 identified this as a systematic error vector in multi-agent systems. Tagging writes as `user`, `agent`, `consolidation`, or `import` lets the receiving agent weight inferences lower than verified facts.
+
+### Conflict detection and resolution
+
+**Problem**: Two memories with contradictory advice (e.g., "use WAL mode" vs "disable WAL for replicas") both surface in results with no warning.
+
+**Why**: Mem0's four-choice Update Resolver (add/merge/invalidate/relate/suppress) models all real-world conflict patterns. Surface-time conflict detection catches contradictions that slip through save-time checks.
+
+### Relation graph
+
+**Problem**: All memories are flat rows with no expressed relationships. If a `decision` caused three `bugfix` entries, that structure is invisible.
+
+**Why**: Mem0 graph and MAGMA research show that typed relations (`caused`, `resolves`, `supersedes`, `implements`, `contradicts`) enable traversal queries that flat search cannot answer — "what did this decision lead to?" or "which memories resolve this pattern?"
+
+### Hybrid retrieval (FTS5 + embeddings)
+
+**Problem**: FTS5 is keyword-frequency matching. "Failed auth middleware" misses "JWT verification race condition" despite being semantically identical.
+
+**Why**: Mem0 (arXiv:2504.19413) shows 26% relative improvement in recall with hybrid BM25 + vector retrieval. The zero-LLM-at-retrieval constraint (from Graphiti) keeps query latency deterministic.
+
+### Consolidation
+
+**Problem**: Session memories accumulate as raw episodic records and are never abstracted into durable knowledge. Over time, episode noise crowds out high-signal semantic memories.
+
+**Why**: CoALA and AgeMem research identify episodic-to-semantic consolidation as the highest-leverage improvement for long-running agents. The heuristic grouping step runs in background (sleep-time compute from Letta); agent curation remains mandatory before promotion.
+
+### Secret redaction
+
+**Problem**: Agents may accidentally persist API keys, tokens, or credentials in memory content.
+
+**Why**: Regex-based pre-write redaction (GitHub tokens, OpenAI keys, etc.) runs before any content touches the database. This is defense-in-depth alongside the plugin-side stripping.
+
+## Features
+
+- **Typed memory** — 6 memory kinds (`decision`, `procedure`, `pattern`, `bugfix`, `learned`, `discovery`) with classification tiers (foundational, tactical, observational) controlling shelf life and injection priority
+- **Domain scoping** — memories scoped by subsystem (`auth`, `database`, `api`) to prevent cross-concern noise in retrieval
+- **Context injection** — `ohara prime` builds token-budgeted markdown packs for direct system prompt injection (Knowledge tier by default, Episode tier opt-in)
+- **Relevance scoring** — temporal decay, access frequency, and outcome tracking combine into a composite score that ranks results by actual utility
+- **Conflict detection and resolution** — save-time and retrieval-time contradiction surfacing with a 5-action resolver (add, merge, invalidate, relate, suppress)
+- **Relation graph** — typed directional links between memories (`caused`, `resolves`, `supersedes`, `implements`, `contradicts`) enabling traversal queries
+- **Hybrid retrieval** — FTS5 + optional Ollama embedding sidecar with Reciprocal Rank Fusion, zero LLM calls at query time
+- **Consolidation** — heuristic grouping of episodic memories into candidates for promotion to semantic knowledge, with mandatory agent review
+- **Actor-aware writes** — source tracking (`user`, `agent`, `consolidation`, `import`, `system`) so agents can weight inferences lower than verified facts
+- **Secret redaction** — regex-based pre-write redaction strips tokens and keys before they touch the database
+- **31 MCP tools** — save, search, retrieve, link, consolidate, feedback, outcomes, conflict resolution, entity extraction, graph traversal, session lifecycle
+- **Multi-agent** — OpenCode native plugin, MCP stdio for Claude Code / Gemini CLI / any MCP client, HTTP API
+- **Git sync** — JSONL mirror for repo-portable project memory with union merge strategy
+- **Schema validation and health checks** — `ohara validate` for CI, `ohara doctor --fix` for periodic maintenance
 
 ## Fork Status
 
-This is a **personal fork** maintained for individual use. It:
-
-- Retains the MCP server and HTTP API (the core memory interface)
-- Uses source-build installation only
-- Does **not** include TUI, or publishing-oriented surfaces
-- Tracks upstream Engram selectively
-
-For the original project with full features (TUI, sync, etc.), see [**Gentleman-Programming/engram**](https://github.com/Gentleman-Programming/engram).
+Personal fork of Engram. Source-build only. No TUI or marketplace. Tracks upstream selectively.
 
 ## License
 
 MIT (same as upstream Engram)
-
-</invoke>

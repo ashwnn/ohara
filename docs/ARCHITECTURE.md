@@ -9,7 +9,6 @@
 - [Memory Hygiene](#memory-hygiene)
 - [Topic Key Workflow](#topic-key-workflow-recommended)
 - [Project Structure](#project-structure)
-- [CLI Reference](#cli-reference)
 
 ---
 
@@ -50,18 +49,34 @@ Next session starts → Previous session context is injected automatically
 | `mem_save` | Save a structured observation (decision, bugfix, pattern, etc.) |
 | `mem_update` | Update an existing observation by ID |
 | `mem_delete` | Delete an observation (soft-delete by default, hard-delete optional) |
+| `mem_forget` | Archive a memory with a documented reason; preserves audit trail |
 | `mem_suggest_topic_key` | Suggest a stable `topic_key` for evolving topics before saving |
-| `mem_search` | Full-text search across all memories |
-| `mem_session_summary` | Save end-of-session summary |
+| `mem_search` | Full-text search across all memories with domain/classification/actor filters |
+| `mem_search_rerank` | Optional slow-path LLM reranking on top of search results |
 | `mem_context` | Get recent context from previous sessions |
+| `mem_prime` | Build structured prime context with Knowledge vs Episode tier separation |
+| `mem_pack` | Build a token-budgeted context pack from memory items |
 | `mem_timeline` | Chronological context around a specific observation |
 | `mem_get_observation` | Get full content of a specific memory |
-| `mem_save_prompt` | Save a user prompt for future context |
-| `mem_stats` | Memory system statistics |
+| `mem_link` | Create a typed relation between two memories |
+| `mem_unlink` | Remove a relation |
+| `mem_related` | Traverse relations from a given memory |
+| `mem_graph_context` | Entity-centric graph context retrieval |
+| `mem_extract_entities` | Extract and link entities from a memory |
+| `mem_consolidate_candidates` | Review grouped episodic memories for consolidation |
+| `mem_mark_consolidated` | Archive source memories after semantic consolidation |
+| `mem_mark_used` | Record that a memory was used (increments access count) |
+| `mem_append_outcome` | Append success/failure outcome to a memory |
+| `mem_feedback` | Record explicit utility feedback (RL-style weighting) |
+| `mem_resolve_conflict` | Resolve a detected conflict via merge/link/invalidate/relate/suppress |
+| `mem_session_summary` | Save end-of-session summary |
 | `mem_session_start` | Register a session start |
 | `mem_session_end` | Mark a session as completed |
+| `mem_save_prompt` | Save a user prompt for future context |
 | `mem_capture_passive` | Extract learnings from text output |
+| `mem_stats` | Memory system statistics |
 | `mem_merge_projects` | Merge project name variants into canonical name (admin) |
+| `mem_list_domains` | List all distinct domains for a project (admin) |
 
 ---
 
@@ -85,7 +100,8 @@ Token-efficient memory retrieval — don't dump everything, drill in:
 - Duplicates update metadata instead of creating new rows
 - Topic upserts increment `revision_count`
 - `mem_delete` uses soft-delete by default
-- Search operations ignore soft-deleted observations
+- `mem_forget` archives with a documented reason and preserves the audit trail
+- Search operations ignore soft-deleted and archived observations
 
 ---
 
@@ -111,46 +127,21 @@ Use this when a topic evolves over time:
 
 ```
 ohara/
-├── cmd/ohara/main.go               # CLI entrypoint (binary: ohara)
+├── cmd/ohara/main.go               # CLI entrypoint
 ├── internal/
-│   ├── store/store.go              # Core: SQLite + FTS5 + data ops
-│   ├── server/server.go            # HTTP REST API (port 7331)
-│   ├── mcp/mcp.go                  # MCP stdio server (15 tools)
+│   ├── store/                      # Core: SQLite + FTS5 + memory operations
+│   │   ├── store.go                # Schema, migrations, session CRUD
+│   │   ├── memories.go             # Memory CRUD, conflict detection, access tracking
+│   │   ├── pack.go                 # Context pack and prime pack assembly
+│   │   ├── hybrid.go               # FTS5 + embedding hybrid retrieval
+│   │   └── graph_feedback.go       # Relation graph, entities, utility feedback
+│   ├── server/server.go            # HTTP REST API
+│   ├── mcp/mcp.go                  # MCP stdio server (31 tools)
+│   ├── config/config.go            # Configuration loading
+│   ├── redact/redact.go            # Secret redaction pipeline
+│   ├── maintain/maintain.go        # Archive, backup, integrity
 │   ├── setup/setup.go              # Agent plugin installer
-│   └── project/                    # Project name detection
-├── plugin/                         # Agent plugins (OpenCode, etc.)
-├── skills/                         # AI skills and guardrails
-├── DOCS.md                         # Full technical documentation
+│   └── sync/                       # Git sync (JSONL mirror)
+├── plugin/                         # Agent plugins
 └── go.mod / go.sum
 ```
-
-**Note:** This fork focuses on MCP and HTTP API. TUI features from upstream are not included.
-
----
-
-## CLI Reference
-
-```
-ohara setup [agent]       Install/setup agent integration
-ohara serve [port]        Start HTTP API server (default: 7331)
-ohara mcp                 Start MCP server (stdio transport)
-ohara search <query>      Search memories
-ohara save <title> <msg>  Save a memory
-ohara timeline <obs_id>   Chronological context around an observation
-ohara context [project]   Recent context from previous sessions
-ohara stats               Memory statistics
-ohara export [file]       Export all memories to JSON
-ohara import <file>       Import memories from JSON
-ohara projects list       Show all projects with counts
-ohara projects consolidate  Interactive merge of similar project names
-ohara projects prune      Remove projects with 0 observations
-ohara version             Show version
-```
-
----
-
-## Next Steps
-
-- [Agent Setup](AGENT-SETUP.md) — connect your agent to Ohara
-- [Full Docs](../DOCS.md) — complete technical reference
-

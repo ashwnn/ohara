@@ -2,30 +2,14 @@
 
 # Ohara — Technical Reference
 
-This is the complete technical reference for Ohara. For getting started, see the [README](README.md). For per-agent setup, see [Agent Setup](docs/AGENT-SETUP.md).
-
----
-
-## Quick Navigation
-
-| Section | What you'll find |
-|---------|-----------------|
-| [Database Schema](#database-schema) | Tables, FTS5, SQLite config |
-| [HTTP API](#http-api-endpoints) | All REST endpoints |
-| [MCP Tools](#mcp-tools-15-tools) | Detailed reference for all 15 memory tools |
-| [Memory Protocol](#memory-protocol) | When/how agents should use the tools |
-| [Project Name Normalization](#project-name-normalization) | Auto-detection and normalization |
-| [Features](#features) | FTS5 search, timeline, privacy, export/import |
-| [Running as a Service](#running-as-a-service) | systemd setup |
-| [Design Decisions](#design-decisions) | Why Go, why SQLite, why no auto-capture |
-
-For other docs:
-
-| Doc | Description |
-|-----|-------------|
-| [Installation](docs/INSTALLATION.md) | Build from source only |
-| [Agent Setup](docs/AGENT-SETUP.md) | Per-agent configuration |
-| [Architecture](docs/ARCHITECTURE.md) | How it works, session lifecycle, CLI reference |
+- [Database Schema](#database-schema)
+- [HTTP API](#http-api-endpoints)
+- [MCP Tools](#mcp-tools-31-tools)
+- [Memory Protocol](#memory-protocol)
+- [Project Name Normalization](#project-name-normalization)
+- [Features](#features)
+- [Design Decisions](#design-decisions)
+- [Dependencies](#dependencies)
 
 ---
 
@@ -34,10 +18,16 @@ For other docs:
 ### Tables
 
 - **sessions** — `id` (TEXT PK), `project`, `directory`, `started_at`, `ended_at`, `summary`, `status`
-- **observations** — `id` (INTEGER PK AUTOINCREMENT), `session_id` (FK), `type`, `title`, `content`, `tool_name`, `project`, `scope`, `topic_key`, `normalized_hash`, `revision_count`, `duplicate_count`, `last_seen_at`, `created_at`, `updated_at`, `deleted_at`
-- **observations_fts** — FTS5 virtual table synced via triggers (`title`, `content`, `tool_name`, `type`, `project`)
-- **user_prompts** — `id` (INTEGER PK AUTOINCREMENT), `session_id` (FK), `content`, `project`, `created_at`
-- **prompts_fts** — FTS5 virtual table synced via triggers (`content`, `project`)
+- **observations** — `id` (INTEGER PK), `session_id` (FK), `type`, `title`, `content`, `tool_name`, `project`, `scope`, `topic_key`, `normalized_hash`, `revision_count`, `duplicate_count`, `last_seen_at`, `created_at`, `updated_at`, `deleted_at`
+- **memory_items** — `id` (INTEGER PK), `project_id`, `actor_id`, `kind`, `scope`, `title`, `body`, `tags`, `source`, `status`, `superseded_by`, `expires_at`, `domain`, `evidence_json`, `applies_to_json`, `related_json`, `classification`, `access_count`, `last_accessed`, `valid_from`, `valid_to`, `superseded_at`, `session_id`, `trust_level`, `ingested_at`, `written_by`, `trigger_condition`, `utility_weight`, `consolidated_from`
+- **memory_relations** — `id` (INTEGER PK), `from_id`, `to_id`, `relation`, `created_at` — typed directional links between memories
+- **memory_outcomes** — `id` (INTEGER PK), `memory_id`, `status`, `notes`, `actor_id`, `ts` — success/failure tracking per memory
+- **memory_usage** — `id` (INTEGER PK), `memory_id`, `event`, `session_id`, `ts` — explicit usage events
+- **obs_embeddings** — `obs_id` (PK), `embedding` (BLOB), `model`, `created_at` — float32 embedding vectors
+- **entities** + **obs_entities** — entity graph for cross-memory entity queries
+- **audit_log** — `id` (INTEGER PK), `obs_id`, `action`, `actor_id`, `session_id`, `trust_level`, `ts`, `snapshot` — append-only
+- **observations_fts** — FTS5 virtual table synced via triggers
+- **user_prompts** + **prompts_fts** — user prompt storage with FTS5
 
 ### SQLite Configuration
 
@@ -45,6 +35,7 @@ For other docs:
 - Busy timeout 5000ms
 - Synchronous NORMAL
 - Foreign keys ON
+- Auto-checkpoint every 1000 WAL frames
 
 ---
 
@@ -54,156 +45,135 @@ All endpoints return JSON. Server listens on `127.0.0.1:7331`.
 
 ### Health
 
-- `GET /health` — Returns `{"status": "ok", "service": "ohara", "version": "<current>"}`
+- `GET /health` — `{"status": "ok", "service": "ohara", "version": "<current>"}`
 
 ### Sessions
 
-- `POST /sessions` — Create session. Body: `{id, project, directory}`
-- `POST /sessions/{id}/end` — End session. Body: `{summary}`
-- `GET /sessions/recent` — Recent sessions. Query: `?project=X&limit=N`
+- `POST /sessions` — Create session
+- `POST /sessions/{id}/end` — End session with summary
+- `GET /sessions/recent` — Recent sessions
 
 ### Observations
 
-- `POST /observations` — Add observation. Body: `{session_id, type, title, content, tool_name?, project?, scope?, topic_key?}`
-- `GET /observations/recent` — Recent observations. Query: `?project=X&scope=project|personal&limit=N`
-- `GET /observations/{id}` — Get single observation by ID
-- `PATCH /observations/{id}` — Update fields. Body: `{title?, content?, type?, project?, scope?, topic_key?}`
-- `DELETE /observations/{id}` — Delete observation (`?hard=true` for hard delete)
+- `POST /observations` — Add observation
+- `GET /observations/recent` — Recent observations
+- `GET /observations/{id}` — Get by ID
+- `PATCH /observations/{id}` — Update fields
+- `DELETE /observations/{id}` — Delete (soft or hard)
 
 ### Search
 
-- `GET /search` — FTS5 search. Query: `?q=QUERY&type=TYPE&project=PROJECT&scope=SCOPE&limit=N`
+- `GET /search` — FTS5 search with type/project/scope/limit filters
 
 ### Timeline
 
-- `GET /timeline` — Chronological context. Query: `?observation_id=N&before=5&after=5`
+- `GET /timeline` — Chronological context around an observation
 
 ### Prompts
 
-- `POST /prompts` — Save user prompt. Body: `{session_id, content, project?}`
-- `GET /prompts/recent` — Recent prompts. Query: `?project=X&limit=N`
-- `GET /prompts/search` — Search prompts. Query: `?q=QUERY&project=X&limit=N`
+- `POST /prompts` — Save user prompt
+- `GET /prompts/recent` — Recent prompts
+- `GET /prompts/search` — Search prompts
 
 ### Context
 
-- `GET /context` — Formatted context. Query: `?project=X&scope=project|personal`
+- `GET /context` — Formatted context pack
 
 ### Passive Capture
 
-- `POST /observations/passive` — Extract structured learnings from text. Body: `{content, session_id?, project?}`
+- `POST /observations/passive` — Extract learnings from text
 
 ### Export / Import
 
 - `GET /export` — Export all data as JSON
-- `POST /import` — Import data from JSON. Body: ExportData JSON
+- `POST /import` — Import from JSON
 
 ### Stats
 
 - `GET /stats` — Memory statistics
 
-### Project Migration
-
-- `POST /projects/migrate` — Migrate observations between project names. Body: `{source, target}`
-
-### Environment Variables
-
-| Variable | Description | Default |
-|---|---|---|
-| `OHARA_DATA_DIR` | Override data directory | `~/.local/share/ohara` |
-| `OHARA_HTTP_ADDR` | Override HTTP server address | `127.0.0.1:7331` |
-| `OHARA_SOCKET` | Override Unix socket path | (none — TCP by default) |
-| `OHARA_SYNC_DIR` | Override sync directory | `.ohara/` in cwd |
-| `OHARA_PROJECT` | Override project name for MCP server | auto-detected via git |
-
 ---
 
-## MCP Tools (15 tools)
+## MCP Tools (31 tools)
 
-### mem_search
+### Save & Update
 
-Search persistent memory across all sessions. Supports FTS5 full-text search with type/project/scope/limit filters.
+| Tool | Purpose |
+|------|---------|
+| `mem_save` | Save structured observation with domain, classification, evidence, actor metadata |
+| `mem_update` | Update observation by ID (partial update supported) |
+| `mem_delete` | Soft or hard delete |
+| `mem_forget` | Archive with documented reason, preserves audit trail |
+| `mem_suggest_topic_key` | Stable topic key for upserts |
 
-### mem_save
+### Search & Retrieve
 
-Save structured observations:
+| Tool | Purpose |
+|------|---------|
+| `mem_search` | FTS5 + optional hybrid search with domain/classification/actor filters, relevance scoring |
+| `mem_search_rerank` | Explicit slow-path LLM reranking (opt-in) |
+| `mem_context` | Recent session context |
+| `mem_prime` | Structured prime context with Knowledge vs Episode tier separation |
+| `mem_pack` | Token-budgeted context pack |
+| `mem_timeline` | Chronological context around an observation |
+| `mem_get_observation` | Full untruncated content by ID |
+| `mem_graph_context` | Entity-centric graph traversal |
 
-- **title**: Short, searchable (e.g. "JWT auth middleware")
-- **type**: `decision` | `architecture` | `bugfix` | `pattern` | `config` | `discovery` | `learning`
-- **scope**: `project` (default) | `personal`
-- **topic_key**: optional canonical topic id (e.g. `architecture/auth-model`)
-- **content**: Structured with `**What**`, `**Why**`, `**Where**`, `**Learned**`
+### Relations
 
-Exact duplicate saves are deduplicated using normalized content hash + project + scope + type + title.
+| Tool | Purpose |
+|------|---------|
+| `mem_link` | Create typed relation (caused, resolves, supersedes, implements, contradicts) |
+| `mem_unlink` | Remove a relation |
+| `mem_related` | Traverse relations from a memory |
 
-### mem_update
+### Consolidation
 
-Update an observation by ID. Supports partial updates for `title`, `content`, `type`, `project`, `scope`, and `topic_key`.
+| Tool | Purpose |
+|------|---------|
+| `mem_consolidate_candidates` | Grouped episodic memories ready for review |
+| `mem_mark_consolidated` | Archive source memories after semantic consolidation |
+| `mem_extract_entities` | Heuristic entity extraction and linking |
 
-### mem_suggest_topic_key
+### Feedback & Outcomes
 
-Suggest a stable `topic_key` from `type + title`. Uses family heuristics like `architecture/*`, `bug/*`, etc.
+| Tool | Purpose |
+|------|---------|
+| `mem_mark_used` | Record usage event (increments access count) |
+| `mem_append_outcome` | Append success/failure/unknown outcome |
+| `mem_feedback` | Explicit utility feedback for RL-style weighting |
 
-### mem_delete
+### Conflicts
 
-Delete an observation by ID. Uses soft-delete by default.
+| Tool | Purpose |
+|------|---------|
+| `mem_resolve_conflict` | Resolve via add/merge/invalidate/relate/suppress |
 
-### mem_save_prompt
+### Session Lifecycle
 
-Save user prompts — records what the user asked.
+| Tool | Purpose |
+|------|---------|
+| `mem_session_start` | Register session start |
+| `mem_session_end` | Mark session completed |
+| `mem_session_summary` | Save structured end-of-session summary |
 
-### mem_context
+### Utilities
 
-Get recent memory context from previous sessions.
-
-### mem_stats
-
-Show memory system statistics.
-
-### mem_timeline
-
-Chronological context around a specific observation.
-
-### mem_get_observation
-
-Get full untruncated content of a specific observation by ID.
-
-### mem_session_summary
-
-Save comprehensive end-of-session summary:
-
-```
-## Goal
-## Instructions
-## Discoveries
-## Accomplished
-## Relevant Files
-```
-
-### mem_session_start
-
-Register the start of a new coding session.
-
-### mem_session_end
-
-Mark a session as completed with optional summary.
-
-### mem_capture_passive
-
-Extract structured learnings from text output. Looks for `## Key Learnings:` sections.
-
-### mem_merge_projects
-
-**Admin tool.** Merge multiple project name variants into a single canonical name.
+| Tool | Purpose |
+|------|---------|
+| `mem_save_prompt` | Save user prompt |
+| `mem_capture_passive` | Extract learnings from text |
+| `mem_stats` | System statistics |
+| `mem_merge_projects` | Merge project name variants (admin) |
+| `mem_list_domains` | List domains for a project (admin) |
 
 ---
 
 ## Memory Protocol
 
-The Memory Protocol teaches agents **when** and **how** to use Ohara's MCP tools.
+### WHEN TO SAVE
 
-### WHEN TO SAVE (mandatory)
-
-Call `mem_save` IMMEDIATELY after:
+Call `mem_save` after:
 - Bug fix completed
 - Architecture or design decision made
 - Non-obvious discovery
@@ -211,83 +181,35 @@ Call `mem_save` IMMEDIATELY after:
 - Pattern established
 - User preference learned
 
-Format for `mem_save`:
+Format:
 - **title**: Verb + what — short, searchable
-- **type**: `bugfix` | `decision` | `architecture` | `discovery` | `pattern` | `config` | `preference`
-- **scope**: `project` (default) | `personal`
-- **topic_key** (optional): stable key like `architecture/auth-model`
-- **content**:
-  ```
-  **What**: One sentence
-  **Why**: What motivated it
-  **Where**: Files or paths affected
-  **Learned**: Gotchas, edge cases
-  ```
+- **type**: `bugfix` | `decision` | `architecture` | `discovery` | `pattern` | `config` | `procedure` | `learning`
+- **domain**: Subsystem scope (`auth`, `database`, `api`, etc.)
+- **classification**: `foundational` | `tactical` | `observational`
+- **content**: `**What**`, `**Why**`, `**Where**`, `**Learned**`
 
-### Topic update rules (mandatory)
+### WHEN TO SEARCH
 
-- Different topics must not overwrite each other
-- Reuse the same `topic_key` to update evolving topics
-- Call `mem_suggest_topic_key` first if unsure
+1. `mem_context` — check recent session history
+2. `mem_search` — FTS5 + optional hybrid search with domain filters
+3. `mem_get_observation` — full content of a specific result
 
-### WHEN TO SEARCH MEMORY
+### SESSION CLOSE
 
-When the user asks to recall something:
-1. First call `mem_context`
-2. If not found, call `mem_search`
-3. Use `mem_get_observation` for full content
-
-Also search proactively when starting work that might have been done before.
-
-### SESSION CLOSE PROTOCOL (mandatory)
-
-Before ending a session, call `mem_session_summary` with:
-
-```
-## Goal
-[What we were working on]
-
-## Instructions
-[User preferences discovered]
-
-## Discoveries
-- [Technical findings]
-
-## Accomplished
-- [Completed items]
-
-## Next Steps
-- [What remains]
-
-## Relevant Files
-- path/to/file — [what changed]
-```
+Call `mem_session_summary` with structured summary:
+- Goal, Instructions, Discoveries, Accomplished, Relevant Files
 
 ### AFTER COMPACTION
 
-If compaction/context reset occurs:
 1. Call `mem_session_summary` with compacted summary
 2. Call `mem_context` to recover previous context
-3. Only THEN continue working
+3. Continue working
 
 ---
 
 ## Project Name Normalization
 
-Ohara prevents project name drift by normalizing on write and read: **lowercase**, **trimmed**, **collapsed hyphens/underscores**.
-
-### Auto-detection
-
-MCP server auto-detects project name:
-1. `--project` flag
-2. `OHARA_PROJECT` environment variable
-3. Git remote origin URL
-4. Git repository root directory name
-5. Current working directory basename
-
-### Similar-project warnings
-
-When saving to a new project, Ohara checks for similar existing names and warns if a variant exists.
+Ohara normalizes project names on write and read: lowercase, trimmed, collapsed hyphens/underscores. Auto-detection uses git remote, git root, or working directory basename.
 
 ---
 
@@ -295,88 +217,69 @@ When saving to a new project, Ohara checks for similar existing names and warns 
 
 ### Full-Text Search (FTS5)
 
-- Searches across title, content, tool_name, type, and project
-- Query sanitization: wraps words in quotes to avoid FTS5 syntax errors
+Searches across title, content, tool_name, type, and project. Query sanitization wraps words in quotes to avoid FTS5 syntax errors.
 
-### Timeline (Progressive Disclosure)
+### Hybrid Retrieval
 
-Three-layer pattern:
+Opt-in FTS5 + Ollama embedding sidecar. Reciprocal Rank Fusion merges BM25 and cosine similarity scores. Zero LLM inference calls at query time — deterministic latency.
 
-1. `mem_search` — Find relevant observations
-2. `mem_timeline` — Drill into chronological neighborhood
-3. `mem_get_observation` — Get full content
+### Context Injection (`mem_prime`)
+
+Token-budgeted markdown packs for direct system prompt injection. Two-tier model: Knowledge tier (decisions, patterns, procedures) included by default; Episode tier (raw session notes) opt-in only.
+
+### Progressive Disclosure
+
+Three-layer retrieval pattern:
+1. `mem_search` — compact results with IDs
+2. `mem_timeline` — chronological neighborhood
+3. `mem_get_observation` — full content
+
+### Relation Graph
+
+Six typed relations between memories: `caused`, `resolves`, `supersedes`, `related_to`, `implements`, `contradicts`. Enables traversal queries that flat search cannot answer.
+
+### Conflict Detection
+
+Save-time and retrieval-time contradiction surfacing. Five resolution actions: add, merge, invalidate, relate, suppress.
+
+### Consolidation
+
+Heuristic grouping of episodic memories into consolidation candidates. Background grouping, mandatory agent review before promotion to semantic knowledge.
+
+### Secret Redaction
+
+Regex-based pre-write redaction strips GitHub tokens, OpenAI keys, and other credential patterns before content touches the database.
 
 ### Privacy Tags
 
-`<private>...</private>` content is stripped:
-
-- Example: `Set up API with <private>sk-abc123</private>` becomes `Set up API with [REDACTED]`
-
-### User Prompt Storage
-
-Separate table captures what the USER asked. Full FTS5 search support.
+`<private>...</private>` content stripped at both plugin and store layers.
 
 ### Export / Import
 
-- `ohara export` — JSON dump of all sessions, observations, prompts
-- `ohara import <file>` — Load from JSON with duplicate handling
+JSON dump and restore of all sessions, observations, and prompts.
 
 ### No Raw Auto-Capture
 
-All memory comes from the agent — no firehose of raw tool calls. The agent's curated summaries are higher signal and more searchable.
-
----
-
-## Running as a Service
-
-### Using systemd
-
-1. Move binary to `~/.local/bin` (ensure in `$PATH`)
-2. Create directories: `mkdir -p ~/.local/share/ohara ~/.config/systemd/user`
-3. Create `~/.config/systemd/user/ohara.service`:
-
-```ini
-[Unit]
-Description=Ohara Memory Server
-After=network.target
-
-[Service]
-WorkingDirectory=%h
-ExecStart=%h/.local/bin/ohara serve
-Restart=always
-RestartSec=3
-Environment=OHARA_DATA_DIR=%h/.local/share/ohara
-
-[Install]
-WantedBy=default.target
-```
-
-4. `systemctl --user daemon-reload`
-5. `systemctl --user enable ohara`
-6. `systemctl --user start ohara`
-7. `journalctl --user -u ohara -f`
+All memory comes from the agent — curated summaries only.
 
 ---
 
 ## Design Decisions
 
-1. **Go over TypeScript** — Single binary, cross-platform, no runtime
-2. **SQLite + FTS5 over vector DB** — FTS5 covers 95% of use cases
+1. **Go over TypeScript** — single binary, cross-platform, no runtime
+2. **SQLite + FTS5 over vector DB** — FTS5 covers most use cases; embeddings are opt-in
 3. **Agent-agnostic core** — Go binary is the brain, thin plugins per-agent
-4. **Agent-driven compression** — The agent already has an LLM
-5. **Privacy at two layers** — Strip in plugin AND store
-6. **Pure Go SQLite** — No CGO means true cross-platform distribution
-7. **No raw auto-capture** — Curated summaries only
+4. **Agent-driven compression** — the agent already has an LLM, no need for another
+5. **Privacy at two layers** — strip in plugin AND store
+6. **Pure Go SQLite** — no CGO, true cross-platform
+7. **No raw auto-capture** — curated summaries only
+8. **Zero LLM at retrieval time** — deterministic query latency, reranking is explicit opt-in
 
 ---
 
 ## Dependencies
 
-### Go
-
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `github.com/mark3labs/mcp-go` | v0.44.0 | MCP protocol implementation |
-| `modernc.org/sqlite` | v1.45.0 | Pure Go SQLite driver |
-
-
+| `modernc.org/sqlite` | v1.45.0 | Pure Go SQLite driver (no CGO) |
