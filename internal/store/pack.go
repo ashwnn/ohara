@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ashwnn/ohara/internal/token"
 )
@@ -40,6 +41,7 @@ func (s *Store) BuildPack(p PackParams) (*PackResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build pack: get global items: %w", err)
 	}
+	globalItems = filterPackItems(globalItems, p.Domain, p.Asof)
 
 	globalSection := ""
 	globalTokens := 0
@@ -62,12 +64,14 @@ func (s *Store) BuildPack(p PackParams) (*PackResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("build pack: get project items: %w", err)
 		}
+		projectItems = filterPackItems(projectItems, p.Domain, p.Asof)
 	}
 
 	// Also include project-scope postmortems if session_id provided
 	if p.SessionID != "" {
 		pmItems, err := s.GetMemories(p.ProjectID, MemoryScopeProject, MemoryKindPostmortem, MemoryStatusActive, 5)
 		if err == nil && len(pmItems) > 0 {
+			pmItems = filterPackItems(pmItems, p.Domain, p.Asof)
 			// Limit postmortems to 100 tokens each
 			for _, item := range pmItems {
 				if len(projectItems) >= maxProjectItems {
@@ -122,6 +126,46 @@ func (s *Store) BuildPack(p PackParams) (*PackResult, error) {
 	result.Truncated = result.TokenCount >= budget
 
 	return result, nil
+}
+
+func filterPackItems(items []MemoryItem, domain, asof string) []MemoryItem {
+	if domain == "" && asof == "" {
+		return items
+	}
+	var out []MemoryItem
+	for _, item := range items {
+		if domain != "" && item.Domain != domain {
+			continue
+		}
+		if asof != "" && !memoryActiveAsOf(item, asof) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func memoryActiveAsOf(item MemoryItem, asof string) bool {
+	asofTime, err := time.Parse(time.RFC3339, asof)
+	if err != nil {
+		asofTime, err = time.Parse(time.RFC3339Nano, asof)
+		if err != nil {
+			return true
+		}
+	}
+	if item.ValidFrom != nil && *item.ValidFrom != "" {
+		vf, err := time.Parse(time.RFC3339Nano, *item.ValidFrom)
+		if err == nil && vf.After(asofTime) {
+			return false
+		}
+	}
+	if item.ValidTo != nil && *item.ValidTo != "" {
+		vt, err := time.Parse(time.RFC3339Nano, *item.ValidTo)
+		if err == nil && !vt.After(asofTime) {
+			return false
+		}
+	}
+	return true
 }
 
 // formatMemorySection formats a single memory item as a section.
@@ -208,14 +252,20 @@ type PackStats struct {
 	ByKind           map[string]int `json:"by_kind"`
 	ByScope          map[string]int `json:"by_scope"`
 	ByStatus         map[string]int `json:"by_status"`
+	ByDomain         map[string]int `json:"by_domain"`
+	ByClassification map[string]int `json:"by_classification"`
+	ByActor          map[string]int `json:"by_actor"`
 }
 
 // MemoryStats returns aggregate statistics for memory items.
 func (s *Store) MemoryStats() (*PackStats, error) {
 	stats := &PackStats{
-		ByKind:   make(map[string]int),
-		ByScope:  make(map[string]int),
-		ByStatus: make(map[string]int),
+		ByKind:           make(map[string]int),
+		ByScope:          make(map[string]int),
+		ByStatus:         make(map[string]int),
+		ByDomain:         make(map[string]int),
+		ByClassification: make(map[string]int),
+		ByActor:          make(map[string]int),
 	}
 
 	// Total count
@@ -256,6 +306,45 @@ func (s *Store) MemoryStats() (*PackStats, error) {
 			var count int
 			if err := rows3.Scan(&status, &count); err == nil {
 				stats.ByStatus[status] = count
+			}
+		}
+	}
+
+	// By domain
+	rows4, err := s.queryItHook(s.db, "SELECT domain, COUNT(*) FROM memory_items WHERE domain != '' GROUP BY domain")
+	if err == nil {
+		defer rows4.Close()
+		for rows4.Next() {
+			var domain string
+			var count int
+			if err := rows4.Scan(&domain, &count); err == nil {
+				stats.ByDomain[domain] = count
+			}
+		}
+	}
+
+	// By classification
+	rows5, err := s.queryItHook(s.db, "SELECT classification, COUNT(*) FROM memory_items WHERE classification != '' GROUP BY classification")
+	if err == nil {
+		defer rows5.Close()
+		for rows5.Next() {
+			var class string
+			var count int
+			if err := rows5.Scan(&class, &count); err == nil {
+				stats.ByClassification[class] = count
+			}
+		}
+	}
+
+	// By actor (written_by)
+	rows6, err := s.queryItHook(s.db, "SELECT written_by, COUNT(*) FROM memory_items WHERE written_by != '' GROUP BY written_by")
+	if err == nil {
+		defer rows6.Close()
+		for rows6.Next() {
+			var actor string
+			var count int
+			if err := rows6.Scan(&actor, &count); err == nil {
+				stats.ByActor[actor] = count
 			}
 		}
 	}
