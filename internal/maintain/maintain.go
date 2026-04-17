@@ -140,7 +140,8 @@ func ArchiveExpired(db DB, dryRun bool) (int, error) {
 			 WHERE status = 'active'
 			   AND expires_at IS NOT NULL
 			   AND expires_at != ''
-			   AND datetime(expires_at) < datetime('now')`,
+			   AND datetime(expires_at) < datetime('now')
+			   AND classification != 'foundational'`,
 		).Scan(&count)
 		return count, err
 	}
@@ -152,7 +153,8 @@ func ArchiveExpired(db DB, dryRun bool) (int, error) {
 		 WHERE status = 'active'
 		   AND expires_at IS NOT NULL
 		   AND expires_at != ''
-		   AND datetime(expires_at) < datetime('now')`,
+		   AND datetime(expires_at) < datetime('now')
+		   AND classification != 'foundational'`,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("archive expired memories: %w", err)
