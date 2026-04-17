@@ -19,31 +19,36 @@ Agents forget everything when a session ends. Ohara stores what they learn — a
 ## Architecture
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#6366f1', 'primaryTextColor': '#fff', 'primaryBorderColor': '#818cf8', 'lineColor': '#94a3b8', 'secondaryColor': '#10b981', 'tertiaryColor': '#f59e0b'}}}%%
 graph TB
-    subgraph Agents
-        OC[OpenCode]
-        CC[Claude Code]
-        GC[Gemini CLI]
-        ANY[Any MCP client]
+    subgraph Agents["AI Agents"]
+        direction LR
+        OC["OpenCode (native)"]
+        CC["Claude Code (MCP)"]
+        GC["Gemini CLI (MCP)"]
+        ANY["Any MCP client"]
     end
 
-    subgraph "Ohara (single binary)"
-        CLI[CLI<br/>search, save, prime,<br/>validate, doctor, consolidate]
-        MCP["MCP Server<br/>31 tools via stdio"]
-        HTTP["HTTP API<br/>port 7331"]
+    subgraph Ohara["Ohara (single binary)"]
+        direction TB
+        CLI["CLI: search, save, prime, validate, doctor, consolidate"]
+        MCP["MCP Server: 31 tools via stdio"]
+        HTTP["HTTP API: port 7331"]
     end
 
-    subgraph "Storage Layer"
-        DB["SQLite + FTS5<br/>~/.local/share/ohara/ohara.db"]
-        EMB["Embedding Sidecar<br/>obs_embeddings<br/>(opt-in, Ollama)"]
-        REL["Relation Graph<br/>memory_relations<br/>6 relation types"]
-        AUDIT["Audit Log<br/>append-only"]
+    subgraph Storage["Storage Layer"]
+        direction LR
+        DB["SQLite + FTS5: ~/.local/share/ohara/"]
+        EMB["Embeddings: Ollama (opt-in)"]
+        REL["Relations: memory_relations table"]
+        AUD["Audit Log: append-only"]
     end
 
-    subgraph "Output Formats"
-        PACK["Context Pack<br/>token-budgeted JSON"]
-        PRIME["Prime Pack<br/>markdown for system prompt"]
-        SYNC["Git Sync<br/>.ohara/*.jsonl"]
+    subgraph Output["Output Formats"]
+        direction LR
+        PACK["Context Pack: token-budgeted JSON"]
+        PRIME["Prime Pack: markdown for system prompt"]
+        SYNC["Git Sync: .ohara/*.jsonl"]
     end
 
     OC -->|native plugin| MCP
@@ -51,59 +56,127 @@ graph TB
     GC -->|MCP stdio| MCP
     ANY -->|MCP stdio| MCP
     CLI --> DB
-
     MCP --> DB
     HTTP --> DB
 
     DB --> EMB
     DB --> REL
-    DB --> AUDIT
+    DB --> AUD
 
     DB --> PACK
     DB --> PRIME
     DB --> SYNC
+
+    style Agents fill:#1e293b,stroke:#6366f1,stroke-width:2px,color:#fff
+    style Ohara fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#fff
+    style Storage fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#fff
+    style Output fill:#1e293b,stroke:#ec4899,stroke-width:2px,color:#fff
 ```
+
+**What this diagram shows:**
+
+- **Top row**: Any AI agent (OpenCode, Claude Code, Gemini CLI, or any MCP-compatible client) connects to Ohara
+- **Middle row**: Ohara exposes three interfaces: CLI for humans, MCP server for agents, HTTP API for programmatic access
+- **Bottom two rows**: All data flows through SQLite with FTS5 full-text search. Optional features (embeddings, relations, audit) are sidecars layered on top
+- **Rightmost column**: Memory can be exported as JSON (context pack), Markdown (prime pack), or synced as JSONL to git
 
 ## How It Works
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#6366f1'}}}%%
 sequenceDiagram
     participant A as Agent
     participant O as Ohara
     participant S as SQLite
 
-    Note over A,S: Session 1
-    A->>O: mem_save("Fixed N+1 in UserList", type=bugfix, domain=database)
-    O->>S: Persist with FTS5 index + audit log
-    O->>O: Run conflict detection against existing memories
-    O->>O: Async: embed text via Ollama (if hybrid mode)
-    A->>O: mem_session_summary(Goal, Discoveries, Accomplished)
-    O->>S: Store session summary
+    Note over A,S: Session 1 (first encounter)
+    A->>O: mem_save(<br/>title="Fixed N+1 in UserList",<br/>type=bugfix,<br/>domain=database)
+    O->>S: 1. Persist to memory_items<br/>2. Index in FTS5<br/>3. Write audit log
+    O->>O: Run conflict detection<br/>against existing memories
+    O->>O: Async: embed via Ollama<br/>(if hybrid mode enabled)
+    A->>O: mem_session_summary(<br/>Goal, Discoveries,<br/>Accomplished, Next Steps)
+    O->>S: Store session summary<br/>(episodic record)
 
-    Note over A,S: Session 2 (hours/days later)
-    A->>O: mem_prime(project="myapp", budget=2000)
-    O->>S: Query knowledge-tier memories, sort by relevance
-    O-->>A: Markdown block: Decisions, Patterns, Procedures, Conflicts
-    A->>O: mem_search("auth middleware", domain=auth)
-    O->>S: FTS5 + optional embedding hybrid search
-    O->>O: Compute relevance score (decay × access × outcomes)
-    O-->>A: Ranked results with relevance scores
+    Note over A,S: Hours or days later
+    A->>O: mem_prime(<br/>project="myapp",<br/>budget=2000)
+    O->>S: Query foundational + tactical<br/>memories, sort by relevance
+    O->>O: Compute: decay x access x outcomes
+    O-->>A: Markdown block:<br/>## Decisions<br/>## Patterns<br/>## Procedures<br/>## Conflicts
+
+    A->>O: mem_search(<br/>"auth middleware",<br/>domain=auth)
+    O->>S: FTS5 search + optional<br/>embedding hybrid (RRF blend)
+    O->>O: Recompute relevance<br/>(fresh access_count)
+    O-->>A: Ranked results with<br/>relevance_score + conflicts
 ```
+
+**What happens in each step:**
+
+1. **Session 1**: Agent makes a discovery (e.g., fixed a bug). It calls `mem_save` with the title, what was done, and why. Ohara stores the memory in SQLite with domain/kind/classification tags, indexes in FTS5 for keyword search, runs conflict detection, and optionally generates embeddings via Ollama (async, non-blocking).
+
+2. **Session end**: Agent calls `mem_session_summary` with what was accomplished. This stores an episodic record that can later be consolidated into semantic knowledge.
+
+3. **Session 2**: Agent starts fresh but calls `mem_prime` to get context. Ohara fetches Knowledge-tier memories (decisions, patterns, procedures), filters by project and domain, scores by recency, access frequency, and outcome history, and returns markdown ready to paste into the system prompt.
+
+4. **During work**: Agent searches with `mem_search`. Ohara blends FTS5 plus embeddings (if hybrid enabled), surfaces any conflicts (superseded memories that are still active), and returns ranked results with relevance scores.
 
 ### Memory lifecycle
 
 ```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#6366f1'}}}%%
 stateDiagram-v2
     [*] --> Active: mem_save
-    Active --> Active: mem_update (revision++)
-    Active --> Expired: relevance_score &lt; floor OR expires_at reached
-    Active --> Archived: mem_forget (with reason)
-    Active --> Superseded: newer memory replaces it
-    Active --> Candidate: consolidation heuristic groups episodes
-    Candidate --> Active: agent reviews + approves
+    
+    note right of Active
+        Default state.
+        Full-text indexed.
+        Ranked in results.
+    end note
+
+    Active --> Active: mem_update
+    note right of Active: revision++ (audit trail)
+
+    Active --> Expired: auto-expire
+    note right of Expired: relevance_score lt floor<br/>OR expires_at reached
+
+    Active --> Archived: mem_forget
+    note right of Archived: soft-delete with reason<br/>(creates "supersedes" relation)
+
+    Active --> Superseded: replacement
+    note right of Superseded: newer memory<br/>replaces old one
+
+    Active --> Candidate: consolidation
+    note right of Candidate: heuristic groups<br/>episodic memories
+
+    Candidate --> Active: agent review
+    note right of Active: promotion to semantic<br/>(knowledge tier)
+
     Expired --> Archived: background sweep
     Superseded --> Archived: background sweep
+
+    Archived --> [*]
+    note right of Archived: Soft-deleted.<br/>Queryable for history.
+
+    %% Styles
+    classDef active fill:#22c55e,stroke:#10b981,stroke-width:2px,color:#fff
+    classDef expired fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#fff
+    classDef archived fill:#64748b,stroke:#475569,stroke-width:2px,color:#fff
+    classDef candidate fill:#a855f7,stroke:#9333ea,stroke-width:2px,color:#fff
+    classDef superseded fill:#ef4444,stroke:#dc2626,stroke-width:2px,color:#fff
+
+    class Active active
+    class Expired expired
+    class Archived archived
+    class Candidate candidate
+    class Superseded superseded
 ```
+
+**What each state means:**
+
+- **Active**: the memory is alive and appears in search results. This is where most memories live.
+- **Expired**: relevance dropped below threshold (older, unaccessed) OR an explicit TTL was set and passed.
+- **Archived**: manually forgotten via `mem_forget` (with reason) OR auto-archived after being superseded or expired. Still in database for audit, excluded from results.
+- **Superseded**: a newer memory explicitly replaced this one. The old one is kept for history but marked superseded.
+- **Candidate**: consolidation algorithm grouped this with related memories. Needs agent review before promotion back to Active.
 
 ## Memory Model
 
