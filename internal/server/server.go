@@ -12,14 +12,35 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ashwnn/ohara/internal/store"
 )
 
-var loadServerStats = func(s *store.Store) (*store.Stats, error) {
-	return s.Stats()
+var loadServerStats = func(s *store.Store) (any, error) {
+	legacy, err := s.Stats()
+	if err != nil {
+		return nil, err
+	}
+	mem, err := s.MemoryStats()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"total_sessions":     legacy.TotalSessions,
+		"total_observations": legacy.TotalObservations,
+		"total_prompts":      legacy.TotalPrompts,
+		"projects":           legacy.Projects,
+		"by_kind":            mem.ByKind,
+		"by_scope":           mem.ByScope,
+		"by_status":          mem.ByStatus,
+		"by_domain":          mem.ByDomain,
+		"by_classification":  mem.ByClassification,
+		"total_memory_items": mem.TotalMemoryItems,
+	}, nil
 }
 
 // SyncStatusProvider returns the current sync status. This is implemented
@@ -139,7 +160,7 @@ func (s *Server) Start() error {
 
 	// Unix socket first if configured.
 	if s.socketPath != "" {
-		ln, err = listenFn("unix", s.socketPath)
+		ln, err = s.listenUnixWithStaleCleanup(listenFn)
 		if err == nil {
 			log.Printf("[ohara] HTTP server listening on unix socket %s", s.socketPath)
 			return serveFn(ln, s.mux)
@@ -156,6 +177,30 @@ func (s *Server) Start() error {
 	}
 	log.Printf("[ohara] HTTP server listening on %s", addr)
 	return serveFn(ln, s.mux)
+}
+
+func (s *Server) listenUnixWithStaleCleanup(listenFn func(network, address string) (net.Listener, error)) (net.Listener, error) {
+	ln, err := listenFn("unix", s.socketPath)
+	if err == nil {
+		return ln, nil
+	}
+
+	// Common restart case: stale socket file left behind after abrupt exit.
+	// If address is in use but nobody can dial it, remove stale file and retry once.
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return nil, err
+	}
+
+	conn, dialErr := net.DialTimeout("unix", s.socketPath, 200*time.Millisecond)
+	if dialErr == nil {
+		_ = conn.Close()
+		return nil, err // active listener exists; do not remove
+	}
+
+	if rmErr := os.Remove(s.socketPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return nil, fmt.Errorf("remove stale unix socket %s: %w", s.socketPath, rmErr)
+	}
+	return listenFn("unix", s.socketPath)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -227,10 +272,28 @@ func (s *Server) routes() {
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	dbSize := int64(0)
+	rows, err := s.store.Query("PRAGMA database_list")
+	if err == nil && rows.Next() {
+		var seq int
+		var name, file string
+		if err := rows.Scan(&seq, &name, &file); err == nil && file != "" {
+			if info, err := os.Stat(file); err == nil {
+				dbSize = info.Size()
+			}
+		}
+		rows.Close()
+	}
+
+	memoryCount := int64(0)
+	_ = s.store.QueryRow("SELECT COUNT(*) FROM memory_items").Scan(&memoryCount)
+
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"service": "ohara",
-		"version": "0.1.0",
+		"status":        "ok",
+		"service":       "ohara",
+		"version":       "0.1.0",
+		"db_size_bytes": dbSize,
+		"memory_count":  memoryCount,
 	})
 }
 
@@ -429,7 +492,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, results)
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"results": results,
+		"method":  "fts5",
+	})
 }
 
 func (s *Server) handleGetObservation(w http.ResponseWriter, r *http.Request) {
@@ -850,7 +916,7 @@ func (s *Server) handleSearchMemories(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	limit := queryInt(r, "limit", 10)
 
-	items, err := s.store.SearchMemories(query, projectID, scope, kind, status, limit)
+	items, err := s.store.SearchMemories(query, projectID, scope, kind, "", status, limit, "")
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -918,7 +984,14 @@ func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.notifyWrite()
-	jsonResponse(w, http.StatusOK, updated)
+
+	var revisionID int64
+	_ = s.store.QueryRow("SELECT id FROM memory_revisions WHERE memory_id = ? ORDER BY id DESC LIMIT 1", id).Scan(&revisionID)
+
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"id":          updated.ID,
+		"revision_id": revisionID,
+	})
 }
 
 func (s *Server) handleMemoryTimeline(w http.ResponseWriter, r *http.Request) {

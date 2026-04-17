@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -399,7 +401,7 @@ func TestOnWriteNotCalledOnFailedWrites(t *testing.T) {
 
 func TestHandleStatsReturnsInternalServerErrorOnLoaderError(t *testing.T) {
 	prev := loadServerStats
-	loadServerStats = func(s *store.Store) (*store.Stats, error) {
+	loadServerStats = func(s *store.Store) (any, error) {
 		return nil, errors.New("stats unavailable")
 	}
 	t.Cleanup(func() {
@@ -1033,6 +1035,47 @@ func TestStartTCPFallbackWithSocketPathSet(t *testing.T) {
 	// Should have fallen back to TCP after unix failure.
 	if gotNetwork != "tcp" {
 		t.Fatalf("expected fallback to tcp after unix failure, got network=%q", gotNetwork)
+	}
+}
+
+func TestStartRetriesUnixAfterStaleSocketCleanup(t *testing.T) {
+	socketPath := t.TempDir() + "/ohara.sock"
+	if err := os.WriteFile(socketPath, []byte("stale"), 0644); err != nil {
+		t.Fatalf("create stale socket placeholder: %v", err)
+	}
+
+	var attempts []string
+	unixAttempts := 0
+
+	s := New(nil, 8080, WithSocketPath(socketPath))
+	s.listen = func(network, address string) (net.Listener, error) {
+		attempts = append(attempts, network+":"+address)
+		if network == "unix" {
+			unixAttempts++
+			if unixAttempts == 1 {
+				return nil, &net.OpError{Op: "listen", Net: "unix", Err: syscall.EADDRINUSE}
+			}
+			return stubListener{}, nil
+		}
+		return stubListener{}, nil
+	}
+	s.serve = func(ln net.Listener, h http.Handler) error {
+		_ = ln.Close()
+		return errors.New("serve stopped")
+	}
+
+	err := s.Start()
+	if err == nil || err.Error() != "serve stopped" {
+		t.Fatalf("expected serve stopped, got %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("expected 2 listen attempts (unix retry), got %d: %v", len(attempts), attempts)
+	}
+	if !strings.HasPrefix(attempts[0], "unix:") || !strings.HasPrefix(attempts[1], "unix:") {
+		t.Fatalf("expected unix retry attempts, got %v", attempts)
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale socket path removed, stat err=%v", err)
 	}
 }
 

@@ -143,6 +143,10 @@ func (sy *Syncer) Export(createdBy string, project string) (*SyncResult, error) 
 		if err := os.MkdirAll(chunksDir, 0755); err != nil {
 			return nil, fmt.Errorf("create chunks dir: %w", err)
 		}
+		// Write .gitattributes for git-friendly merge behavior (idempotent).
+		if err := sy.transport.EnsureGitattributes(); err != nil {
+			return nil, fmt.Errorf("write gitattributes: %w", err)
+		}
 	}
 
 	// Read current manifest (or create empty one)

@@ -879,3 +879,111 @@ func TestGetUsernameAndManifestSummary(t *testing.T) {
 		}
 	})
 }
+
+func TestEnsureGitattributes(t *testing.T) {
+	t.Run("creates file on first call", func(t *testing.T) {
+		syncDir := t.TempDir()
+		ft := NewFileTransport(syncDir)
+
+		if err := ft.EnsureGitattributes(); err != nil {
+			t.Fatalf("EnsureGitattributes: %v", err)
+		}
+
+		path := filepath.Join(syncDir, ".gitattributes")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read .gitattributes: %v", err)
+		}
+		if !strings.Contains(string(data), "merge=union") {
+			t.Fatalf(".gitattributes missing union merge directive: %q", string(data))
+		}
+		if !strings.Contains(string(data), "binary") {
+			t.Fatalf(".gitattributes missing binary marker: %q", string(data))
+		}
+		if !strings.Contains(string(data), "manifest.json merge=union") {
+			t.Fatalf(".gitattributes missing manifest union: %q", string(data))
+		}
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		syncDir := t.TempDir()
+		ft := NewFileTransport(syncDir)
+
+		if err := ft.EnsureGitattributes(); err != nil {
+			t.Fatalf("first call: %v", err)
+		}
+		if err := ft.EnsureGitattributes(); err != nil {
+			t.Fatalf("second call: %v", err)
+		}
+
+		// File should exist and be unchanged.
+		path := filepath.Join(syncDir, ".gitattributes")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read .gitattributes: %v", err)
+		}
+		if string(data) != string(GitattributesContent()) {
+			t.Fatalf("idempotent call produced different content: %q", string(data))
+		}
+	})
+
+	t.Run("overwrites stale content", func(t *testing.T) {
+		syncDir := t.TempDir()
+		ft := NewFileTransport(syncDir)
+
+		// Write stale content.
+		stalePath := filepath.Join(syncDir, ".gitattributes")
+		if err := os.WriteFile(stalePath, []byte("*.foo binary\n"), 0644); err != nil {
+			t.Fatalf("write stale .gitattributes: %v", err)
+		}
+
+		if err := ft.EnsureGitattributes(); err != nil {
+			t.Fatalf("EnsureGitattributes: %v", err)
+		}
+
+		data, err := os.ReadFile(stalePath)
+		if err != nil {
+			t.Fatalf("read .gitattributes: %v", err)
+		}
+		if !strings.Contains(string(data), "merge=union") {
+			t.Fatalf("expected updated content after stale write: %q", string(data))
+		}
+	})
+
+	t.Run("returns error on bad directory", func(t *testing.T) {
+		badDir := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(badDir, []byte("x"), 0644); err != nil {
+			t.Fatalf("create blocking file: %v", err)
+		}
+		ft := NewFileTransport(badDir)
+
+		if err := ft.EnsureGitattributes(); err == nil {
+			t.Fatal("expected error for non-directory sync path")
+		}
+	})
+}
+
+func TestExportCreatesGitattributes(t *testing.T) {
+	// Verify that calling Export also creates the .gitattributes file.
+	srcStore := newTestStore(t)
+	seedStoreForSync(t, srcStore)
+	syncDir := filepath.Join(t.TempDir(), ".ohara")
+	exporter := New(srcStore, syncDir)
+
+	_, err := exporter.Export("alice", "proj-a")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	path := filepath.Join(syncDir, ".gitattributes")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf(".gitattributes not created after export: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read .gitattributes: %v", err)
+	}
+	if !strings.Contains(string(data), "manifest.json merge=union") {
+		t.Fatalf(".gitattributes missing expected content: %q", string(data))
+	}
+}
