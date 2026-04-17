@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -4972,7 +4973,7 @@ func TestSearchMemories_DefaultLimit(t *testing.T) {
 	s := newTestStore(t)
 
 	// No memories — should return empty slice (not error)
-	results, err := s.SearchMemories("auth", "", "", "", MemoryStatusActive, 0)
+	results, err := s.SearchMemories("auth", "", "", "", "", MemoryStatusActive, 0, "")
 	if err != nil {
 		t.Fatalf("SearchMemories with zero limit: %v", err)
 	}
@@ -4994,7 +4995,7 @@ func TestSearchMemories_FindsMatchingItems(t *testing.T) {
 		t.Fatalf("AddMemory: %v", err)
 	}
 
-	results, err := s.SearchMemories("JWT", "ohara", "", "", MemoryStatusActive, 10)
+	results, err := s.SearchMemories("JWT", "ohara", "", "", "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5031,7 +5032,7 @@ func TestSearchMemories_KindBoost_DecisionsRankHigher(t *testing.T) {
 		t.Fatalf("AddMemory decision: %v", err)
 	}
 
-	results, err := s.SearchMemories("JWT authentication", "ohara", "", "", MemoryStatusActive, 10)
+	results, err := s.SearchMemories("JWT authentication", "ohara", "", "", "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5067,7 +5068,7 @@ func TestSearchMemories_KindBoost_BugfixRanksHigherThanDiscovery(t *testing.T) {
 		t.Fatalf("AddMemory bugfix: %v", err)
 	}
 
-	results, err := s.SearchMemories("JWT token", "ohara", "", "", MemoryStatusActive, 10)
+	results, err := s.SearchMemories("JWT token", "ohara", "", "", "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5104,7 +5105,7 @@ func TestSearchMemories_FilterByKind(t *testing.T) {
 	}
 
 	// Search with kind filter
-	results, err := s.SearchMemories("JWT", "ohara", "", MemoryKindPattern, MemoryStatusActive, 10)
+	results, err := s.SearchMemories("JWT", "ohara", "", MemoryKindPattern, "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5141,7 +5142,7 @@ func TestSearchMemories_FilterByScope(t *testing.T) {
 	}
 
 	// Global scope search — should only return global item
-	results, err := s.SearchMemories("JWT", "", MemoryScopeGlobal, "", MemoryStatusActive, 10)
+	results, err := s.SearchMemories("JWT", "", MemoryScopeGlobal, "", "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5149,6 +5150,338 @@ func TestSearchMemories_FilterByScope(t *testing.T) {
 		if r.Scope != MemoryScopeGlobal {
 			t.Errorf("scope filter: expected global, got %s", r.Scope)
 		}
+	}
+}
+
+func TestSearchMemories_TriggerConditionIsSearchable(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add a procedure memory with a distinctive trigger_condition.
+	procID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:        "ohara",
+		Kind:             MemoryKindProcedure,
+		Title:            "Handle user auth failures",
+		Body:             "Use a lockout strategy after repeated failed attempts",
+		TriggerCondition: "When the user fails login 3 times within 5 minutes",
+		Scope:            MemoryScopeProject,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory procedure: %v", err)
+	}
+	if procID <= 0 {
+		t.Fatalf("expected valid memory id, got %d", procID)
+	}
+
+	// Add a noise memory (different kind, no trigger_condition).
+	_, err = s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Auth decision: rate limit the login endpoint",
+		Body:      "We chose to implement rate limiting to prevent brute force",
+		Scope:     MemoryScopeProject,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory decision: %v", err)
+	}
+
+	// Search by trigger_condition text — procedure should be found even though
+	// the title "Handle user auth failures" doesn't match "failed attempts".
+	results, err := s.SearchMemories("failed attempts", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories by trigger_condition: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected at least 1 result from trigger_condition search, got 0")
+	}
+	if results[0].Kind != MemoryKindProcedure {
+		t.Errorf("expected procedure to rank highest from trigger_condition match, got %s", results[0].Kind)
+	}
+	if results[0].TriggerCondition == "" {
+		t.Error("expected trigger_condition to be returned in search result")
+	}
+}
+
+func TestSearchMemories_TriggerConditionUpdateReindexesFTS(t *testing.T) {
+	s := newTestStore(t)
+
+	initialTrigger := "When user uploads a file larger than 10MB"
+	updatedTrigger := "When user uploads any file type"
+
+	memID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:        "ohara",
+		Kind:             MemoryKindProcedure,
+		Title:            "File upload handling",
+		Body:             "Validate file size and type before processing",
+		TriggerCondition: initialTrigger,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Search by initial trigger — should find it.
+	results, err := s.SearchMemories("larger than 10MB", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories initial trigger: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected result from initial trigger_condition search")
+	}
+
+	// Update the trigger_condition.
+	updated, err := s.UpdateMemory(memID, UpdateMemoryParams{
+		TriggerCondition: &updatedTrigger,
+		ActorID:          "agent",
+	})
+	if err != nil {
+		t.Fatalf("UpdateMemory trigger_condition: %v", err)
+	}
+	if updated.TriggerCondition != updatedTrigger {
+		t.Fatalf("expected updated trigger_condition %q, got %q", updatedTrigger, updated.TriggerCondition)
+	}
+
+	// Search by old trigger — should no longer find it.
+	oldResults, err := s.SearchMemories("larger than 10MB", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories old trigger: %v", err)
+	}
+	if len(oldResults) != 0 {
+		t.Errorf("expected no results from old trigger_condition after update, got %d", len(oldResults))
+	}
+
+	// Search by new trigger — should find it.
+	newResults, err := s.SearchMemories("uploads any file", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories new trigger: %v", err)
+	}
+	if len(newResults) == 0 {
+		t.Fatal("expected result from new trigger_condition search after update")
+	}
+}
+
+func TestMigrateMemFTS_MigrationIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+
+	// Running migrate twice should be a no-op (idempotent).
+	if err := s.migrateMemFTSTriggerCondition(); err != nil {
+		t.Fatalf("first migrateMemFTSTriggerCondition: %v", err)
+	}
+	if err := s.migrateMemFTSTriggerCondition(); err != nil {
+		t.Fatalf("second migrateMemFTSTriggerCondition (idempotent): %v", err)
+	}
+
+	// Verify the FTS table has trigger_condition column.
+	var colCount int
+	if err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_xinfo('memory_items_fts') WHERE name = 'trigger_condition'",
+	).Scan(&colCount); err != nil {
+		t.Fatalf("check trigger_condition column: %v", err)
+	}
+	if colCount != 1 {
+		t.Fatalf("expected 1 trigger_condition column in memory_items_fts, got %d", colCount)
+	}
+
+	// Verify the triggers still fire correctly for a new memory.
+	memID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:        "ohara",
+		Kind:             MemoryKindProcedure,
+		Title:            "Handle OOM errors",
+		Body:             "Catch and log out-of-memory exceptions",
+		TriggerCondition: "When the process runs out of memory",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory after migration: %v", err)
+	}
+
+	results, err := s.SearchMemories("runs out of memory", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories after migration: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search to find memory added after migration")
+	}
+	if results[0].ID != memID {
+		t.Errorf("expected exact memory match, got id %d vs %d", results[0].ID, memID)
+	}
+}
+
+func TestMigrateMemFTS_BackfillsExistingRows(t *testing.T) {
+	// Set up a pre-migration database: memory_items table with some rows
+	// but the FTS table WITHOUT trigger_condition.
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "ohara.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			directory TEXT NOT NULL,
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			ended_at TEXT,
+			summary TEXT
+		);
+		CREATE TABLE memory_items (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			project_id      TEXT NOT NULL,
+			actor_id        TEXT NOT NULL DEFAULT 'agent',
+			kind            TEXT NOT NULL,
+			scope           TEXT NOT NULL DEFAULT 'project',
+			title           TEXT NOT NULL,
+			body            TEXT NOT NULL,
+			tags            TEXT NOT NULL DEFAULT '[]',
+			source          TEXT NOT NULL DEFAULT 'agent',
+			status          TEXT NOT NULL DEFAULT 'active',
+			superseded_by   INTEGER,
+			expires_at      TEXT,
+			ingested_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			written_by      TEXT NOT NULL DEFAULT 'agent',
+			domain          TEXT NOT NULL DEFAULT '',
+			evidence_json   TEXT NOT NULL DEFAULT '{}',
+			applies_to_json TEXT NOT NULL DEFAULT '{}',
+			related_json    TEXT NOT NULL DEFAULT '{}',
+			classification  TEXT NOT NULL DEFAULT 'tactical',
+			access_count    INTEGER NOT NULL DEFAULT 0,
+			last_accessed   TEXT,
+			valid_from      TEXT,
+			valid_to        TEXT,
+			superseded_at   TEXT,
+			session_id      TEXT NOT NULL DEFAULT '',
+			trust_level     TEXT NOT NULL DEFAULT 'system',
+			trigger_condition TEXT NOT NULL DEFAULT '',
+			utility_weight  REAL NOT NULL DEFAULT 0.0,
+			consolidated_from TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, trigger_condition)
+		VALUES ('ohara', 'agent', 'procedure', 'project',
+			'Handle 500 errors',
+			'Log and return a friendly error',
+			'When a server returns HTTP 500');
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, trigger_condition)
+		VALUES ('ohara', 'agent', 'procedure', 'project',
+			'Handle timeout',
+			'Retry with backoff',
+			'When request times out after 30s');
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, trigger_condition)
+		VALUES ('ohara', 'agent', 'decision', 'project',
+			'Retry strategy',
+			'Use exponential backoff',
+			'');
+		CREATE VIRTUAL TABLE memory_items_fts USING fts5(
+			title, body, tags,
+			content='memory_items',
+			content_rowid='id',
+			tokenize='porter unicode61'
+		);
+		INSERT INTO memory_items_fts(rowid, title, body, tags)
+		SELECT id, title, body, tags FROM memory_items;
+		CREATE TRIGGER mem_fts_insert AFTER INSERT ON memory_items BEGIN
+			INSERT INTO memory_items_fts(rowid, title, body, tags)
+			VALUES (new.id, new.title, new.body, new.tags);
+		END;
+		CREATE TRIGGER mem_fts_delete AFTER DELETE ON memory_items BEGIN
+			INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags)
+			VALUES ('delete', old.id, old.title, old.body, old.tags);
+		END;
+		CREATE TRIGGER mem_fts_update AFTER UPDATE ON memory_items BEGIN
+			INSERT INTO memory_items_fts(memory_items_fts, rowid, title, body, tags)
+			VALUES ('delete', old.id, old.title, old.body, old.tags);
+			INSERT INTO memory_items_fts(rowid, title, body, tags)
+			VALUES (new.id, new.title, new.body, new.tags);
+		END;
+		CREATE TABLE memory_revisions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id   INTEGER NOT NULL REFERENCES memory_items(id),
+			ts          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			actor_id    TEXT NOT NULL,
+			field       TEXT NOT NULL,
+			old_value   TEXT,
+			new_value   TEXT,
+			reason      TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_rev_memory ON memory_revisions(memory_id, ts);
+
+		CREATE TABLE audit_log (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			obs_id     TEXT NOT NULL,
+			action     TEXT NOT NULL CHECK(action IN ('create', 'update', 'delete', 'archive')),
+			actor_id   TEXT,
+			session_id TEXT,
+			trust_level TEXT,
+			ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			snapshot   TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_audit_obs ON audit_log(obs_id);
+		CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id);
+
+		CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')));
+		INSERT INTO schema_version (version, applied_at) VALUES (18, datetime('now'));
+	`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed pre-migration db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	// Open via Store — this should run migration 19 and rebuild the FTS table.
+	cfg := mustDefaultConfig(t)
+	cfg.DataDir = dataDir
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Verify the two procedure memories are now findable by their trigger_condition.
+	results, err := s.SearchMemories("request times out", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories trigger_condition after migration: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected to find procedure by trigger_condition after migration backfill")
+	}
+	if results[0].TriggerCondition != "When request times out after 30s" {
+		t.Errorf("expected specific trigger_condition, got %q", results[0].TriggerCondition)
+	}
+
+	// The HTTP 500 procedure should also be findable.
+	results500, err := s.SearchMemories("HTTP 500", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories HTTP 500: %v", err)
+	}
+	if len(results500) == 0 {
+		t.Fatal("expected to find HTTP 500 procedure by trigger_condition")
+	}
+
+	// New inserts after migration should also index trigger_condition.
+	newID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:        "ohara",
+		Kind:             MemoryKindProcedure,
+		Title:            "Handle panic recovery",
+		Body:             "Catch panics in goroutines",
+		TriggerCondition: "When a goroutine panics unexpectedly",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory post-migration: %v", err)
+	}
+
+	postResults, err := s.SearchMemories("goroutine panics", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories post-migration insert: %v", err)
+	}
+	if len(postResults) == 0 {
+		t.Fatal("expected to find post-migration insert by trigger_condition")
+	}
+	if postResults[0].ID != newID {
+		t.Errorf("expected new memory as top result, got id %d", postResults[0].ID)
 	}
 }
 
@@ -5349,7 +5682,7 @@ func TestSearchMemories_ExcludesExpiredItems(t *testing.T) {
 	}
 
 	// SearchMemories should only return the active one
-	results, err := s.SearchMemories("pool", "ohara", "", "", MemoryStatusActive, 10)
+	results, err := s.SearchMemories("pool", "ohara", "", "", "", MemoryStatusActive, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories: %v", err)
 	}
@@ -5541,7 +5874,7 @@ func TestSearchMemories_ArchivedItemsRemainSearchable(t *testing.T) {
 	}
 
 	// Verify default SearchMemories (status="") excludes expired items
-	results, err := s.SearchMemories("middleware", "ohara", "", "", "", 10)
+	results, err := s.SearchMemories("middleware", "ohara", "", "", "", "", 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories with default status: %v", err)
 	}
@@ -5550,7 +5883,7 @@ func TestSearchMemories_ArchivedItemsRemainSearchable(t *testing.T) {
 	}
 
 	// Verify SearchMemories with status="archived" includes archived/expired items
-	archivedResults, err := s.SearchMemories("middleware", "ohara", "", "", MemoryStatusArchived, 10)
+	archivedResults, err := s.SearchMemories("middleware", "ohara", "", "", "", MemoryStatusArchived, 10, "")
 	if err != nil {
 		t.Fatalf("SearchMemories with archived status: %v", err)
 	}
@@ -5604,6 +5937,85 @@ func TestMemoryExpiresAt_HelperFunction(t *testing.T) {
 		}
 		if MemoryTTL(kind) != 0 {
 			t.Errorf("kind %s TTL should be 0, got %d", kind, MemoryTTL(kind))
+		}
+	}
+}
+
+func TestMarkConsolidatedArchivesCandidateAndSources(t *testing.T) {
+	s := newTestStore(t)
+
+	var sourceIDs []int64
+	for i := 1; i <= 3; i++ {
+		id, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindDiscovery,
+			Title:          fmt.Sprintf("Episode %d", i),
+			Body:           fmt.Sprintf("raw session detail %d", i),
+			Classification: "observational",
+			Domain:         "api",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory source %d: %v", i, err)
+		}
+		sourceIDs = append(sourceIDs, id)
+	}
+
+	created, _, err := s.GenerateConsolidationCandidates("ohara", "api", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+	if created != 1 {
+		t.Fatalf("expected 1 candidate, got %d", created)
+	}
+
+	groups, err := s.GetConsolidationCandidates("ohara", "api")
+	if err != nil {
+		t.Fatalf("GetConsolidationCandidates: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 candidate group, got %d", len(groups))
+	}
+	candidateID := groups[0].Candidate.ID
+
+	consolidatedID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:        "ohara",
+		Kind:             MemoryKindDecision,
+		Title:            "Durable API learning",
+		Body:             "Semantic summary",
+		Source:           "consolidation",
+		Classification:   "tactical",
+		Domain:           "api",
+		ConsolidatedFrom: groups[0].Candidate.ConsolidatedFrom,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory consolidated: %v", err)
+	}
+
+	if err := s.MarkConsolidated(candidateID, consolidatedID); err != nil {
+		t.Fatalf("MarkConsolidated: %v", err)
+	}
+
+	candidate, err := s.GetMemory(candidateID)
+	if err != nil {
+		t.Fatalf("GetMemory candidate: %v", err)
+	}
+	if candidate.Status != MemoryStatusArchived {
+		t.Fatalf("candidate status = %q, want %q", candidate.Status, MemoryStatusArchived)
+	}
+	if candidate.SupersededBy == nil || *candidate.SupersededBy != consolidatedID {
+		t.Fatalf("candidate superseded_by = %v, want %d", candidate.SupersededBy, consolidatedID)
+	}
+
+	for _, sourceID := range sourceIDs {
+		source, err := s.GetMemory(sourceID)
+		if err != nil {
+			t.Fatalf("GetMemory source %d: %v", sourceID, err)
+		}
+		if source.Status != MemoryStatusArchived {
+			t.Fatalf("source %d status = %q, want %q", sourceID, source.Status, MemoryStatusArchived)
+		}
+		if source.SupersededBy == nil || *source.SupersededBy != consolidatedID {
+			t.Fatalf("source %d superseded_by = %v, want %d", sourceID, source.SupersededBy, consolidatedID)
 		}
 	}
 }
@@ -6014,5 +6426,254 @@ func TestWALAutocheckpoint_JournalModeIsWAL(t *testing.T) {
 	}
 	if journalMode != "wal" {
 		t.Errorf("expected journal_mode=wal, got %q", journalMode)
+	}
+}
+
+// ─── Consolidation candidate tests ───────────────────────────────────────────────
+
+func TestConsolidationCandidates_CreatesCandidateForThreeOrMoreObservational(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create 3 observational memories in the same project+domain+kind group.
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindDiscovery,
+			Title:          fmt.Sprintf("Obs item %d", i),
+			Body:           fmt.Sprintf("Body of observation %d", i),
+			Classification: "observational",
+			Domain:         "test",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory %d: %v", i, err)
+		}
+	}
+
+	created, summaries, err := s.GenerateConsolidationCandidates("ohara", "test", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+	if created != 1 {
+		t.Errorf("expected 1 candidate, got %d", created)
+	}
+	if len(summaries) != 1 {
+		t.Errorf("expected 1 summary, got %d", len(summaries))
+	}
+	if !strings.Contains(summaries[0], "created:") {
+		t.Errorf("summary should contain 'created:', got %q", summaries[0])
+	}
+
+	// Verify the candidate memory was created with correct status.
+	cand, err := s.GetMemories("ohara", "", "", MemoryStatusCandidate, 10)
+	if err != nil {
+		t.Fatalf("GetMemories candidate: %v", err)
+	}
+	if len(cand) != 1 {
+		t.Errorf("expected 1 candidate in GetMemories, got %d", len(cand))
+	}
+	if cand[0].Classification != "tactical" {
+		t.Errorf("expected classification tactical, got %q", cand[0].Classification)
+	}
+	if cand[0].Source != "consolidation" {
+		t.Errorf("expected source consolidation, got %q", cand[0].Source)
+	}
+}
+
+func TestConsolidationCandidates_DryRunDoesNotCreate(t *testing.T) {
+	s := newTestStore(t)
+
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindBugfix,
+			Title:          fmt.Sprintf("Bugfix obs %d", i),
+			Body:           fmt.Sprintf("Body %d", i),
+			Classification: "observational",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	created, summaries, err := s.GenerateConsolidationCandidates("ohara", "", true)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates dry-run: %v", err)
+	}
+	if created != 0 {
+		t.Errorf("dry-run should return 0 created, got %d", created)
+	}
+	if len(summaries) == 0 {
+		t.Errorf("dry-run should return summaries")
+	}
+	if !strings.Contains(summaries[0], "[dry-run]") {
+		t.Errorf("dry-run summary should contain [dry-run], got %q", summaries[0])
+	}
+
+	// Verify no candidate was actually created.
+	cand, _ := s.GetMemories("ohara", "", "", MemoryStatusCandidate, 10)
+	if len(cand) != 0 {
+		t.Errorf("dry-run should not create candidates, got %d", len(cand))
+	}
+}
+
+func TestConsolidationCandidates_DuplicateAvoidance(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create a group that will produce a candidate.
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindPattern,
+			Title:          fmt.Sprintf("Pattern obs %d", i),
+			Body:           fmt.Sprintf("Body %d", i),
+			Classification: "observational",
+			Domain:         "auth",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	// First run: creates candidate.
+	created1, _, err := s.GenerateConsolidationCandidates("ohara", "auth", false)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if created1 != 1 {
+		t.Errorf("expected 1 candidate on first run, got %d", created1)
+	}
+
+	// Second run: should not create duplicate (same source IDs).
+	created2, _, err := s.GenerateConsolidationCandidates("ohara", "auth", false)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if created2 != 0 {
+		t.Errorf("expected 0 candidates on second run (duplicate avoidance), got %d", created2)
+	}
+
+	// Verify only one candidate exists.
+	cand, _ := s.GetMemories("ohara", "", "", MemoryStatusCandidate, 10)
+	if len(cand) != 1 {
+		t.Errorf("expected exactly 1 candidate total, got %d", len(cand))
+	}
+}
+
+func TestConsolidationCandidates_ExcludedFromActiveRetrieval(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create a regular active memory.
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Regular decision",
+		Body:      "A regular decision body",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Create 3 observational memories to trigger a candidate.
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindDiscovery,
+			Title:          fmt.Sprintf("Obs %d", i),
+			Body:           fmt.Sprintf("Body %d", i),
+			Classification: "observational",
+			Domain:         "db",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	// Generate the candidate.
+	_, _, err = s.GenerateConsolidationCandidates("ohara", "db", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+
+	// Normal active retrieval should NOT include the candidate.
+	active, err := s.GetMemories("ohara", "", "", MemoryStatusActive, 20)
+	if err != nil {
+		t.Fatalf("GetMemories active: %v", err)
+	}
+	for _, m := range active {
+		if m.Status == MemoryStatusCandidate {
+			t.Errorf("candidate should not appear in active retrieval, found id=%d", m.ID)
+		}
+	}
+}
+
+func TestCountCandidates(t *testing.T) {
+	s := newTestStore(t)
+
+	// No candidates yet.
+	count, err := s.CountCandidates("")
+	if err != nil {
+		t.Fatalf("CountCandidates: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 candidates initially, got %d", count)
+	}
+
+	// Create 3 observational memories and generate a candidate.
+	for i := 1; i <= 3; i++ {
+		_, _ = s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindBugfix,
+			Title:          fmt.Sprintf("Obs %d", i),
+			Body:           fmt.Sprintf("Body %d", i),
+			Classification: "observational",
+		})
+	}
+	_, _, _ = s.GenerateConsolidationCandidates("ohara", "", false)
+
+	count, err = s.CountCandidates("")
+	if err != nil {
+		t.Fatalf("CountCandidates after: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 candidate, got %d", count)
+	}
+
+	// Filter by project.
+	count, _ = s.CountCandidates("ohara")
+	if count != 1 {
+		t.Errorf("expected 1 candidate for ohara, got %d", count)
+	}
+	count, _ = s.CountCandidates("other-project")
+	if count != 0 {
+		t.Errorf("expected 0 candidates for other-project, got %d", count)
+	}
+}
+
+func TestConsolidationCandidates_GroupSizeTwoOrLess(t *testing.T) {
+	s := newTestStore(t)
+
+	// Only 2 observational memories — below the threshold of 3.
+	for i := 1; i <= 2; i++ {
+		_, err := s.AddMemory(AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           MemoryKindProcedure,
+			Title:          fmt.Sprintf("Proc obs %d", i),
+			Body:           fmt.Sprintf("Body %d", i),
+			Classification: "observational",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	created, summaries, err := s.GenerateConsolidationCandidates("ohara", "", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+	if created != 0 {
+		t.Errorf("expected 0 candidates for group < 3, got %d", created)
+	}
+	if len(summaries) != 0 {
+		t.Errorf("expected 0 summaries for group < 3, got %d", len(summaries))
 	}
 }
