@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -954,7 +955,10 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
-		"mem_update", "mem_pack", // mem_update: skills say "use mem_update when you have an exact ID"; mem_pack: explicit context pack
+		"mem_update", "mem_pack", "mem_prime", "mem_mark_used",
+		"mem_append_outcome", "mem_resolve_conflict", "mem_forget", "mem_link",
+		"mem_unlink", "mem_related", "mem_consolidate_candidates", "mem_mark_consolidated",
+		"mem_search_rerank", "mem_feedback", "mem_graph_context", "mem_extract_entities",
 	}
 	for _, tool := range expectedTools {
 		if !result[tool] {
@@ -970,8 +974,8 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		}
 	}
 
-	if len(result) != 12 {
-		t.Errorf("agent profile has %d tools, expected 12", len(result))
+	if len(result) != 26 {
+		t.Errorf("agent profile has %d tools, expected 26", len(result))
 	}
 }
 
@@ -981,7 +985,7 @@ func TestResolveToolsAdminProfile(t *testing.T) {
 		t.Fatal("expected non-nil allowlist for 'admin'")
 	}
 
-	expectedTools := []string{"mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects"}
+	expectedTools := []string{"mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects", "mem_list_domains"}
 	for _, tool := range expectedTools {
 		if !result[tool] {
 			t.Errorf("admin profile missing tool: %s", tool)
@@ -999,13 +1003,16 @@ func TestResolveToolsCombinedProfiles(t *testing.T) {
 		t.Fatal("expected non-nil allowlist for combined profiles")
 	}
 
-	// Should have all 16 tools
+	// Should have all 21 tools
 	allTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
-		"mem_pack",
+		"mem_pack", "mem_prime", "mem_mark_used", "mem_append_outcome",
+		"mem_resolve_conflict", "mem_list_domains", "mem_forget", "mem_link",
+		"mem_unlink", "mem_related", "mem_consolidate_candidates", "mem_mark_consolidated",
+		"mem_search_rerank", "mem_feedback", "mem_graph_context", "mem_extract_entities",
 	}
 	for _, tool := range allTools {
 		if !result[tool] {
@@ -1126,12 +1133,13 @@ func TestNewServerWithToolsAgentProfile(t *testing.T) {
 
 	tools := srv.ListTools()
 
-	// Agent tools should be present (12 tools)
+	// Agent tools should be present (16 tools)
 	agentTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
-		"mem_update", "mem_pack",
+		"mem_update", "mem_pack", "mem_prime", "mem_mark_used",
+		"mem_append_outcome", "mem_resolve_conflict",
 	}
 	for _, name := range agentTools {
 		if tools[name] == nil {
@@ -1159,8 +1167,8 @@ func TestNewServerWithToolsAdminProfile(t *testing.T) {
 
 	tools := srv.ListTools()
 
-	// Admin tools should be present (4 tools)
-	adminTools := []string{"mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects"}
+	// Admin tools should be present (5 tools)
+	adminTools := []string{"mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects", "mem_list_domains"}
 	for _, name := range adminTools {
 		if tools[name] == nil {
 			t.Errorf("admin profile: expected tool %q to be registered", name)
@@ -1191,7 +1199,8 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		"mem_session_start", "mem_session_end", "mem_get_observation",
 		"mem_suggest_topic_key", "mem_capture_passive", "mem_save_prompt",
 		"mem_update", "mem_delete", "mem_stats", "mem_timeline", "mem_merge_projects",
-		"mem_pack",
+		"mem_pack", "mem_prime", "mem_mark_used", "mem_append_outcome",
+		"mem_resolve_conflict", "mem_list_domains",
 	}
 
 	for _, name := range allTools {
@@ -1200,8 +1209,8 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		}
 	}
 
-	if len(tools) != 16 {
-		t.Errorf("expected 16 tools with nil allowlist, got %d", len(tools))
+	if len(tools) != 31 {
+		t.Errorf("expected 31 tools with nil allowlist, got %d", len(tools))
 	}
 }
 
@@ -1230,14 +1239,14 @@ func TestNewServerBackwardsCompatible(t *testing.T) {
 	srv := NewServer(s)
 	tools := srv.ListTools()
 
-	// 12 agent + 4 admin = 16 total
-	if len(tools) != 16 {
-		t.Errorf("NewServer should register all 16 tools, got %d", len(tools))
+	// 26 agent + 5 admin = 31 total
+	if len(tools) != 31 {
+		t.Errorf("NewServer should register all 31 tools, got %d", len(tools))
 	}
 }
 
 func TestProfileConsistency(t *testing.T) {
-	// Verify that agent + admin = all 16 tools
+	// Verify that agent + admin = all 31 tools
 	combined := make(map[string]bool)
 	for tool := range ProfileAgent {
 		combined[tool] = true
@@ -1246,8 +1255,8 @@ func TestProfileConsistency(t *testing.T) {
 		combined[tool] = true
 	}
 
-	if len(combined) != 16 {
-		t.Errorf("agent + admin should cover all 16 tools, got %d", len(combined))
+	if len(combined) != 31 {
+		t.Errorf("agent + admin should cover all 31 tools, got %d", len(combined))
 	}
 
 	// Verify no overlap between profiles
@@ -1545,9 +1554,9 @@ func TestNewServerWithConfig(t *testing.T) {
 		t.Fatal("expected MCP server instance")
 	}
 	tools := srv.ListTools()
-	// Should have all 16 tools
-	if len(tools) != 16 {
-		t.Errorf("NewServerWithConfig should register all 16 tools, got %d", len(tools))
+	// Should have all 31 tools
+	if len(tools) != 31 {
+		t.Errorf("NewServerWithConfig should register all 31 tools, got %d", len(tools))
 	}
 }
 
@@ -2114,5 +2123,101 @@ func TestSessionStartUsesDefaultSessionID(t *testing.T) {
 	realScore := activity.ActivityScore("real-unique-session-id")
 	if realScore != "" {
 		t.Fatalf("expected no activity under real session ID, got: %q", realScore)
+	}
+}
+
+func TestSessionStartCandidateNotice(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	// Create 3 observational memories in the same project+domain+kind group
+	// to trigger consolidation candidate generation.
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(store.AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           store.MemoryKindDiscovery,
+			Title:          fmt.Sprintf("Obs item %d", i),
+			Body:           fmt.Sprintf("Body of observation %d", i),
+			Classification: "observational",
+			Domain:         "test",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory %d: %v", i, err)
+		}
+	}
+
+	// Generate consolidation candidate.
+	created, _, err := s.GenerateConsolidationCandidates("ohara", "test", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+	if created != 1 {
+		t.Fatalf("expected 1 candidate, got %d", created)
+	}
+
+	// Call handleSessionStart and verify the candidate notice is present.
+	activity := NewSessionActivity(10 * time.Minute)
+	start := handleSessionStart(s, MCPConfig{}, activity)
+	res, err := start(context.Background(), mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"id":      "test-session",
+			"project": "ohara",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", callResultText(t, res))
+	}
+	text := callResultText(t, res)
+	if !strings.Contains(text, "1 consolidation candidate(s) are ready for review") {
+		t.Fatalf("expected candidate notice in session start result, got: %s", text)
+	}
+}
+
+func TestConsolidateCandidatesReturnsSourceEpisodes(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	for i := 1; i <= 3; i++ {
+		_, err := s.AddMemory(store.AddMemoryParams{
+			ProjectID:      "ohara",
+			Kind:           store.MemoryKindDiscovery,
+			Title:          fmt.Sprintf("Source memory %d", i),
+			Body:           fmt.Sprintf("raw episodic detail %d", i),
+			Classification: "observational",
+			Domain:         "test",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory %d: %v", i, err)
+		}
+	}
+
+	created, _, err := s.GenerateConsolidationCandidates("ohara", "test", false)
+	if err != nil {
+		t.Fatalf("GenerateConsolidationCandidates: %v", err)
+	}
+	if created != 1 {
+		t.Fatalf("expected 1 candidate, got %d", created)
+	}
+
+	h := handleConsolidationCandidates(s)
+	res, err := h(context.Background(), mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "ohara", "domain": "test"}},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected handler error: %s", callResultText(t, res))
+	}
+	text := callResultText(t, res)
+	if !strings.Contains(text, "Source memories (3)") {
+		t.Fatalf("expected grouped source count in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Source memory 1") || !strings.Contains(text, "raw episodic detail 1") {
+		t.Fatalf("expected source episode content in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Save a semantic memory with mem_save using source='consolidation'") {
+		t.Fatalf("expected consolidation workflow guidance, got: %s", text)
 	}
 }
