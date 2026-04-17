@@ -50,6 +50,18 @@ type RuntimeConfig struct {
 	// report a conflict. Only applies when ConflictEnabled is true.
 	// Default: 0.6.
 	ConflictThreshold float64
+	// RetrievalMode controls search strategy: "fts5" (default), "hybrid", or "embedding".
+	RetrievalMode string
+	// EmbeddingBackend is the embedding provider: "ollama" (default).
+	EmbeddingBackend string
+	// EmbeddingModel is the model name for embeddings (default: "nomic-embed-text").
+	EmbeddingModel string
+	// EmbeddingDim is the embedding vector dimension (default: 768).
+	EmbeddingDim int
+	// HybridAlpha weights FTS vs embedding scores (0.0-1.0, default: 0.6).
+	HybridAlpha float64
+	// OllamaURL is the Ollama API endpoint (default: "http://localhost:11434").
+	OllamaURL string
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
@@ -64,6 +76,12 @@ type fileConfig struct {
 	MaxBudgetTokens     int      `json:"max_budget_tokens"`
 	ConflictEnabled     *bool    `json:"conflict_enabled"`
 	ConflictThreshold   *float64 `json:"conflict_threshold"`
+	RetrievalMode       string   `json:"retrieval_mode"`
+	EmbeddingBackend    string   `json:"embedding_backend"`
+	EmbeddingModel      string   `json:"embedding_model"`
+	EmbeddingDim        int      `json:"embedding_dim"`
+	HybridAlpha         *float64 `json:"hybrid_alpha"`
+	OllamaURL           string   `json:"ollama_url"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -85,6 +103,12 @@ func Default() RuntimeConfig {
 		MaxBudgetTokens:     800,
 		ConflictEnabled:     true,
 		ConflictThreshold:   0.6,
+		RetrievalMode:       "fts5",
+		EmbeddingBackend:    "ollama",
+		EmbeddingModel:      "nomic-embed-text",
+		EmbeddingDim:        768,
+		HybridAlpha:         0.6,
+		OllamaURL:           "http://localhost:11434",
 	}
 }
 
@@ -149,6 +173,24 @@ func Load(path string) (RuntimeConfig, error) {
 		if fc.ConflictThreshold != nil && *fc.ConflictThreshold >= 0.0 && *fc.ConflictThreshold <= 1.0 {
 			cfg.ConflictThreshold = *fc.ConflictThreshold
 		}
+		if fc.RetrievalMode != "" {
+			cfg.RetrievalMode = fc.RetrievalMode
+		}
+		if fc.EmbeddingBackend != "" {
+			cfg.EmbeddingBackend = fc.EmbeddingBackend
+		}
+		if fc.EmbeddingModel != "" {
+			cfg.EmbeddingModel = fc.EmbeddingModel
+		}
+		if fc.EmbeddingDim > 0 {
+			cfg.EmbeddingDim = fc.EmbeddingDim
+		}
+		if fc.HybridAlpha != nil && *fc.HybridAlpha >= 0.0 && *fc.HybridAlpha <= 1.0 {
+			cfg.HybridAlpha = *fc.HybridAlpha
+		}
+		if fc.OllamaURL != "" {
+			cfg.OllamaURL = fc.OllamaURL
+		}
 	}
 
 	applyEnvOverrides(&cfg)
@@ -169,6 +211,28 @@ func applyEnvOverrides(cfg *RuntimeConfig) {
 	}
 	if v := os.Getenv("OHARA_SYNC_DIR"); v != "" {
 		cfg.SyncDir = v
+	}
+	if v := os.Getenv("OHARA_RETRIEVAL_MODE"); v != "" {
+		cfg.RetrievalMode = v
+	}
+	if v := os.Getenv("OHARA_EMBEDDING_BACKEND"); v != "" {
+		cfg.EmbeddingBackend = v
+	}
+	if v := os.Getenv("OHARA_EMBEDDING_MODEL"); v != "" {
+		cfg.EmbeddingModel = v
+	}
+	if v := os.Getenv("OHARA_EMBEDDING_DIM"); v != "" {
+		if dim, err := strconv.Atoi(v); err == nil && dim > 0 {
+			cfg.EmbeddingDim = dim
+		}
+	}
+	if v := os.Getenv("OHARA_HYBRID_ALPHA"); v != "" {
+		if alpha, err := strconv.ParseFloat(v, 64); err == nil && alpha >= 0 && alpha <= 1 {
+			cfg.HybridAlpha = alpha
+		}
+	}
+	if v := os.Getenv("OHARA_OLLAMA_URL"); v != "" {
+		cfg.OllamaURL = v
 	}
 }
 
