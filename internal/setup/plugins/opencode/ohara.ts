@@ -22,22 +22,12 @@ const OHARA_PORT = parseInt(process.env.OHARA_PORT ?? "7331")
 const OHARA_URL = `http://127.0.0.1:${OHARA_PORT}`
 const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
 
-// Ohara's own MCP tools — don't count these as "tool calls" for session stats
-const OHARA_TOOLS = new Set([
-  "mem_search",
-  "mem_save",
-  "mem_update",
-  "mem_delete",
-  "mem_suggest_topic_key",
-  "mem_save_prompt",
-  "mem_session_summary",
-  "mem_context",
-  "mem_stats",
-  "mem_timeline",
-  "mem_get_observation",
-  "mem_session_start",
-  "mem_session_end",
-])
+// Ohara's own MCP tools — don't count these as "tool calls" for session stats.
+// V3 adds many mem_* tools; prefix check avoids stale hardcoded list drift.
+function isOharaTool(toolName: string): boolean {
+  const name = (toolName ?? "").toLowerCase()
+  return name.startsWith("mem_")
+}
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
 // These get injected into the agent's context so it knows to call mem_save.
@@ -368,7 +358,7 @@ export const Ohara: Plugin = async (ctx) => {
     // the passive capture endpoint so the server extracts learnings.
 
     "tool.execute.after": async (input, output) => {
-      if (OHARA_TOOLS.has(input.tool.toLowerCase())) return
+      if (isOharaTool(input.tool)) return
 
       // input.sessionID comes from OpenCode — always available
       const sessionId = input.sessionID
