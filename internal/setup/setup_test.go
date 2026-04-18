@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ashwnn/ohara/internal/util"
 )
 
 func resetSetupSeams(t *testing.T) {
@@ -445,7 +447,7 @@ func TestStripJSONC(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := string(stripJSONC([]byte(tt.input)))
+			got := string(util.StripJSONC([]byte(tt.input)))
 			if got != tt.want {
 				t.Fatalf("stripJSONC(%q) = %q, want %q", tt.input, got, tt.want)
 			}

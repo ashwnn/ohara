@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/ashwnn/ohara/internal/util"
 )
 
 var (
@@ -219,7 +221,7 @@ func injectOpenCodeMCP() error {
 			return fmt.Errorf("read config: %w", err)
 		}
 	} else {
-		cleaned := stripJSONC(data)
+		cleaned := util.StripJSONC(data)
 		if err := json.Unmarshal(cleaned, &config); err != nil {
 			return fmt.Errorf("parse config: %w", err)
 		}
@@ -331,58 +333,6 @@ func openCodeConfigDir() string {
 		return filepath.Join(xdg, "opencode")
 	}
 	return filepath.Join(home, ".config", "opencode")
-}
-
-// stripJSONC removes single-line (//) and multi-line (/* */) comments
-// from JSONC content, returning valid JSON. Comments inside quoted strings
-// are preserved.
-func stripJSONC(data []byte) []byte {
-	var out []byte
-	i := 0
-	for i < len(data) {
-		// Handle strings — pass through verbatim
-		if data[i] == '"' {
-			out = append(out, data[i])
-			i++
-			for i < len(data) && data[i] != '"' {
-				if data[i] == '\\' && i+1 < len(data) {
-					out = append(out, data[i], data[i+1])
-					i += 2
-					continue
-				}
-				out = append(out, data[i])
-				i++
-			}
-			if i < len(data) {
-				out = append(out, data[i])
-				i++
-			}
-			continue
-		}
-		// Single-line comment
-		if i+1 < len(data) && data[i] == '/' && data[i+1] == '/' {
-			for i < len(data) && data[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		// Multi-line comment
-		if i+1 < len(data) && data[i] == '/' && data[i+1] == '*' {
-			i += 2
-			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
-				i++
-			}
-			if i+1 < len(data) {
-				i += 2 // skip past */
-			} else {
-				i = len(data) // unterminated: consume everything
-			}
-			continue
-		}
-		out = append(out, data[i])
-		i++
-	}
-	return out
 }
 
 // resolveOharaCommand returns the absolute path to the ohara binary.
@@ -730,7 +680,7 @@ func checkOpenCode() (*ConfigStatus, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	cleaned := stripJSONC(data)
+	cleaned := util.StripJSONC(data)
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal(cleaned, &config); err != nil {
 		return &ConfigStatus{
@@ -821,7 +771,7 @@ func removeOpenCode() error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	cleaned := stripJSONC(data)
+	cleaned := util.StripJSONC(data)
 	var config map[string]json.RawMessage
 	if err := json.Unmarshal(cleaned, &config); err != nil {
 		return fmt.Errorf("parse config: %w", err)

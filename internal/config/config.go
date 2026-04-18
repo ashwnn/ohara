@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ashwnn/ohara/internal/util"
 )
 
 // Default config file path, relative to the data directory.
@@ -129,13 +131,10 @@ func Load(path string) (RuntimeConfig, error) {
 			return RuntimeConfig{}, fmt.Errorf("read config %s: %w", path, err)
 		}
 
-		clean, err := stripJSONC(string(data))
-		if err != nil {
-			return RuntimeConfig{}, fmt.Errorf("strip jsonc: %w", err)
-		}
+		clean := util.StripJSONC(data)
 
 		var fc fileConfig
-		if err := json.Unmarshal([]byte(clean), &fc); err != nil {
+		if err := json.Unmarshal(clean, &fc); err != nil {
 			return RuntimeConfig{}, fmt.Errorf("parse config %s: %w", path, err)
 		}
 
@@ -266,47 +265,4 @@ func HTTPAddrParts(addr string) (host string, port int) {
 	}
 	port, _ = strconv.Atoi(addr)
 	return
-}
-
-// stripJSONC removes // and /* */ comments from a JSONC string so it can
-// be parsed as valid JSON. It correctly handles line-ending block comments,
-// but does not handle block comments inside string values.
-func stripJSONC(s string) (string, error) {
-	// Single-pass scanner: remove // and /* */ comments.
-	var result strings.Builder
-	result.Grow(len(s))
-
-	i := 0
-	for i < len(s) {
-		if i < len(s)-1 && s[i] == '/' && s[i+1] == '/' {
-			// Line comment — skip to end of line.
-			for i < len(s) && s[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		if i < len(s)-1 && s[i] == '/' && s[i+1] == '*' {
-			// Block comment — skip until */.
-			i += 2
-			for i < len(s)-1 {
-				if s[i] == '*' && s[i+1] == '/' {
-					i += 2
-					break
-				}
-				i++
-			}
-			continue
-		}
-		result.WriteByte(s[i])
-		i++
-	}
-
-	raw := result.String()
-
-	// Validate it parses as JSON.
-	var js json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &js); err != nil {
-		return "", fmt.Errorf("not valid JSON (after stripping comments): %w", err)
-	}
-	return raw, nil
 }
