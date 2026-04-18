@@ -72,27 +72,24 @@ type ChunkEntry struct {
 
 // ChunkData is the content of a single chunk file (JSONL entries).
 type ChunkData struct {
-	Sessions     []store.Session     `json:"sessions"`
-	Observations []store.Observation `json:"observations"`
-	Prompts      []store.Prompt      `json:"prompts"`
+	Sessions []store.Session `json:"sessions"`
+	Prompts  []store.Prompt  `json:"prompts"`
 }
 
 // SyncResult is returned after a sync operation.
 type SyncResult struct {
-	ChunkID              string `json:"chunk_id,omitempty"`
-	SessionsExported     int    `json:"sessions_exported"`
-	ObservationsExported int    `json:"observations_exported"`
-	PromptsExported      int    `json:"prompts_exported"`
-	IsEmpty              bool   `json:"is_empty"` // true if nothing new to sync
+	ChunkID          string `json:"chunk_id,omitempty"`
+	SessionsExported int    `json:"sessions_exported"`
+	PromptsExported  int    `json:"prompts_exported"`
+	IsEmpty          bool   `json:"is_empty"` // true if nothing new to sync
 }
 
 // ImportResult is returned after importing chunks.
 type ImportResult struct {
-	ChunksImported       int `json:"chunks_imported"`
-	ChunksSkipped        int `json:"chunks_skipped"` // Already imported
-	SessionsImported     int `json:"sessions_imported"`
-	ObservationsImported int `json:"observations_imported"`
-	PromptsImported      int `json:"prompts_imported"`
+	ChunksImported   int `json:"chunks_imported"`
+	ChunksSkipped    int `json:"chunks_skipped"` // Already imported
+	SessionsImported int `json:"sessions_imported"`
+	PromptsImported  int `json:"prompts_imported"`
 }
 
 // ─── Syncer ──────────────────────────────────────────────────────────────────
@@ -184,7 +181,7 @@ func (sy *Syncer) Export(createdBy string, project string) (*SyncResult, error) 
 	chunk := sy.filterNewData(data, lastChunkTime)
 
 	// Nothing new to export
-	if len(chunk.Sessions) == 0 && len(chunk.Observations) == 0 && len(chunk.Prompts) == 0 {
+	if len(chunk.Sessions) == 0 && len(chunk.Prompts) == 0 {
 		return &SyncResult{IsEmpty: true}, nil
 	}
 
@@ -209,7 +206,6 @@ func (sy *Syncer) Export(createdBy string, project string) (*SyncResult, error) 
 		CreatedBy: createdBy,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		Sessions:  len(chunk.Sessions),
-		Memories:  len(chunk.Observations),
 		Prompts:   len(chunk.Prompts),
 	}
 
@@ -231,10 +227,9 @@ func (sy *Syncer) Export(createdBy string, project string) (*SyncResult, error) 
 	}
 
 	return &SyncResult{
-		ChunkID:              chunkID,
-		SessionsExported:     len(chunk.Sessions),
-		ObservationsExported: len(chunk.Observations),
-		PromptsExported:      len(chunk.Prompts),
+		ChunkID:          chunkID,
+		SessionsExported: len(chunk.Sessions),
+		PromptsExported:  len(chunk.Prompts),
 	}, nil
 }
 
@@ -281,11 +276,10 @@ func (sy *Syncer) Import() (*ImportResult, error) {
 
 		// Import into DB
 		exportData := &store.ExportData{
-			Version:      "0.1.0",
-			ExportedAt:   entry.CreatedAt,
-			Sessions:     chunk.Sessions,
-			Observations: chunk.Observations,
-			Prompts:      chunk.Prompts,
+			Version:    "0.1.0",
+			ExportedAt: entry.CreatedAt,
+			Sessions:   chunk.Sessions,
+			Prompts:    chunk.Prompts,
 		}
 
 		importResult, err := storeImportData(sy.store, exportData)
@@ -300,7 +294,6 @@ func (sy *Syncer) Import() (*ImportResult, error) {
 
 		result.ChunksImported++
 		result.SessionsImported += importResult.SessionsImported
-		result.ObservationsImported += importResult.ObservationsImported
 		result.PromptsImported += importResult.PromptsImported
 	}
 
@@ -363,27 +356,16 @@ func (sy *Syncer) filterNewData(data *store.ExportData, lastChunkTime string) *C
 	chunk := &ChunkData{}
 
 	if lastChunkTime == "" {
-		// First sync — everything is new
 		chunk.Sessions = data.Sessions
-		chunk.Observations = data.Observations
 		chunk.Prompts = data.Prompts
 		return chunk
 	}
 
-	// Parse the last chunk time for comparison.
-	// Normalize: DB times are "2006-01-02 15:04:05", manifest times are RFC3339.
-	// We compare as strings since both sort lexicographically.
 	cutoff := normalizeTime(lastChunkTime)
 
 	for _, s := range data.Sessions {
 		if normalizeTime(s.StartedAt) > cutoff {
 			chunk.Sessions = append(chunk.Sessions, s)
-		}
-	}
-
-	for _, o := range data.Observations {
-		if normalizeTime(o.CreatedAt) > cutoff {
-			chunk.Observations = append(chunk.Observations, o)
 		}
 	}
 
@@ -410,20 +392,8 @@ func filterByProject(data *store.ExportData, project string) *store.ExportData {
 		}
 	}
 
-	// Step 2: observations — match by own project OR by session
+	// Step 2: prompts — match by own project OR by session
 	referencedSessionIDs := make(map[string]bool)
-	for _, o := range data.Observations {
-		match := sessionIDs[o.SessionID]
-		if !match && o.Project != nil && *o.Project == project {
-			match = true
-		}
-		if match {
-			result.Observations = append(result.Observations, o)
-			referencedSessionIDs[o.SessionID] = true
-		}
-	}
-
-	// Step 3: prompts — match by own project OR by session
 	for _, p := range data.Prompts {
 		match := sessionIDs[p.SessionID]
 		if !match && p.Project == project {

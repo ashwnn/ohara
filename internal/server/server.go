@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,7 +32,7 @@ var loadServerStats = func(s *store.Store) (any, error) {
 	}
 	return map[string]any{
 		"total_sessions":     legacy.TotalSessions,
-		"total_observations": legacy.TotalObservations,
+		"total_memories":     legacy.TotalMemories,
 		"total_prompts":      legacy.TotalPrompts,
 		"projects":           legacy.Projects,
 		"by_kind":            mem.ByKind,
@@ -217,20 +218,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/context", s.handleGetSessionContext)
 	s.mux.HandleFunc("GET /sessions/recent", s.handleRecentSessions)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
-
-	// Observations
-	s.mux.HandleFunc("POST /observations", s.handleAddObservation)
-	s.mux.HandleFunc("POST /observations/passive", s.handlePassiveCapture)
-	s.mux.HandleFunc("GET /observations/recent", s.handleRecentObservations)
-	s.mux.HandleFunc("PATCH /observations/{id}", s.handleUpdateObservation)
-	s.mux.HandleFunc("DELETE /observations/{id}", s.handleDeleteObservation)
-
-	// Search
-	s.mux.HandleFunc("GET /search", s.handleSearch)
-
-	// Timeline
-	s.mux.HandleFunc("GET /timeline", s.handleTimeline)
-	s.mux.HandleFunc("GET /observations/{id}", s.handleGetObservation)
 
 	// Prompts
 	s.mux.HandleFunc("POST /prompts", s.handleAddPrompt)
@@ -418,179 +405,6 @@ func (s *Server) handleGetSessionContext(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]string{"context": prevSummary})
 }
 
-func (s *Server) handleAddObservation(w http.ResponseWriter, r *http.Request) {
-	var body store.AddObservationParams
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-	if body.SessionID == "" || body.Title == "" || body.Content == "" {
-		jsonError(w, http.StatusBadRequest, "session_id, title, and content are required")
-		return
-	}
-
-	id, err := s.store.AddObservation(body)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	s.notifyWrite()
-	jsonResponse(w, http.StatusCreated, map[string]any{"id": id, "status": "saved"})
-}
-
-func (s *Server) handlePassiveCapture(w http.ResponseWriter, r *http.Request) {
-	var body store.PassiveCaptureParams
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-	if body.SessionID == "" {
-		jsonError(w, http.StatusBadRequest, "session_id is required")
-		return
-	}
-
-	result, err := s.store.PassiveCapture(body)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	s.notifyWrite()
-	jsonResponse(w, http.StatusOK, result)
-}
-
-func (s *Server) handleRecentObservations(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
-	scope := r.URL.Query().Get("scope")
-	limit := queryInt(r, "limit", 20)
-
-	obs, err := s.store.RecentObservations(project, scope, limit)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, obs)
-}
-
-func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		jsonError(w, http.StatusBadRequest, "q parameter is required")
-		return
-	}
-
-	results, err := s.store.Search(query, store.SearchOptions{
-		Type:    r.URL.Query().Get("type"),
-		Project: r.URL.Query().Get("project"),
-		Scope:   r.URL.Query().Get("scope"),
-		Limit:   queryInt(r, "limit", 10),
-	})
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]any{
-		"results": results,
-		"method":  "fts5",
-	})
-}
-
-func (s *Server) handleGetObservation(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid observation id")
-		return
-	}
-
-	obs, err := s.store.GetObservation(id)
-	if err != nil {
-		jsonError(w, http.StatusNotFound, "observation not found")
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, obs)
-}
-
-func (s *Server) handleUpdateObservation(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid observation id")
-		return
-	}
-
-	var body store.UpdateObservationParams
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-
-	if body.Type == nil && body.Title == nil && body.Content == nil && body.Project == nil && body.Scope == nil && body.TopicKey == nil {
-		jsonError(w, http.StatusBadRequest, "at least one field is required")
-		return
-	}
-
-	obs, err := s.store.UpdateObservation(id, body)
-	if err != nil {
-		jsonError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	s.notifyWrite()
-	jsonResponse(w, http.StatusOK, obs)
-}
-
-func (s *Server) handleDeleteObservation(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid observation id")
-		return
-	}
-
-	hard := queryBool(r, "hard", false)
-	if err := s.store.DeleteObservation(id, hard); err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	s.notifyWrite()
-	jsonResponse(w, http.StatusOK, map[string]any{
-		"id":          id,
-		"status":      "deleted",
-		"hard_delete": hard,
-	})
-}
-
-func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
-	idStr := r.URL.Query().Get("observation_id")
-	if idStr == "" {
-		jsonError(w, http.StatusBadRequest, "observation_id parameter is required")
-		return
-	}
-
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid observation_id")
-		return
-	}
-
-	before := queryInt(r, "before", 5)
-	after := queryInt(r, "after", 5)
-
-	result, err := s.store.Timeline(id, before, after)
-	if err != nil {
-		jsonError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, result)
-}
-
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleAddPrompt(w http.ResponseWriter, r *http.Request) {
@@ -656,7 +470,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.store.DeleteSession(id); err != nil {
 		switch {
-		case errors.Is(err, store.ErrSessionHasObservations):
+		case strings.Contains(err.Error(), "session has memories"):
 			jsonError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, store.ErrSessionNotFound):
 			jsonError(w, http.StatusNotFound, err.Error())

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ashwnn/ohara/internal/store"
+	"github.com/ashwnn/ohara/internal/util"
 	mcppkg "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -269,20 +270,20 @@ func TestHelperArgsAndTruncate(t *testing.T) {
 		t.Fatalf("expected default boolArg=true")
 	}
 
-	if got := truncate("short", 10); got != "short" {
+	if got := util.Truncate("short", 10); got != "short" {
 		t.Fatalf("unexpected truncate for short input: %q", got)
 	}
-	if got := truncate("this is long", 4); got != "this..." {
+	if got := util.Truncate("this is long", 4); got != "this..." {
 		t.Fatalf("unexpected truncate for long input: %q", got)
 	}
 	// Multibyte UTF-8 safety
-	if got := truncate("Decisión de arquitectura", 8); got != "Decisión..." {
+	if got := util.Truncate("Decisión de arquitectura", 8); got != "Decisión..." {
 		t.Fatalf("truncate spanish accents = %q, want %q", got, "Decisión...")
 	}
-	if got := truncate("🐛🔧🚀✨🎉💡", 3); got != "🐛🔧🚀..." {
+	if got := util.Truncate("🐛🔧🚀✨🎉💡", 3); got != "🐛🔧🚀..." {
 		t.Fatalf("truncate emoji = %q, want %q", got, "🐛🔧🚀...")
 	}
-	if got := truncate("café☕latte", 5); got != "café☕..." {
+	if got := util.Truncate("café☕latte", 5); got != "café☕..." {
 		t.Fatalf("truncate mixed = %q, want %q", got, "café☕...")
 	}
 }

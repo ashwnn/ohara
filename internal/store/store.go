@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ashwnn/ohara/internal/token"
+	"github.com/ashwnn/ohara/internal/util"
 	sqlite "modernc.org/sqlite"
 )
 
@@ -33,12 +34,9 @@ const sqliteConstraintForeignKey = 787
 
 // Sentinel errors returned by delete operations so callers can use errors.Is.
 var (
-	ErrSessionNotFound        = errors.New("session not found")
-	ErrSessionHasObservations = errors.New("session still has observations")
-	ErrPromptNotFound         = errors.New("prompt not found")
+	ErrSessionNotFound = errors.New("session not found")
+	ErrPromptNotFound  = errors.New("prompt not found")
 )
-
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 type Session struct {
 	ID        string  `json:"id"`
@@ -49,98 +47,20 @@ type Session struct {
 	Summary   *string `json:"summary,omitempty"`
 }
 
-type Observation struct {
-	ID             int64   `json:"id"`
-	SyncID         string  `json:"sync_id"`
-	SessionID      string  `json:"session_id"`
-	Type           string  `json:"type"`
-	Title          string  `json:"title"`
-	Content        string  `json:"content"`
-	ToolName       *string `json:"tool_name,omitempty"`
-	Project        *string `json:"project,omitempty"`
-	Scope          string  `json:"scope"`
-	TopicKey       *string `json:"topic_key,omitempty"`
-	RevisionCount  int     `json:"revision_count"`
-	DuplicateCount int     `json:"duplicate_count"`
-	LastSeenAt     *string `json:"last_seen_at,omitempty"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-	DeletedAt      *string `json:"deleted_at,omitempty"`
-}
-
-type SearchResult struct {
-	Observation
-	Rank float64 `json:"rank"`
-}
-
 type SessionSummary struct {
-	ID               string  `json:"id"`
-	Project          string  `json:"project"`
-	StartedAt        string  `json:"started_at"`
-	EndedAt          *string `json:"ended_at,omitempty"`
-	Summary          *string `json:"summary,omitempty"`
-	ObservationCount int     `json:"observation_count"`
+	ID          string  `json:"id"`
+	Project     string  `json:"project"`
+	StartedAt   string  `json:"started_at"`
+	EndedAt     *string `json:"ended_at,omitempty"`
+	Summary     *string `json:"summary,omitempty"`
+	MemoryCount int     `json:"memory_count"`
 }
 
 type Stats struct {
-	TotalSessions     int      `json:"total_sessions"`
-	TotalObservations int      `json:"total_observations"`
-	TotalPrompts      int      `json:"total_prompts"`
-	Projects          []string `json:"projects"`
-}
-
-type TimelineEntry struct {
-	ID             int64   `json:"id"`
-	SessionID      string  `json:"session_id"`
-	Type           string  `json:"type"`
-	Title          string  `json:"title"`
-	Content        string  `json:"content"`
-	ToolName       *string `json:"tool_name,omitempty"`
-	Project        *string `json:"project,omitempty"`
-	Scope          string  `json:"scope"`
-	TopicKey       *string `json:"topic_key,omitempty"`
-	RevisionCount  int     `json:"revision_count"`
-	DuplicateCount int     `json:"duplicate_count"`
-	LastSeenAt     *string `json:"last_seen_at,omitempty"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-	DeletedAt      *string `json:"deleted_at,omitempty"`
-	IsFocus        bool    `json:"is_focus"` // true for the anchor observation
-}
-
-type TimelineResult struct {
-	Focus        Observation     `json:"focus"`        // The anchor observation
-	Before       []TimelineEntry `json:"before"`       // Observations before the focus (chronological)
-	After        []TimelineEntry `json:"after"`        // Observations after the focus (chronological)
-	SessionInfo  *Session        `json:"session_info"` // Session that contains the focus observation
-	TotalInRange int             `json:"total_in_range"`
-}
-
-type SearchOptions struct {
-	Type    string `json:"type,omitempty"`
-	Project string `json:"project,omitempty"`
-	Scope   string `json:"scope,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-}
-
-type AddObservationParams struct {
-	SessionID string `json:"session_id"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	ToolName  string `json:"tool_name,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Scope     string `json:"scope,omitempty"`
-	TopicKey  string `json:"topic_key,omitempty"`
-}
-
-type UpdateObservationParams struct {
-	Type     *string `json:"type,omitempty"`
-	Title    *string `json:"title,omitempty"`
-	Content  *string `json:"content,omitempty"`
-	Project  *string `json:"project,omitempty"`
-	Scope    *string `json:"scope,omitempty"`
-	TopicKey *string `json:"topic_key,omitempty"`
+	TotalSessions int      `json:"total_sessions"`
+	TotalMemories int      `json:"total_memories"`
+	TotalPrompts  int      `json:"total_prompts"`
+	Projects      []string `json:"projects"`
 }
 
 type Prompt struct {
@@ -167,9 +87,8 @@ const (
 	SyncLifecycleHealthy  = "healthy"
 	SyncLifecycleDegraded = "degraded"
 
-	SyncEntitySession     = "session"
-	SyncEntityObservation = "observation"
-	SyncEntityPrompt      = "prompt"
+	SyncEntitySession = "session"
+	SyncEntityPrompt  = "prompt"
 
 	SyncOpUpsert = "upsert"
 	SyncOpDelete = "delete"
@@ -219,21 +138,6 @@ type syncSessionPayload struct {
 	Summary   *string `json:"summary,omitempty"`
 }
 
-type syncObservationPayload struct {
-	SyncID     string  `json:"sync_id"`
-	SessionID  string  `json:"session_id"`
-	Type       string  `json:"type"`
-	Title      string  `json:"title"`
-	Content    string  `json:"content"`
-	ToolName   *string `json:"tool_name,omitempty"`
-	Project    *string `json:"project,omitempty"`
-	Scope      string  `json:"scope"`
-	TopicKey   *string `json:"topic_key,omitempty"`
-	Deleted    bool    `json:"deleted,omitempty"`
-	DeletedAt  *string `json:"deleted_at,omitempty"`
-	HardDelete bool    `json:"hard_delete,omitempty"`
-}
-
 type syncPromptPayload struct {
 	SyncID    string  `json:"sync_id"`
 	SessionID string  `json:"session_id"`
@@ -243,11 +147,10 @@ type syncPromptPayload struct {
 
 // ExportData is the full serializable dump of the Ohara database.
 type ExportData struct {
-	Version      string        `json:"version"`
-	ExportedAt   string        `json:"exported_at"`
-	Sessions     []Session     `json:"sessions"`
-	Observations []Observation `json:"observations"`
-	Prompts      []Prompt      `json:"prompts"`
+	Version    string    `json:"version"`
+	ExportedAt string    `json:"exported_at"`
+	Sessions   []Session `json:"sessions"`
+	Prompts    []Prompt  `json:"prompts"`
 }
 
 // ─── Memory Items (Ohara v2 spec) ──────────────────────────────────────────────
@@ -570,17 +473,16 @@ type UpdateMemoryParams struct {
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
-	DataDir              string
-	MaxObservationLength int
-	MaxContextResults    int
-	MaxSearchResults     int
-	DedupeWindow         time.Duration
-	RetrievalMode        string
-	EmbeddingBackend     string
-	EmbeddingModel       string
-	EmbeddingDim         int
-	HybridAlpha          float64
-	OllamaURL            string
+	DataDir           string
+	MaxContextResults int
+	MaxSearchResults  int
+	DedupeWindow      time.Duration
+	RetrievalMode     string
+	EmbeddingBackend  string
+	EmbeddingModel    string
+	EmbeddingDim      int
+	HybridAlpha       float64
+	OllamaURL         string
 }
 
 func DefaultConfig() (Config, error) {
@@ -589,17 +491,16 @@ func DefaultConfig() (Config, error) {
 		return Config{}, fmt.Errorf("ohara: determine home directory: %w", err)
 	}
 	cfg := Config{
-		DataDir:              filepath.Join(home, ".local/share/ohara"),
-		MaxObservationLength: 50000,
-		MaxContextResults:    20,
-		MaxSearchResults:     20,
-		DedupeWindow:         15 * time.Minute,
-		RetrievalMode:        "fts5",
-		EmbeddingBackend:     "ollama",
-		EmbeddingModel:       "nomic-embed-text",
-		EmbeddingDim:         768,
-		HybridAlpha:          0.6,
-		OllamaURL:            "http://localhost:11434",
+		DataDir:           filepath.Join(home, ".local/share/ohara"),
+		MaxContextResults: 20,
+		MaxSearchResults:  20,
+		DedupeWindow:      15 * time.Minute,
+		RetrievalMode:     "fts5",
+		EmbeddingBackend:  "ollama",
+		EmbeddingModel:    "nomic-embed-text",
+		EmbeddingDim:      768,
+		HybridAlpha:       0.6,
+		OllamaURL:         "http://localhost:11434",
 	}
 	if mode := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MODE")); mode != "" {
 		cfg.RetrievalMode = mode
@@ -631,23 +532,17 @@ func DefaultConfig() (Config, error) {
 // through alternative means.
 func FallbackConfig(dataDir string) Config {
 	return Config{
-		DataDir:              dataDir,
-		MaxObservationLength: 50000,
-		MaxContextResults:    20,
-		MaxSearchResults:     20,
-		DedupeWindow:         15 * time.Minute,
-		RetrievalMode:        "fts5",
-		EmbeddingBackend:     "ollama",
-		EmbeddingModel:       "nomic-embed-text",
-		EmbeddingDim:         768,
-		HybridAlpha:          0.6,
-		OllamaURL:            "http://localhost:11434",
+		DataDir:           dataDir,
+		MaxContextResults: 20,
+		MaxSearchResults:  20,
+		DedupeWindow:      15 * time.Minute,
+		RetrievalMode:     "fts5",
+		EmbeddingBackend:  "ollama",
+		EmbeddingModel:    "nomic-embed-text",
+		EmbeddingDim:      768,
+		HybridAlpha:       0.6,
+		OllamaURL:         "http://localhost:11434",
 	}
-}
-
-// MaxObservationLength returns the configured maximum content length for observations.
-func (s *Store) MaxObservationLength() int {
-	return s.cfg.MaxObservationLength
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -830,7 +725,7 @@ func (s *Store) Close() error {
 // ─── Migrations ──────────────────────────────────────────────────────────────
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 22
+const currentSchemaVersion = 23
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -965,10 +860,6 @@ func (s *Store) migrate() error {
 		if err := s.addColumnIfNotExists("observations", c.name, c.definition); err != nil {
 			return err
 		}
-	}
-
-	if err := s.migrateLegacyObservationsTable(); err != nil {
-		return err
 	}
 
 	if err := s.addColumnIfNotExists("user_prompts", "sync_id", "TEXT"); err != nil {
@@ -1502,6 +1393,35 @@ func (s *Store) applyMigration(version int) error {
 			return err
 		}
 
+	case 23:
+		// Migration 023: Port legacy observations into memory_items (one-time backfill).
+		// Only inserts rows that don't already exist (idempotent).
+		if _, err := s.execHook(s.db, `
+			INSERT OR IGNORE INTO memory_items (id, created_at, updated_at, project_id, actor_id, kind, scope, title, body, source, status, session_id, written_by)
+			SELECT
+				o.id,
+				o.created_at,
+				o.updated_at,
+				COALESCE(LOWER(o.project), 'default'),
+				'agent',
+				CASE
+					WHEN o.type IN ('decision', 'procedure', 'pattern', 'bugfix', 'discovery', 'learned', 'config') THEN o.type
+					ELSE 'note'
+				END,
+				COALESCE(NULLIF(o.scope, ''), 'project'),
+				o.title,
+				o.content,
+				'import',
+				CASE WHEN o.deleted_at IS NOT NULL THEN 'archived' ELSE 'active' END,
+				o.session_id,
+				'import'
+			FROM observations o
+			WHERE NOT EXISTS (SELECT 1 FROM memory_items m WHERE m.id = o.id)
+		`); err != nil {
+			// Non-fatal: table may not exist or columns may differ.
+			// Log but continue so migration doesn't block startup.
+		}
+
 	default:
 		return fmt.Errorf("unknown migration version %d (current: %d)", version, currentSchemaVersion)
 	}
@@ -1747,7 +1667,7 @@ func (s *Store) RecentSessions(project string, limit int) ([]SessionSummary, err
 	var results []SessionSummary
 	for rows.Next() {
 		var ss SessionSummary
-		if err := rows.Scan(&ss.ID, &ss.Project, &ss.StartedAt, &ss.EndedAt, &ss.Summary, &ss.ObservationCount); err != nil {
+		if err := rows.Scan(&ss.ID, &ss.Project, &ss.StartedAt, &ss.EndedAt, &ss.Summary, &ss.MemoryCount); err != nil {
 			return nil, err
 		}
 		results = append(results, ss)
@@ -1787,7 +1707,7 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 	var results []SessionSummary
 	for rows.Next() {
 		var ss SessionSummary
-		if err := rows.Scan(&ss.ID, &ss.Project, &ss.StartedAt, &ss.EndedAt, &ss.Summary, &ss.ObservationCount); err != nil {
+		if err := rows.Scan(&ss.ID, &ss.Project, &ss.StartedAt, &ss.EndedAt, &ss.Summary, &ss.MemoryCount); err != nil {
 			return nil, err
 		}
 		results = append(results, ss)
@@ -1795,212 +1715,7 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 	return results, rows.Err()
 }
 
-// AllObservations returns recent observations ordered by most recent first (for TUI browsing).
-func (s *Store) AllObservations(project, scope string, limit int) ([]Observation, error) {
-	if limit <= 0 {
-		limit = s.cfg.MaxContextResults
-	}
-
-	query := `
-		SELECT o.id, ifnull(o.sync_id, '') as sync_id, o.session_id, o.type, o.title, o.content, o.tool_name, o.project,
-		       o.scope, o.topic_key, o.revision_count, o.duplicate_count, o.last_seen_at, o.created_at, o.updated_at, o.deleted_at
-		FROM observations o
-		WHERE o.deleted_at IS NULL
-	`
-	args := []any{}
-
-	if project != "" {
-		query += " AND o.project = ?"
-		args = append(args, project)
-	}
-	if scope != "" {
-		query += " AND o.scope = ?"
-		args = append(args, normalizeScope(scope))
-	}
-
-	query += " ORDER BY o.created_at DESC LIMIT ?"
-	args = append(args, limit)
-
-	return s.queryObservations(query, args...)
-}
-
-// SessionObservations returns all observations for a specific session.
-func (s *Store) SessionObservations(sessionID string, limit int) ([]Observation, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-
-	query := `
-		SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		       scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		FROM observations
-		WHERE session_id = ? AND deleted_at IS NULL
-		ORDER BY created_at ASC
-		LIMIT ?
-	`
-	return s.queryObservations(query, sessionID, limit)
-}
-
-// ─── Observations ────────────────────────────────────────────────────────────
-
-func (s *Store) AddObservation(p AddObservationParams) (int64, error) {
-	// Normalize project name (lowercase + trim) before any persistence
-	p.Project, _ = NormalizeProject(p.Project)
-
-	// Strip <private>...</private> tags before persisting ANYTHING
-	title := stripPrivateTags(p.Title)
-	content := stripPrivateTags(p.Content)
-
-	if len(content) > s.cfg.MaxObservationLength {
-		content = content[:s.cfg.MaxObservationLength] + "... [truncated]"
-	}
-	scope := normalizeScope(p.Scope)
-	normHash := hashNormalized(content)
-	topicKey := normalizeTopicKey(p.TopicKey)
-
-	var observationID int64
-	err := s.withTx(func(tx *sql.Tx) error {
-		var obs *Observation
-		if topicKey != "" {
-			var existingID int64
-			err := tx.QueryRow(
-				`SELECT id FROM observations
-				 WHERE topic_key = ?
-				   AND ifnull(project, '') = ifnull(?, '')
-				   AND scope = ?
-				   AND deleted_at IS NULL
-				 ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC
-				 LIMIT 1`,
-				topicKey, nullableString(p.Project), scope,
-			).Scan(&existingID)
-			if err == nil {
-				if _, err := s.execHook(tx,
-					`UPDATE observations
-					 SET type = ?,
-					     title = ?,
-					     content = ?,
-					     tool_name = ?,
-					     topic_key = ?,
-					     normalized_hash = ?,
-					     revision_count = revision_count + 1,
-					     last_seen_at = datetime('now'),
-					     updated_at = datetime('now')
-					 WHERE id = ?`,
-					p.Type,
-					title,
-					content,
-					nullableString(p.ToolName),
-					nullableString(topicKey),
-					normHash,
-					existingID,
-				); err != nil {
-					return err
-				}
-				obs, err = s.getObservationTx(tx, existingID)
-				if err != nil {
-					return err
-				}
-				observationID = existingID
-				return s.enqueueSyncMutationTx(tx, SyncEntityObservation, obs.SyncID, SyncOpUpsert, observationPayloadFromObservation(obs))
-			}
-			if err != sql.ErrNoRows {
-				return err
-			}
-		}
-
-		window := dedupeWindowExpression(s.cfg.DedupeWindow)
-		var existingID int64
-		err := tx.QueryRow(
-			`SELECT id FROM observations
-			 WHERE normalized_hash = ?
-			   AND ifnull(project, '') = ifnull(?, '')
-			   AND scope = ?
-			   AND type = ?
-			   AND title = ?
-			   AND deleted_at IS NULL
-			   AND datetime(created_at) >= datetime('now', ?)
-			 ORDER BY created_at DESC
-			 LIMIT 1`,
-			normHash, nullableString(p.Project), scope, p.Type, title, window,
-		).Scan(&existingID)
-		if err == nil {
-			if _, err := s.execHook(tx,
-				`UPDATE observations
-				 SET duplicate_count = duplicate_count + 1,
-				     last_seen_at = datetime('now'),
-				     updated_at = datetime('now')
-				 WHERE id = ?`,
-				existingID,
-			); err != nil {
-				return err
-			}
-			obs, err = s.getObservationTx(tx, existingID)
-			if err != nil {
-				return err
-			}
-			observationID = existingID
-			return s.enqueueSyncMutationTx(tx, SyncEntityObservation, obs.SyncID, SyncOpUpsert, observationPayloadFromObservation(obs))
-		}
-		if err != sql.ErrNoRows {
-			return err
-		}
-
-		syncID := newSyncID("obs")
-		res, err := s.execHook(tx,
-			`INSERT INTO observations (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, revision_count, duplicate_count, last_seen_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), datetime('now'))`,
-			syncID, p.SessionID, p.Type, title, content,
-			nullableString(p.ToolName), nullableString(p.Project), scope, nullableString(topicKey), normHash,
-		)
-		if err != nil {
-			return err
-		}
-		observationID, err = res.LastInsertId()
-		if err != nil {
-			return err
-		}
-		obs, err = s.getObservationTx(tx, observationID)
-		if err != nil {
-			return err
-		}
-		return s.enqueueSyncMutationTx(tx, SyncEntityObservation, obs.SyncID, SyncOpUpsert, observationPayloadFromObservation(obs))
-	})
-	if err != nil {
-		return 0, err
-	}
-	return observationID, nil
-}
-
-func (s *Store) RecentObservations(project, scope string, limit int) ([]Observation, error) {
-	// Normalize project filter for case-insensitive matching
-	project, _ = NormalizeProject(project)
-
-	if limit <= 0 {
-		limit = s.cfg.MaxContextResults
-	}
-
-	query := `
-		SELECT o.id, ifnull(o.sync_id, '') as sync_id, o.session_id, o.type, o.title, o.content, o.tool_name, o.project,
-		       o.scope, o.topic_key, o.revision_count, o.duplicate_count, o.last_seen_at, o.created_at, o.updated_at, o.deleted_at
-		FROM observations o
-		WHERE o.deleted_at IS NULL
-	`
-	args := []any{}
-
-	if project != "" {
-		query += " AND o.project = ?"
-		args = append(args, project)
-	}
-	if scope != "" {
-		query += " AND o.scope = ?"
-		args = append(args, normalizeScope(scope))
-	}
-
-	query += " ORDER BY o.created_at DESC LIMIT ?"
-	args = append(args, limit)
-
-	return s.queryObservations(query, args...)
-}
+// ─── User Prompts ────────────────────────────────────────────────────────────
 
 // ─── User Prompts ────────────────────────────────────────────────────────────
 
@@ -2009,8 +1724,8 @@ func (s *Store) AddPrompt(p AddPromptParams) (int64, error) {
 	p.Project, _ = NormalizeProject(p.Project)
 
 	content := stripPrivateTags(p.Content)
-	if len(content) > s.cfg.MaxObservationLength {
-		content = content[:s.cfg.MaxObservationLength] + "... [truncated]"
+	if len(content) > 50000 {
+		content = content[:50000] + "... [truncated]"
 	}
 
 	var promptID int64
@@ -2119,7 +1834,7 @@ func (s *Store) SearchPrompts(query string, project string, limit int) ([]Prompt
 // ─── Delete Session ──────────────────────────────────────────────────────────
 
 // DeleteSession hard-deletes a session and its prompts.
-// It returns ErrSessionHasObservations if the session has any observations
+// It returns fmt.Errorf("session has memories") if the session has any observations
 // (including soft-deleted ones) to prevent orphaned rows.
 // It returns ErrSessionNotFound if no session with that ID exists.
 //
@@ -2144,7 +1859,7 @@ func (s *Store) DeleteSession(id string) error {
 		}
 		_ = rows.Close()
 		if count > 0 {
-			return fmt.Errorf("%w: session %q has %d observation(s)", ErrSessionHasObservations, id, count)
+			return fmt.Errorf("%w: session %q has %d observation(s)", fmt.Errorf("session has memories"), id, count)
 		}
 
 		if _, err := s.execHook(tx, `DELETE FROM user_prompts WHERE session_id = ?`, id); err != nil {
@@ -2155,7 +1870,7 @@ func (s *Store) DeleteSession(id string) error {
 		if err != nil {
 			var sqliteErr *sqlite.Error
 			if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqliteConstraintForeignKey {
-				return fmt.Errorf("%w: session %q has observation(s)", ErrSessionHasObservations, id)
+				return fmt.Errorf("%w: session %q has observation(s)", fmt.Errorf("session has memories"), id)
 			}
 			return fmt.Errorf("delete session: %w", err)
 		}
@@ -2197,378 +1912,13 @@ func (s *Store) DeletePrompt(id int64) error {
 	})
 }
 
-// ─── Get Single Observation ──────────────────────────────────────────────────
-
-func (s *Store) GetObservation(id int64) (*Observation, error) {
-	row := s.db.QueryRow(
-		`SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		        scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		 FROM observations WHERE id = ? AND deleted_at IS NULL`, id,
-	)
-	var o Observation
-	if err := row.Scan(
-		&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content,
-		&o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt,
-		&o.CreatedAt, &o.UpdatedAt, &o.DeletedAt,
-	); err != nil {
-		return nil, err
-	}
-	return &o, nil
-}
-
-func (s *Store) UpdateObservation(id int64, p UpdateObservationParams) (*Observation, error) {
-	var updated *Observation
-	err := s.withTx(func(tx *sql.Tx) error {
-		obs, err := s.getObservationTx(tx, id)
-		if err != nil {
-			return err
-		}
-
-		typ := obs.Type
-		title := obs.Title
-		content := obs.Content
-		project := derefString(obs.Project)
-		scope := obs.Scope
-		topicKey := derefString(obs.TopicKey)
-
-		if p.Type != nil {
-			typ = *p.Type
-		}
-		if p.Title != nil {
-			title = stripPrivateTags(*p.Title)
-		}
-		if p.Content != nil {
-			content = stripPrivateTags(*p.Content)
-			if len(content) > s.cfg.MaxObservationLength {
-				content = content[:s.cfg.MaxObservationLength] + "... [truncated]"
-			}
-		}
-		if p.Project != nil {
-			project, _ = NormalizeProject(*p.Project)
-		}
-		if p.Scope != nil {
-			scope = normalizeScope(*p.Scope)
-		}
-		if p.TopicKey != nil {
-			topicKey = normalizeTopicKey(*p.TopicKey)
-		}
-
-		if _, err := s.execHook(tx,
-			`UPDATE observations
-			 SET type = ?,
-			     title = ?,
-			     content = ?,
-			     project = ?,
-			     scope = ?,
-			     topic_key = ?,
-			     normalized_hash = ?,
-			     revision_count = revision_count + 1,
-			     updated_at = datetime('now')
-			 WHERE id = ? AND deleted_at IS NULL`,
-			typ,
-			title,
-			content,
-			nullableString(project),
-			scope,
-			nullableString(topicKey),
-			hashNormalized(content),
-			id,
-		); err != nil {
-			return err
-		}
-
-		updated, err = s.getObservationTx(tx, id)
-		if err != nil {
-			return err
-		}
-		return s.enqueueSyncMutationTx(tx, SyncEntityObservation, updated.SyncID, SyncOpUpsert, observationPayloadFromObservation(updated))
-	})
-	if err != nil {
-		return nil, err
-	}
-	return updated, nil
-}
-
-func (s *Store) DeleteObservation(id int64, hardDelete bool) error {
-	return s.withTx(func(tx *sql.Tx) error {
-		obs, err := s.getObservationTx(tx, id)
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		deletedAt := Now()
-		if hardDelete {
-			if _, err := s.execHook(tx, `DELETE FROM observations WHERE id = ?`, id); err != nil {
-				return err
-			}
-		} else {
-			if _, err := s.execHook(tx,
-				`UPDATE observations
-				 SET deleted_at = datetime('now'),
-				     updated_at = datetime('now')
-				 WHERE id = ? AND deleted_at IS NULL`,
-				id,
-			); err != nil {
-				return err
-			}
-			if err := tx.QueryRow(`SELECT deleted_at FROM observations WHERE id = ?`, id).Scan(&deletedAt); err != nil {
-				return err
-			}
-		}
-
-		return s.enqueueSyncMutationTx(tx, SyncEntityObservation, obs.SyncID, SyncOpDelete, syncObservationPayload{
-			SyncID:     obs.SyncID,
-			Deleted:    true,
-			DeletedAt:  &deletedAt,
-			HardDelete: hardDelete,
-		})
-	})
-}
-
-// ─── Timeline ────────────────────────────────────────────────────────────────
-//
-// Timeline provides chronological context around a specific observation.
-// Given an observation ID, it returns N observations before and M after,
-// all within the same session. This is the "progressive disclosure" pattern
-// from claude-mem — agents first search, then use timeline to drill into
-// the chronological neighborhood of a result.
-
-func (s *Store) Timeline(observationID int64, before, after int) (*TimelineResult, error) {
-	if before <= 0 {
-		before = 5
-	}
-	if after <= 0 {
-		after = 5
-	}
-
-	// 1. Get the focus observation
-	focus, err := s.GetObservation(observationID)
-	if err != nil {
-		return nil, fmt.Errorf("timeline: observation #%d not found: %w", observationID, err)
-	}
-
-	// 2. Get session info
-	session, err := s.GetSession(focus.SessionID)
-	if err != nil {
-		// Session might be missing for manual-save observations — non-fatal
-		session = nil
-	}
-
-	// 3. Get observations BEFORE the focus (same session, older, chronological order)
-	beforeRows, err := s.queryItHook(s.db, `
-		SELECT id, session_id, type, title, content, tool_name, project,
-		       scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		FROM observations
-		WHERE session_id = ? AND id < ? AND deleted_at IS NULL
-		ORDER BY id DESC
-		LIMIT ?
-	`, focus.SessionID, observationID, before)
-	if err != nil {
-		return nil, fmt.Errorf("timeline: before query: %w", err)
-	}
-	defer beforeRows.Close()
-
-	var beforeEntries []TimelineEntry
-	for beforeRows.Next() {
-		var e TimelineEntry
-		if err := beforeRows.Scan(
-			&e.ID, &e.SessionID, &e.Type, &e.Title, &e.Content,
-			&e.ToolName, &e.Project, &e.Scope, &e.TopicKey, &e.RevisionCount, &e.DuplicateCount, &e.LastSeenAt,
-			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		beforeEntries = append(beforeEntries, e)
-	}
-	if err := beforeRows.Err(); err != nil {
-		return nil, err
-	}
-	// Reverse to get chronological order (oldest first)
-	for i, j := 0, len(beforeEntries)-1; i < j; i, j = i+1, j-1 {
-		beforeEntries[i], beforeEntries[j] = beforeEntries[j], beforeEntries[i]
-	}
-
-	// 4. Get observations AFTER the focus (same session, newer, chronological order)
-	afterRows, err := s.queryItHook(s.db, `
-		SELECT id, session_id, type, title, content, tool_name, project,
-		       scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		FROM observations
-		WHERE session_id = ? AND id > ? AND deleted_at IS NULL
-		ORDER BY id ASC
-		LIMIT ?
-	`, focus.SessionID, observationID, after)
-	if err != nil {
-		return nil, fmt.Errorf("timeline: after query: %w", err)
-	}
-	defer afterRows.Close()
-
-	var afterEntries []TimelineEntry
-	for afterRows.Next() {
-		var e TimelineEntry
-		if err := afterRows.Scan(
-			&e.ID, &e.SessionID, &e.Type, &e.Title, &e.Content,
-			&e.ToolName, &e.Project, &e.Scope, &e.TopicKey, &e.RevisionCount, &e.DuplicateCount, &e.LastSeenAt,
-			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		afterEntries = append(afterEntries, e)
-	}
-	if err := afterRows.Err(); err != nil {
-		return nil, err
-	}
-
-	// 5. Count total observations in the session for context
-	var totalInRange int
-	s.db.QueryRow(
-		"SELECT COUNT(*) FROM observations WHERE session_id = ? AND deleted_at IS NULL", focus.SessionID,
-	).Scan(&totalInRange)
-
-	return &TimelineResult{
-		Focus:        *focus,
-		Before:       beforeEntries,
-		After:        afterEntries,
-		SessionInfo:  session,
-		TotalInRange: totalInRange,
-	}, nil
-}
-
-// ─── Search (FTS5) ───────────────────────────────────────────────────────────
-
-func (s *Store) Search(query string, opts SearchOptions) ([]SearchResult, error) {
-	// Normalize project filter so "Ohara" finds records stored as "ohara"
-	opts.Project, _ = NormalizeProject(opts.Project)
-
-	limit := opts.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	if limit > s.cfg.MaxSearchResults {
-		limit = s.cfg.MaxSearchResults
-	}
-
-	var directResults []SearchResult
-	if strings.Contains(query, "/") {
-		tkSQL := `
-			SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-			       scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-			FROM observations
-			WHERE topic_key = ? AND deleted_at IS NULL
-		`
-		tkArgs := []any{query}
-
-		if opts.Type != "" {
-			tkSQL += " AND type = ?"
-			tkArgs = append(tkArgs, opts.Type)
-		}
-		if opts.Project != "" {
-			tkSQL += " AND project = ?"
-			tkArgs = append(tkArgs, opts.Project)
-		}
-		if opts.Scope != "" {
-			tkSQL += " AND scope = ?"
-			tkArgs = append(tkArgs, normalizeScope(opts.Scope))
-		}
-
-		tkSQL += " ORDER BY updated_at DESC LIMIT ?"
-		tkArgs = append(tkArgs, limit)
-
-		tkRows, err := s.queryItHook(s.db, tkSQL, tkArgs...)
-		if err == nil {
-			defer tkRows.Close()
-			for tkRows.Next() {
-				var sr SearchResult
-				if err := tkRows.Scan(
-					&sr.ID, &sr.SyncID, &sr.SessionID, &sr.Type, &sr.Title, &sr.Content,
-					&sr.ToolName, &sr.Project, &sr.Scope, &sr.TopicKey, &sr.RevisionCount, &sr.DuplicateCount,
-					&sr.LastSeenAt, &sr.CreatedAt, &sr.UpdatedAt, &sr.DeletedAt,
-				); err != nil {
-					break
-				}
-				sr.Rank = -1000
-				directResults = append(directResults, sr)
-			}
-		}
-	}
-
-	// Sanitize query for FTS5 — wrap each term in quotes to avoid syntax errors
-	ftsQuery := sanitizeFTS(query)
-
-	sqlQ := `
-		SELECT o.id, ifnull(o.sync_id, '') as sync_id, o.session_id, o.type, o.title, o.content, o.tool_name, o.project,
-		       o.scope, o.topic_key, o.revision_count, o.duplicate_count, o.last_seen_at, o.created_at, o.updated_at, o.deleted_at,
-		       fts.rank
-		FROM observations_fts fts
-		JOIN observations o ON o.id = fts.rowid
-		WHERE observations_fts MATCH ? AND o.deleted_at IS NULL
-	`
-	args := []any{ftsQuery}
-
-	if opts.Type != "" {
-		sqlQ += " AND o.type = ?"
-		args = append(args, opts.Type)
-	}
-
-	if opts.Project != "" {
-		sqlQ += " AND o.project = ?"
-		args = append(args, opts.Project)
-	}
-
-	if opts.Scope != "" {
-		sqlQ += " AND o.scope = ?"
-		args = append(args, normalizeScope(opts.Scope))
-	}
-
-	sqlQ += " ORDER BY fts.rank LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := s.queryItHook(s.db, sqlQ, args...)
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
-	}
-	defer rows.Close()
-
-	seen := make(map[int64]bool)
-	for _, dr := range directResults {
-		seen[dr.ID] = true
-	}
-
-	var results []SearchResult
-	results = append(results, directResults...)
-	for rows.Next() {
-		var sr SearchResult
-		if err := rows.Scan(
-			&sr.ID, &sr.SyncID, &sr.SessionID, &sr.Type, &sr.Title, &sr.Content,
-			&sr.ToolName, &sr.Project, &sr.Scope, &sr.TopicKey, &sr.RevisionCount, &sr.DuplicateCount,
-			&sr.LastSeenAt, &sr.CreatedAt, &sr.UpdatedAt, &sr.DeletedAt,
-			&sr.Rank,
-		); err != nil {
-			return nil, err
-		}
-		if !seen[sr.ID] {
-			results = append(results, sr)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(results) > limit {
-		results = results[:limit]
-	}
-	return results, nil
-}
-
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
 func (s *Store) Stats() (*Stats, error) {
 	stats := &Stats{}
 
 	s.db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&stats.TotalSessions)
-	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL").Scan(&stats.TotalObservations)
+	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL").Scan(&stats.TotalMemories)
 	s.db.QueryRow("SELECT COUNT(*) FROM user_prompts").Scan(&stats.TotalPrompts)
 
 	rows, err := s.queryItHook(s.db, "SELECT project FROM observations WHERE project IS NOT NULL AND deleted_at IS NULL GROUP BY project ORDER BY MAX(created_at) DESC")
@@ -2595,7 +1945,7 @@ func (s *Store) FormatContext(project, scope string) (string, error) {
 		return "", err
 	}
 
-	observations, err := s.RecentObservations(project, scope, s.cfg.MaxContextResults)
+	memories, err := s.GetMemories(project, scope, "", MemoryStatusActive, s.cfg.MaxContextResults)
 	if err != nil {
 		return "", err
 	}
@@ -2605,7 +1955,7 @@ func (s *Store) FormatContext(project, scope string) (string, error) {
 		return "", err
 	}
 
-	if len(sessions) == 0 && len(observations) == 0 && len(prompts) == 0 {
+	if len(sessions) == 0 && len(memories) == 0 && len(prompts) == 0 {
 		return "", nil
 	}
 
@@ -2617,10 +1967,10 @@ func (s *Store) FormatContext(project, scope string) (string, error) {
 		for _, sess := range sessions {
 			summary := ""
 			if sess.Summary != nil {
-				summary = fmt.Sprintf(": %s", truncate(*sess.Summary, 200))
+				summary = fmt.Sprintf(": %s", util.Truncate(*sess.Summary, 200))
 			}
-			fmt.Fprintf(&b, "- **%s** (%s)%s [%d observations]\n",
-				sess.Project, sess.StartedAt, summary, sess.ObservationCount)
+			fmt.Fprintf(&b, "- **%s** (%s)%s [%d memories]\n",
+				sess.Project, sess.StartedAt, summary, sess.MemoryCount)
 		}
 		b.WriteString("\n")
 	}
@@ -2628,16 +1978,16 @@ func (s *Store) FormatContext(project, scope string) (string, error) {
 	if len(prompts) > 0 {
 		b.WriteString("### Recent User Prompts\n")
 		for _, p := range prompts {
-			fmt.Fprintf(&b, "- %s: %s\n", p.CreatedAt, truncate(p.Content, 200))
+			fmt.Fprintf(&b, "- %s: %s\n", p.CreatedAt, util.Truncate(p.Content, 200))
 		}
 		b.WriteString("\n")
 	}
 
-	if len(observations) > 0 {
-		b.WriteString("### Recent Observations\n")
-		for _, obs := range observations {
+	if len(memories) > 0 {
+		b.WriteString("### Recent Memories\n")
+		for _, m := range memories {
 			fmt.Fprintf(&b, "- [%s] **%s**: %s\n",
-				obs.Type, obs.Title, truncate(obs.Content, 300))
+				m.Kind, m.Title, util.Truncate(m.Body, 300))
 		}
 		b.WriteString("\n")
 	}
@@ -2673,30 +2023,6 @@ func (s *Store) Export() (*ExportData, error) {
 	}
 
 	// Observations
-	obsRows, err := s.queryItHook(s.db,
-		`SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		        scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		 FROM observations ORDER BY id`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("export observations: %w", err)
-	}
-	defer obsRows.Close()
-	for obsRows.Next() {
-		var o Observation
-		if err := obsRows.Scan(
-			&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content,
-			&o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt,
-			&o.CreatedAt, &o.UpdatedAt, &o.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		data.Observations = append(data.Observations, o)
-	}
-	if err := obsRows.Err(); err != nil {
-		return nil, err
-	}
-
 	// Prompts
 	promptRows, err := s.queryItHook(s.db,
 		"SELECT id, ifnull(sync_id, '') as sync_id, session_id, content, ifnull(project, '') as project, created_at FROM user_prompts ORDER BY id",
@@ -2740,34 +2066,6 @@ func (s *Store) Import(data *ExportData) (*ImportResult, error) {
 		}
 		n, _ := res.RowsAffected()
 		result.SessionsImported += int(n)
-	}
-
-	// Import observations (use new IDs — AUTOINCREMENT)
-	for _, obs := range data.Observations {
-		_, err := s.execHook(tx,
-			`INSERT INTO observations (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			normalizeExistingSyncID(obs.SyncID, "obs"),
-			obs.SessionID,
-			obs.Type,
-			obs.Title,
-			obs.Content,
-			obs.ToolName,
-			obs.Project,
-			normalizeScope(obs.Scope),
-			nullableString(normalizeTopicKey(derefString(obs.TopicKey))),
-			hashNormalized(obs.Content),
-			maxInt(obs.RevisionCount, 1),
-			maxInt(obs.DuplicateCount, 1),
-			obs.LastSeenAt,
-			obs.CreatedAt,
-			obs.UpdatedAt,
-			obs.DeletedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("import observation %d: %w", obs.ID, err)
-		}
-		result.ObservationsImported++
 	}
 
 	// Import prompts
@@ -3061,20 +2359,6 @@ func (s *Store) ApplyPulledMutation(targetKey string, mutation SyncMutation) err
 			if err := s.applySessionPayloadTx(tx, payload); err != nil {
 				return err
 			}
-		case SyncEntityObservation:
-			var payload syncObservationPayload
-			if err := decodeSyncPayload([]byte(mutation.Payload), &payload); err != nil {
-				return err
-			}
-			if mutation.Op == SyncOpDelete {
-				if err := s.applyObservationDeleteTx(tx, payload); err != nil {
-					return err
-				}
-			} else {
-				if err := s.applyObservationUpsertTx(tx, payload); err != nil {
-					return err
-				}
-			}
 		case SyncEntityPrompt:
 			var payload syncPromptPayload
 			if err := decodeSyncPayload([]byte(mutation.Payload), &payload); err != nil {
@@ -3095,20 +2379,6 @@ func (s *Store) ApplyPulledMutation(targetKey string, mutation SyncMutation) err
 		)
 		return err
 	})
-}
-
-func (s *Store) GetObservationBySyncID(syncID string) (*Observation, error) {
-	row := s.db.QueryRow(
-		`SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		        scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		 FROM observations WHERE sync_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1`,
-		syncID,
-	)
-	var o Observation
-	if err := row.Scan(&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt, &o.CreatedAt, &o.UpdatedAt, &o.DeletedAt); err != nil {
-		return nil, err
-	}
-	return &o, nil
 }
 
 // ─── Project Enrollment for Cloud Sync ───────────────────────────────────────
@@ -3287,11 +2557,11 @@ func (s *Store) ListProjectNames() ([]string, error) {
 
 // ProjectStats holds aggregate statistics for a single project.
 type ProjectStats struct {
-	Name             string   `json:"name"`
-	ObservationCount int      `json:"observation_count"`
-	SessionCount     int      `json:"session_count"`
-	PromptCount      int      `json:"prompt_count"`
-	Directories      []string `json:"directories"` // unique directories from sessions
+	Name         string   `json:"name"`
+	MemoryCount  int      `json:"memory_count"`
+	SessionCount int      `json:"session_count"`
+	PromptCount  int      `json:"prompt_count"`
+	Directories  []string `json:"directories"` // unique directories from sessions
 }
 
 // ListProjectsWithStats returns all projects with aggregated counts.
@@ -3316,7 +2586,7 @@ func (s *Store) ListProjectsWithStats() ([]ProjectStats, error) {
 		if err := obsRows.Scan(&name, &cnt); err != nil {
 			return nil, err
 		}
-		statsMap[name] = &ProjectStats{Name: name, ObservationCount: cnt}
+		statsMap[name] = &ProjectStats{Name: name, MemoryCount: cnt}
 	}
 	if err := obsRows.Err(); err != nil {
 		return nil, err
@@ -3401,24 +2671,12 @@ func (s *Store) ListProjectsWithStats() ([]ProjectStats, error) {
 	}
 	// Simple insertion sort — project lists are small
 	for i := 1; i < len(results); i++ {
-		for j := i; j > 0 && results[j].ObservationCount > results[j-1].ObservationCount; j-- {
+		for j := i; j > 0 && results[j].MemoryCount > results[j-1].MemoryCount; j-- {
 			results[j], results[j-1] = results[j-1], results[j]
 		}
 	}
 
 	return results, nil
-}
-
-// CountObservationsForProject returns the number of non-deleted observations
-// for the given project name. Used by handleSave for the similar-project
-// warning instead of the heavier ListProjectsWithStats.
-func (s *Store) CountObservationsForProject(name string) (int, error) {
-	var count int
-	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM observations WHERE project = ? AND deleted_at IS NULL`,
-		name,
-	).Scan(&count)
-	return count, err
 }
 
 // MergeResult summarizes the result of merging multiple project name variants
@@ -3501,13 +2759,14 @@ func (s *Store) PruneProject(project string) (*PruneResult, error) {
 		return nil, fmt.Errorf("project name must not be empty")
 	}
 
-	// Safety check: refuse to prune if observations exist.
-	count, err := s.CountObservationsForProject(project)
+	// Safety check: refuse to prune if memory items exist.
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM memory_items WHERE project_id = ? AND status = 'active'`, project).Scan(&count)
 	if err != nil {
-		return nil, fmt.Errorf("count observations: %w", err)
+		return nil, fmt.Errorf("count memories: %w", err)
 	}
 	if count > 0 {
-		return nil, fmt.Errorf("project %q still has %d observations — cannot prune", project, count)
+		return nil, fmt.Errorf("project %q still has %d active memories — cannot prune", project, count)
 	}
 
 	result := &PruneResult{Project: project}
@@ -3601,9 +2860,6 @@ func (s *Store) backfillProjectSyncMutationsTx(tx *sql.Tx, project string) error
 	if err := s.backfillSessionSyncMutationsTx(tx, project); err != nil {
 		return err
 	}
-	if err := s.backfillObservationSyncMutationsTx(tx, project); err != nil {
-		return err
-	}
 	return s.backfillPromptSyncMutationsTx(tx, project)
 }
 
@@ -3665,40 +2921,6 @@ func (s *Store) backfillSessionSyncMutationsTx(tx *sql.Tx, project string) error
 			return err
 		}
 		if err := s.enqueueSyncMutationTx(tx, SyncEntitySession, payload.ID, SyncOpUpsert, payload); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-func (s *Store) backfillObservationSyncMutationsTx(tx *sql.Tx, project string) error {
-	rows, err := s.queryItHook(tx, `
-		SELECT sync_id, session_id, type, title, content, tool_name, project, scope, topic_key
-		FROM observations
-		WHERE ifnull(project, '') = ?
-		  AND deleted_at IS NULL
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM sync_mutations sm
-			WHERE sm.target_key = ?
-			  AND sm.entity = ?
-			  AND sm.entity_key = observations.sync_id
-			  AND sm.source = ?
-		  )
-		ORDER BY id ASC`,
-		project, DefaultSyncTargetKey, SyncEntityObservation, SyncSourceLocal,
-	)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var payload syncObservationPayload
-		if err := rows.Scan(&payload.SyncID, &payload.SessionID, &payload.Type, &payload.Title, &payload.Content, &payload.ToolName, &payload.Project, &payload.Scope, &payload.TopicKey); err != nil {
-			return err
-		}
-		if err := s.enqueueSyncMutationTx(tx, SyncEntityObservation, payload.SyncID, SyncOpUpsert, payload); err != nil {
 			return err
 		}
 	}
@@ -3778,11 +3000,6 @@ func extractProjectFromPayload(payload any) string {
 	switch p := payload.(type) {
 	case syncSessionPayload:
 		return p.Project
-	case syncObservationPayload:
-		if p.Project != nil {
-			return *p.Project
-		}
-		return ""
 	case syncPromptPayload:
 		if p.Project != nil {
 			return *p.Project
@@ -3819,49 +3036,6 @@ func decodeSyncPayload(payload []byte, dest any) error {
 	return json.Unmarshal([]byte(encoded), dest)
 }
 
-func (s *Store) getObservationTx(tx *sql.Tx, id int64) (*Observation, error) {
-	row := tx.QueryRow(
-		`SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		        scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		 FROM observations WHERE id = ? AND deleted_at IS NULL`, id,
-	)
-	var o Observation
-	if err := row.Scan(&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt, &o.CreatedAt, &o.UpdatedAt, &o.DeletedAt); err != nil {
-		return nil, err
-	}
-	return &o, nil
-}
-
-func (s *Store) getObservationBySyncIDTx(tx *sql.Tx, syncID string, includeDeleted bool) (*Observation, error) {
-	query := `SELECT id, ifnull(sync_id, '') as sync_id, session_id, type, title, content, tool_name, project,
-		        scope, topic_key, revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
-		 FROM observations WHERE sync_id = ?`
-	if !includeDeleted {
-		query += ` AND deleted_at IS NULL`
-	}
-	query += ` ORDER BY id DESC LIMIT 1`
-	row := tx.QueryRow(query, syncID)
-	var o Observation
-	if err := row.Scan(&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content, &o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt, &o.CreatedAt, &o.UpdatedAt, &o.DeletedAt); err != nil {
-		return nil, err
-	}
-	return &o, nil
-}
-
-func observationPayloadFromObservation(obs *Observation) syncObservationPayload {
-	return syncObservationPayload{
-		SyncID:    obs.SyncID,
-		SessionID: obs.SessionID,
-		Type:      obs.Type,
-		Title:     obs.Title,
-		Content:   obs.Content,
-		ToolName:  obs.ToolName,
-		Project:   obs.Project,
-		Scope:     obs.Scope,
-		TopicKey:  obs.TopicKey,
-	}
-}
-
 func (s *Store) applySessionPayloadTx(tx *sql.Tx, payload syncSessionPayload) error {
 	_, err := s.execHook(tx,
 		`INSERT INTO sessions (id, project, directory, ended_at, summary)
@@ -3872,52 +3046,6 @@ func (s *Store) applySessionPayloadTx(tx *sql.Tx, payload syncSessionPayload) er
 		   ended_at = COALESCE(excluded.ended_at, sessions.ended_at),
 		   summary = COALESCE(excluded.summary, sessions.summary)`,
 		payload.ID, payload.Project, payload.Directory, payload.EndedAt, payload.Summary,
-	)
-	return err
-}
-
-func (s *Store) applyObservationUpsertTx(tx *sql.Tx, payload syncObservationPayload) error {
-	existing, err := s.getObservationBySyncIDTx(tx, payload.SyncID, true)
-	if err == sql.ErrNoRows {
-		_, err = s.execHook(tx,
-			`INSERT INTO observations (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key, normalized_hash, revision_count, duplicate_count, updated_at, deleted_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, datetime('now'), NULL)`,
-			payload.SyncID, payload.SessionID, payload.Type, payload.Title, payload.Content, payload.ToolName, payload.Project, normalizeScope(payload.Scope), payload.TopicKey, hashNormalized(payload.Content),
-		)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	_, err = s.execHook(tx,
-		`UPDATE observations
-		 SET session_id = ?, type = ?, title = ?, content = ?, tool_name = ?, project = ?, scope = ?, topic_key = ?, normalized_hash = ?, revision_count = revision_count + 1, updated_at = datetime('now'), deleted_at = NULL
-		 WHERE id = ?`,
-		payload.SessionID, payload.Type, payload.Title, payload.Content, payload.ToolName, payload.Project, normalizeScope(payload.Scope), payload.TopicKey, hashNormalized(payload.Content), existing.ID,
-	)
-	return err
-}
-
-func (s *Store) applyObservationDeleteTx(tx *sql.Tx, payload syncObservationPayload) error {
-	existing, err := s.getObservationBySyncIDTx(tx, payload.SyncID, true)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if payload.HardDelete {
-		_, err = s.execHook(tx, `DELETE FROM observations WHERE id = ?`, existing.ID)
-		return err
-	}
-	deletedAt := payload.DeletedAt
-	if deletedAt == nil {
-		now := Now()
-		deletedAt = &now
-	}
-	_, err = s.execHook(tx,
-		`UPDATE observations SET deleted_at = ?, updated_at = datetime('now') WHERE id = ?`,
-		deletedAt, existing.ID,
 	)
 	return err
 }
@@ -3940,28 +3068,6 @@ func (s *Store) applyPromptUpsertTx(tx *sql.Tx, payload syncPromptPayload) error
 		payload.SessionID, payload.Content, payload.Project, existingID,
 	)
 	return err
-}
-
-func (s *Store) queryObservations(query string, args ...any) ([]Observation, error) {
-	rows, err := s.queryItHook(s.db, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []Observation
-	for rows.Next() {
-		var o Observation
-		if err := rows.Scan(
-			&o.ID, &o.SyncID, &o.SessionID, &o.Type, &o.Title, &o.Content,
-			&o.ToolName, &o.Project, &o.Scope, &o.TopicKey, &o.RevisionCount, &o.DuplicateCount, &o.LastSeenAt,
-			&o.CreatedAt, &o.UpdatedAt, &o.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		results = append(results, o)
-	}
-	return results, rows.Err()
 }
 
 func (s *Store) addColumnIfNotExists(tableName, columnName, definition string) error {
@@ -3992,154 +3098,11 @@ func (s *Store) addColumnIfNotExists(tableName, columnName, definition string) e
 	return err
 }
 
-func (s *Store) migrateLegacyObservationsTable() error {
-	rows, err := s.queryItHook(s.db, "PRAGMA table_info(observations)")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var hasID bool
-	var idIsPrimaryKey bool
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		if name == "id" {
-			hasID = true
-			idIsPrimaryKey = pk == 1
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	if !hasID || idIsPrimaryKey {
-		return nil
-	}
-
-	tx, err := s.beginTxHook()
-	if err != nil {
-		return fmt.Errorf("migrate legacy observations: begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := s.execHook(tx, `
-		CREATE TABLE observations_migrated (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			sync_id    TEXT,
-			session_id TEXT    NOT NULL,
-			type       TEXT    NOT NULL,
-			title      TEXT    NOT NULL,
-			content    TEXT    NOT NULL,
-			tool_name  TEXT,
-			project    TEXT,
-			scope      TEXT    NOT NULL DEFAULT 'project',
-			topic_key  TEXT,
-			normalized_hash TEXT,
-			revision_count INTEGER NOT NULL DEFAULT 1,
-			duplicate_count INTEGER NOT NULL DEFAULT 1,
-			last_seen_at TEXT,
-			created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-			updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
-			deleted_at TEXT,
-			FOREIGN KEY (session_id) REFERENCES sessions(id)
-		);
-	`); err != nil {
-		return fmt.Errorf("migrate legacy observations: create table: %w", err)
-	}
-
-	if _, err := s.execHook(tx, `
-		INSERT INTO observations_migrated (
-			id, sync_id, session_id, type, title, content, tool_name, project,
-			scope, topic_key, normalized_hash, revision_count, duplicate_count,
-			last_seen_at, created_at, updated_at, deleted_at
-		)
-		SELECT
-			CASE
-				WHEN id IS NULL THEN NULL
-				WHEN ROW_NUMBER() OVER (PARTITION BY id ORDER BY rowid) = 1 THEN CAST(id AS INTEGER)
-				ELSE NULL
-			END,
-			'obs-' || lower(hex(randomblob(16))),
-			session_id,
-			COALESCE(NULLIF(type, ''), 'manual'),
-			COALESCE(NULLIF(title, ''), 'Untitled observation'),
-			COALESCE(content, ''),
-			tool_name,
-			project,
-			CASE WHEN scope IS NULL OR scope = '' THEN 'project' ELSE scope END,
-			NULLIF(topic_key, ''),
-			normalized_hash,
-			CASE WHEN revision_count IS NULL OR revision_count < 1 THEN 1 ELSE revision_count END,
-			CASE WHEN duplicate_count IS NULL OR duplicate_count < 1 THEN 1 ELSE duplicate_count END,
-			last_seen_at,
-			COALESCE(NULLIF(created_at, ''), datetime('now')),
-			COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), datetime('now')),
-			deleted_at
-		FROM observations
-		ORDER BY rowid;
-	`); err != nil {
-		return fmt.Errorf("migrate legacy observations: copy rows: %w", err)
-	}
-
-	if _, err := s.execHook(tx, "DROP TABLE observations"); err != nil {
-		return fmt.Errorf("migrate legacy observations: drop old table: %w", err)
-	}
-
-	if _, err := s.execHook(tx, "ALTER TABLE observations_migrated RENAME TO observations"); err != nil {
-		return fmt.Errorf("migrate legacy observations: rename table: %w", err)
-	}
-
-	if _, err := s.execHook(tx, `
-		DROP TRIGGER IF EXISTS obs_fts_insert;
-		DROP TRIGGER IF EXISTS obs_fts_update;
-		DROP TRIGGER IF EXISTS obs_fts_delete;
-		DROP TABLE IF EXISTS observations_fts;
-		CREATE VIRTUAL TABLE observations_fts USING fts5(
-			title,
-			content,
-			tool_name,
-			type,
-			project,
-			topic_key,
-			content='observations',
-			content_rowid='id'
-		);
-		INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-		SELECT id, title, content, tool_name, type, project, topic_key
-		FROM observations
-		WHERE deleted_at IS NULL;
-	`); err != nil {
-		return fmt.Errorf("migrate legacy observations: rebuild fts: %w", err)
-	}
-
-	if err := s.commitHook(tx); err != nil {
-		return fmt.Errorf("migrate legacy observations: commit: %w", err)
-	}
-
-	return nil
-}
-
 func nullableString(s string) *string {
 	if s == "" {
 		return nil
 	}
 	return &s
-}
-
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "..."
 }
 
 func normalizeScope(scope string) string {
@@ -4457,61 +3420,48 @@ func cleanMarkdown(text string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
 
-// PassiveCapture extracts learnings from text and saves them as observations.
-// It deduplicates against existing observations using content hash matching.
 func (s *Store) PassiveCapture(p PassiveCaptureParams) (*PassiveCaptureResult, error) {
-	// Normalize project name before storing
 	p.Project, _ = NormalizeProject(p.Project)
-
 	result := &PassiveCaptureResult{}
-
 	learnings := ExtractLearnings(p.Content)
 	result.Extracted = len(learnings)
-
 	if len(learnings) == 0 {
 		return result, nil
 	}
-
 	for _, learning := range learnings {
-		// Check if this learning already exists (by content hash) within this project
-		normHash := hashNormalized(learning)
 		var existingID int64
 		err := s.db.QueryRow(
-			`SELECT id FROM observations
-			 WHERE normalized_hash = ?
-			   AND ifnull(project, '') = ifnull(?, '')
-			   AND deleted_at IS NULL
+			`SELECT id FROM memory_items
+			 WHERE kind = 'learning'
+			   AND project_id = ?
+			   AND status = 'active'
+			   AND substr(body, 1, 64) = substr(?, 1, 64)
 			 LIMIT 1`,
-			normHash, nullableString(p.Project),
+			p.Project, learning,
 		).Scan(&existingID)
-
 		if err == nil {
-			// Already exists — skip
 			result.Duplicates++
 			continue
 		}
-
-		// Truncate for title: first 60 chars
 		title := learning
 		if len(title) > 60 {
 			title = title[:60] + "..."
 		}
-
-		_, err = s.AddObservation(AddObservationParams{
-			SessionID: p.SessionID,
-			Type:      "passive",
+		_, err = s.AddMemory(AddMemoryParams{
+			ProjectID: p.Project,
+			Kind:      "discovery",
 			Title:     title,
-			Content:   learning,
-			Project:   p.Project,
+			Body:      learning,
 			Scope:     "project",
-			ToolName:  p.Source,
+			Source:    "passive",
+			SessionID: p.SessionID,
+			ActorID:   "system",
 		})
 		if err != nil {
 			return result, fmt.Errorf("passive capture save: %w", err)
 		}
 		result.Saved++
 	}
-
 	return result, nil
 }
 

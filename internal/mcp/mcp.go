@@ -25,6 +25,7 @@ import (
 	projectpkg "github.com/ashwnn/ohara/internal/project"
 	"github.com/ashwnn/ohara/internal/store"
 	"github.com/ashwnn/ohara/internal/token"
+	"github.com/ashwnn/ohara/internal/util"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -164,7 +165,6 @@ CORE TOOLS (always available — use without ToolSearch):
   mem_search — find past work, decisions, or context from previous sessions
   mem_context — get recent memory context via context pack (call at session start or after compaction)
   mem_session_summary — save end-of-session summary (MANDATORY before saying "done")
-  mem_get_observation — get full untruncated content of a search result by ID
   mem_save_prompt — save user prompt for context
   mem_pack — build an explicit context pack from memory items (token-budget-aware)
   mem_prime — build structured prime context with Knowledge vs Episode tier separation
@@ -585,25 +585,6 @@ Examples:
 				),
 			),
 			handleTimeline(s),
-		)
-	}
-
-	// ─── mem_get_observation (profile: agent, eager) ────────────────────
-	if shouldRegister("mem_get_observation", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_get_observation",
-				mcp.WithDescription("Get the full content of a specific observation by ID. Use when you need the complete, untruncated content of an observation found via mem_search or mem_timeline."),
-				mcp.WithTitleAnnotation("Get Observation"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("id",
-					mcp.Required(),
-					mcp.Description("The observation ID to retrieve"),
-				),
-			),
-			handleGetObservation(s),
 		)
 	}
 
@@ -1152,56 +1133,20 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 		sessionID := defaultSessionID(project)
 		activity.RecordToolCall(sessionID)
 
-		// Search both memory_items (new foundation) and observations (legacy) in parallel.
-		type searchResult struct {
-			memItems []store.MemoryItem
-			obs      []store.SearchResult
-		}
-		resultCh := make(chan searchResult, 1)
-		errCh := make(chan error, 1)
-
-		go func() {
-			memItems, memErr := s.SearchMemories(query, project, scope, typ, domain, store.MemoryStatusActive, limit, writtenBy)
-			obs, obsErr := s.Search(query, store.SearchOptions{
-				Type:    typ,
-				Project: project,
-				Scope:   scope,
-				Limit:   limit,
-			})
-			if memErr != nil || obsErr != nil {
-				// Send whichever error is non-nil, preferring memErr (new foundation)
-				errToSend := memErr
-				if errToSend == nil {
-					errToSend = obsErr
-				}
-				select {
-				case errCh <- errToSend:
-				default:
-				}
-				return
-			}
-			resultCh <- searchResult{memItems: memItems, obs: obs}
-		}()
-
-		var combined searchResult
-		select {
-		case combined = <-resultCh:
-		case err := <-errCh:
+		memItems, err := s.SearchMemories(query, project, scope, typ, domain, store.MemoryStatusActive, limit, writtenBy)
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Search error: %s. Try simpler keywords.", err)), nil
-		case <-ctx.Done():
-			return mcp.NewToolResultError("Search cancelled."), nil
 		}
 
-		hasMem := len(combined.memItems) > 0
-		hasObs := len(combined.obs) > 0
+		hasMem := len(memItems) > 0
 
-		if !hasMem && !hasObs {
+		if !hasMem {
 			return mcp.NewToolResultText(fmt.Sprintf("No memories found for: %q", query)), nil
 		}
 
 		// min_confidence abstention
-		if minConfidence > 0 && len(combined.memItems) > 0 {
-			topScore := combined.memItems[0].RelevanceScore
+		if minConfidence > 0 && len(memItems) > 0 {
+			topScore := memItems[0].RelevanceScore
 			if topScore < minConfidence {
 				payload := map[string]any{
 					"memories":       []any{},
@@ -1223,7 +1168,7 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 			SupersedingTitle string `json:"superseding_title"`
 		}
 		var detectedConflicts []conflictEntry
-		for _, m := range combined.memItems {
+		for _, m := range memItems {
 			if m.SupersededBy != nil && *m.SupersededBy != 0 {
 				supMem, _ := s.GetMemory(*m.SupersededBy)
 				if supMem != nil && supMem.Status == store.MemoryStatusActive {
@@ -1239,11 +1184,11 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 
 		var b strings.Builder
 
-		// Memory items results (new foundation)
+		// Memory items results
 		if hasMem {
-			fmt.Fprintf(&b, "## Memory Items (v2 foundation)\nFound %d memory item(s):\n\n", len(combined.memItems))
-			for i, m := range combined.memItems {
-				preview := truncate(m.Body, 300)
+			fmt.Fprintf(&b, "Found %d memory item(s):\n\n", len(memItems))
+			for i, m := range memItems {
+				preview := util.Truncate(m.Body, 300)
 				if len(m.Body) > 300 {
 					preview += " [preview]"
 				}
@@ -1259,41 +1204,6 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 					estimateTokens(m.Body),
 				)
 			}
-		}
-
-		// Observations results (legacy)
-		hasTruncation := false
-		if hasObs {
-			if hasMem {
-				b.WriteString("---\n\n## Observations (legacy)\n")
-			} else {
-				fmt.Fprintf(&b, "Found %d observation(s):\n\n", len(combined.obs))
-			}
-			for i, r := range combined.obs {
-				projectDisplay := ""
-				if r.Project != nil {
-					projectDisplay = fmt.Sprintf(" | project: %s", *r.Project)
-				}
-				preview := truncate(r.Content, 300)
-				if len(r.Content) > 300 {
-					hasTruncation = true
-					preview += " [preview]"
-				}
-				fmt.Fprintf(&b, "[%d] #%d (%s) — %s\n    %s\n    %s%s | scope: %s\n\n",
-					i+1, r.ID, r.Type, r.Title,
-					preview,
-					r.CreatedAt, projectDisplay, r.Scope)
-			}
-		}
-
-		if hasMem && hasObs {
-			fmt.Fprintf(&b, "---\nSearched both memory_items (v2) and observations (legacy). Total: %d memory items + %d observations.\n",
-				len(combined.memItems), len(combined.obs))
-		}
-
-		// Only show truncation note for observations (memory_items are already limited by kind-specific body limits)
-		if hasTruncation {
-			fmt.Fprintf(&b, "\nResults above are previews (300 chars). To read the full content of an observation, call mem_get_observation(id: <ID>).\n")
 		}
 
 		// Append conflict warnings if any found
@@ -1348,7 +1258,7 @@ func handleSearchRerank(s *store.Store, cfg MCPConfig, activity *SessionActivity
 		var b strings.Builder
 		fmt.Fprintf(&b, "Reranked %d results (top_n=%d):\n\n", len(reranked), topN)
 		for i, item := range reranked {
-			preview := truncate(item.Body, 220)
+			preview := util.Truncate(item.Body, 220)
 			if len(item.Body) > 220 {
 				preview += " [preview]"
 			}
@@ -1417,9 +1327,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 				matches := projectpkg.FindSimilar(project, existingNames, 3)
 				if len(matches) > 0 {
 					bestMatch := matches[0].Name
-					// Cheap count query instead of full ListProjectsWithStats
-					obsCount, _ := s.CountObservationsForProject(bestMatch)
-					similarWarning = fmt.Sprintf("⚠️ Project %q has no memories. Similar project found: %q (%d memories). Consider using that name instead.", project, bestMatch, obsCount)
+					similarWarning = fmt.Sprintf("⚠️ Project %q has no memories. Similar project found: %q. Consider using that name instead.", project, bestMatch)
 				}
 			}
 		}
@@ -1447,27 +1355,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		// Ensure the session exists
 		s.CreateSession(sessionID, project, "")
 
-		truncated := len(content) > s.MaxObservationLength()
-
-		_, err = s.AddObservation(store.AddObservationParams{
-			SessionID: sessionID,
-			Type:      typ,
-			Title:     title,
-			Content:   content,
-			Project:   project,
-			Scope:     scope,
-			TopicKey:  topicKey,
-		})
-		if err != nil {
-			return mcp.NewToolResultError("Failed to save: " + err.Error()), nil
-		}
-
-		activity.RecordSave(defaultSessionID(project))
-
-		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
-
-		// Also save to memory_items (v2 foundation)
-		memID, memErr := s.AddMemory(store.AddMemoryParams{
+		memID, err := s.AddMemory(store.AddMemoryParams{
 			ProjectID:        project,
 			Kind:             typ,
 			Scope:            scope,
@@ -1486,22 +1374,22 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 			RelatedJSON:      related,
 			TrustLevel:       "agent",
 		})
-		if memErr != nil {
-			// Non-fatal: v2 save failed, legacy save succeeded
-			msg += fmt.Sprintf("\n⚠ v2 memory save failed: %s", memErr)
+		if err != nil {
+			return mcp.NewToolResultError("Failed to save: " + err.Error()), nil
 		}
 
-		// Auto-create contradicts relation when conflict was detected and v2 save succeeded
-		if conflict != nil && memErr == nil && memID > 0 {
+		activity.RecordSave(defaultSessionID(project))
+
+		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
+
+		// Auto-create contradicts relation when conflict was detected
+		if conflict != nil && memID > 0 {
 			if conflict.ExistingMemory != nil && conflict.ExistingMemory.ID > 0 {
 				_ = s.AddRelation(memID, conflict.ExistingMemory.ID, "contradicts")
 			}
 		}
 		if topicKey == "" && suggestedTopicKey != "" {
 			msg += fmt.Sprintf("\nSuggested topic_key: %s", suggestedTopicKey)
-		}
-		if truncated {
-			msg += fmt.Sprintf("\n⚠ WARNING: Content was truncated from %d to %d chars. Consider splitting into smaller observations.", len(content), s.MaxObservationLength())
 		}
 		if normWarning != "" {
 			msg += "\n" + normWarning
@@ -1545,45 +1433,30 @@ func handleUpdate(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("id is required"), nil
 		}
 
-		update := store.UpdateObservationParams{}
+		update := store.UpdateMemoryParams{}
 		if v, ok := req.GetArguments()["title"].(string); ok {
 			update.Title = &v
 		}
 		if v, ok := req.GetArguments()["content"].(string); ok {
-			update.Content = &v
-		}
-		if v, ok := req.GetArguments()["type"].(string); ok {
-			update.Type = &v
-		}
-		if v, ok := req.GetArguments()["project"].(string); ok {
-			update.Project = &v
-		}
-		if v, ok := req.GetArguments()["scope"].(string); ok {
-			update.Scope = &v
+			update.Body = &v
 		}
 		if v, ok := req.GetArguments()["topic_key"].(string); ok {
-			update.TopicKey = &v
+			update.TriggerCondition = &v
+		}
+		if v, ok := req.GetArguments()["status"].(string); ok {
+			update.Status = &v
 		}
 
-		if update.Title == nil && update.Content == nil && update.Type == nil && update.Project == nil && update.Scope == nil && update.TopicKey == nil {
+		if update.Title == nil && update.Body == nil && update.TriggerCondition == nil && update.Status == nil {
 			return mcp.NewToolResultError("provide at least one field to update"), nil
 		}
 
-		var contentLen int
-		if update.Content != nil {
-			contentLen = len(*update.Content)
-		}
-
-		obs, err := s.UpdateObservation(id, update)
+		mem, err := s.UpdateMemory(id, update)
 		if err != nil {
 			return mcp.NewToolResultError("Failed to update memory: " + err.Error()), nil
 		}
 
-		msg := fmt.Sprintf("Memory updated: #%d %q (%s, scope=%s)", obs.ID, obs.Title, obs.Type, obs.Scope)
-		if contentLen > s.MaxObservationLength() {
-			msg += fmt.Sprintf("\n⚠ WARNING: Content was truncated from %d to %d chars. Consider splitting into smaller observations.", contentLen, s.MaxObservationLength())
-		}
-		return mcp.NewToolResultText(msg), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Memory updated: #%d %q (%s)", mem.ID, mem.Title, mem.Kind)), nil
 	}
 }
 
@@ -1594,16 +1467,11 @@ func handleDelete(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("id is required"), nil
 		}
 
-		hardDelete := boolArg(req, "hard_delete", false)
-		if err := s.DeleteObservation(id, hardDelete); err != nil {
+		if err := s.ForgetMemory(id, "deleted via mem_delete", "agent"); err != nil {
 			return mcp.NewToolResultError("Failed to delete memory: " + err.Error()), nil
 		}
 
-		mode := "soft-deleted"
-		if hardDelete {
-			mode = "permanently deleted"
-		}
-		return mcp.NewToolResultText(fmt.Sprintf("Memory #%d %s", id, mode)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Memory #%d deleted", id)), nil
 	}
 }
 
@@ -1636,7 +1504,7 @@ func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 		}
 
 		guidance := "Guidance: include domain when known; set classification for strong signals; add evidence for decision/procedure; set expires_at for temporary facts; set trigger for procedure memories."
-		return mcp.NewToolResultText(fmt.Sprintf("Prompt saved: %q\n%s", truncate(content, 80), guidance)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Prompt saved: %q\n%s", util.Truncate(content, 80), guidance)), nil
 	}
 }
 
@@ -1685,8 +1553,8 @@ func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) ser
 			projects = "none"
 		}
 
-		result := fmt.Sprintf("%s\n---\nMemory stats: %d sessions, %d observations across projects: %s",
-			packText, stats.TotalSessions, stats.TotalObservations, projects)
+		result := fmt.Sprintf("%s\n---\nMemory stats: %d sessions, %d memories across projects: %s",
+			packText, stats.TotalSessions, stats.TotalMemories, projects)
 
 		type ctxConflictEntry struct {
 			SupersededID     int64  `json:"superseded_id"`
@@ -1737,8 +1605,8 @@ func handleStats(s *store.Store) server.ToolHandlerFunc {
 			projects = "none yet"
 		}
 
-		result := fmt.Sprintf("Memory System Stats:\n- Sessions: %d\n- Observations: %d\n- Prompts: %d\n- Projects: %s",
-			stats.TotalSessions, stats.TotalObservations, stats.TotalPrompts, projects)
+		result := fmt.Sprintf("Memory System Stats:\n- Sessions: %d\n- Memories: %d\n- Prompts: %d\n- Projects: %s",
+			stats.TotalSessions, stats.TotalMemories, stats.TotalPrompts, projects)
 
 		// Augment with memory_items stats if available
 		if memStats != nil {
@@ -1803,92 +1671,41 @@ func handlePack(s *store.Store) server.ToolHandlerFunc {
 
 func handleTimeline(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		observationID := int64(intArg(req, "observation_id", 0))
-		if observationID == 0 {
+		memoryID := int64(intArg(req, "observation_id", 0))
+		if memoryID == 0 {
 			return mcp.NewToolResultError("observation_id is required"), nil
 		}
-		before := intArg(req, "before", 5)
-		after := intArg(req, "after", 5)
+		count := intArg(req, "before", 5) + intArg(req, "after", 5)
+		if count <= 0 {
+			count = 10
+		}
 
-		result, err := s.Timeline(observationID, before, after)
+		result, err := s.MemoryTimeline(memoryID, count)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Timeline error: %s", err)), nil
 		}
 
 		var b strings.Builder
 
-		// Session header
-		if result.SessionInfo != nil {
-			summary := ""
-			if result.SessionInfo.Summary != nil {
-				summary = fmt.Sprintf(" — %s", truncate(*result.SessionInfo.Summary, 100))
-			}
-			fmt.Fprintf(&b, "Session: %s (%s)%s\n", result.SessionInfo.Project, result.SessionInfo.StartedAt, summary)
-			fmt.Fprintf(&b, "Total observations in session: %d\n\n", result.TotalInRange)
-		}
+		fmt.Fprintf(&b, "Memory #%d (%s): %s\n\n", result.Anchor.ID, result.Anchor.Kind, result.Anchor.Title)
+		fmt.Fprintf(&b, "%s\n\n", util.Truncate(result.Anchor.Body, 300))
 
-		// Before entries
 		if len(result.Before) > 0 {
 			b.WriteString("─── Before ───\n")
 			for _, e := range result.Before {
-				fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
+				fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Kind, e.Title, util.Truncate(e.Body, 150))
 			}
 			b.WriteString("\n")
 		}
 
-		// Focus observation (highlighted)
-		fmt.Fprintf(&b, ">>> #%d [%s] %s <<<\n", result.Focus.ID, result.Focus.Type, result.Focus.Title)
-		fmt.Fprintf(&b, "    %s\n", truncate(result.Focus.Content, 500))
-		fmt.Fprintf(&b, "    %s\n\n", result.Focus.CreatedAt)
-
-		// After entries
 		if len(result.After) > 0 {
 			b.WriteString("─── After ───\n")
 			for _, e := range result.After {
-				fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Type, e.Title, truncate(e.Content, 150))
+				fmt.Fprintf(&b, "  #%d [%s] %s — %s\n", e.ID, e.Kind, e.Title, util.Truncate(e.Body, 150))
 			}
 		}
 
 		return mcp.NewToolResultText(b.String()), nil
-	}
-}
-
-func handleGetObservation(s *store.Store) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := int64(intArg(req, "id", 0))
-		if id == 0 {
-			return mcp.NewToolResultError("id is required"), nil
-		}
-
-		obs, err := s.GetObservation(id)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Observation #%d not found", id)), nil
-		}
-
-		project := ""
-		if obs.Project != nil {
-			project = fmt.Sprintf("\nProject: %s", *obs.Project)
-		}
-		scope := fmt.Sprintf("\nScope: %s", obs.Scope)
-		topic := ""
-		if obs.TopicKey != nil {
-			topic = fmt.Sprintf("\nTopic: %s", *obs.TopicKey)
-		}
-		toolName := ""
-		if obs.ToolName != nil {
-			toolName = fmt.Sprintf("\nTool: %s", *obs.ToolName)
-		}
-		duplicateMeta := fmt.Sprintf("\nDuplicates: %d", obs.DuplicateCount)
-		revisionMeta := fmt.Sprintf("\nRevisions: %d", obs.RevisionCount)
-
-		result := fmt.Sprintf("#%d [%s] %s\n%s\nSession: %s%s%s\nCreated: %s",
-			obs.ID, obs.Type, obs.Title,
-			obs.Content,
-			obs.SessionID, project+scope+topic, toolName+duplicateMeta+revisionMeta,
-			obs.CreatedAt,
-		)
-
-		return mcp.NewToolResultText(result), nil
 	}
 }
 
@@ -1911,12 +1728,15 @@ func handleSessionSummary(s *store.Store, cfg MCPConfig, activity *SessionActivi
 		// Ensure the session exists
 		s.CreateSession(sessionID, project, "")
 
-		_, err := s.AddObservation(store.AddObservationParams{
-			SessionID: sessionID,
-			Type:      "session_summary",
-			Title:     fmt.Sprintf("Session summary: %s", project),
-			Content:   content,
-			Project:   project,
+		_, err := s.AddMemory(store.AddMemoryParams{
+			SessionID:  sessionID,
+			Kind:       store.MemoryKindPostmortem,
+			Title:      fmt.Sprintf("Session summary: %s", project),
+			Body:       content,
+			ProjectID:  project,
+			Source:     "mcp",
+			ActorID:    "agent",
+			TrustLevel: "agent",
 		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to save session summary: " + err.Error()), nil
@@ -2409,7 +2229,7 @@ func handleResolveConflict(s *store.Store) server.ToolHandlerFunc {
 			newID, err := s.AddMemory(store.AddMemoryParams{
 				ProjectID:  memA.ProjectID,
 				Kind:       memA.Kind,
-				Title:      truncate(mergedTitle, 200),
+				Title:      util.Truncate(mergedTitle, 200),
 				Body:       mergedContent,
 				Source:     "conflict-resolution",
 				ActorID:    "agent",
@@ -2591,7 +2411,7 @@ func handleRelated(s *store.Store) server.ToolHandlerFunc {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Found %d related memory(ies):\n\n", len(items))
 		for i, m := range items {
-			preview := truncate(m.Body, 200)
+			preview := util.Truncate(m.Body, 200)
 			if len(m.Body) > 200 {
 				preview += " [preview]"
 			}
@@ -2626,7 +2446,7 @@ func handleConsolidationCandidates(s *store.Store) server.ToolHandlerFunc {
 			fmt.Fprintf(&b, "Candidate title: **%s**\n", group.Candidate.Title)
 			fmt.Fprintf(&b, "Source memories (%d):\n\n", len(group.Sources))
 			for _, source := range group.Sources {
-				preview := truncate(source.Body, 220)
+				preview := util.Truncate(source.Body, 220)
 				fmt.Fprintf(&b, "- ID %d — **%s**\n  Kind: %s\n  %s\n", source.ID, source.Title, source.Kind, preview)
 			}
 			if i < len(groups)-1 {
@@ -2717,7 +2537,7 @@ func handleGraphContext(s *store.Store) server.ToolHandlerFunc {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Graph context for entity %q (%d items):\n\n", entity, len(items))
 		for i, m := range items {
-			preview := truncate(m.Body, 200)
+			preview := util.Truncate(m.Body, 200)
 			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)\n    %s\n\n", i+1, m.ID, m.Title, m.Kind, m.Scope, preview)
 		}
 		return mcp.NewToolResultText(b.String()), nil
@@ -2758,14 +2578,6 @@ func boolArg(req mcp.CallToolRequest, key string, defaultVal bool) bool {
 		return defaultVal
 	}
 	return v
-}
-
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "..."
 }
 
 // estimateTokens returns the estimated token count for a string.

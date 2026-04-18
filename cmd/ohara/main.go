@@ -20,6 +20,7 @@ import (
 	"github.com/ashwnn/ohara/internal/setup"
 	"github.com/ashwnn/ohara/internal/store"
 	oharasync "github.com/ashwnn/ohara/internal/sync"
+
 	versionpkg "github.com/ashwnn/ohara/internal/version"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -88,21 +89,31 @@ var setupCheckAgent = setup.Check
 var setupRemoveAgent = setup.Remove
 
 // scanInputLine reads a line from stdin. Stubbed in tests.
-var scanInputLine = func(a ...interface{}) (int, error) { return 0, nil }
-
-// storeSearch searches memories. Stubbed in tests.
-var storeSearch = func(s *store.Store, query string, opts store.SearchOptions) ([]store.SearchResult, error) {
-	return s.Search(query, opts)
+var scanInputLine = func(a ...interface{}) (int, error) {
+	out := make([]any, len(a))
+	for i := range a {
+		p, ok := a[i].(*string)
+		if !ok {
+			return 0, fmt.Errorf("scanInputLine: arg %d not *string", i)
+		}
+		out[i] = p
+	}
+	return fmt.Scanln(out...)
 }
 
-// storeAddObservation adds an observation. Stubbed in tests.
-var storeAddObservation = func(s *store.Store, p store.AddObservationParams) (int64, error) {
-	return s.AddObservation(p)
+// storeSearchMemories searches memory_items. Stubbed in tests.
+var storeSearchMemories = func(s *store.Store, query, projectID, scope, kind, domain, status string, limit int, writtenBy string) ([]store.MemoryItem, error) {
+	return s.SearchMemories(query, projectID, scope, kind, domain, status, limit, writtenBy)
+}
+
+// storeAddMemory adds a memory item. Stubbed in tests.
+var storeAddMemory = func(s *store.Store, p store.AddMemoryParams) (int64, error) {
+	return s.AddMemory(p)
 }
 
 // storeTimeline returns a timeline. Stubbed in tests.
-var storeTimeline = func(s *store.Store, obsID int64, before, after int) (*store.TimelineResult, error) {
-	return s.Timeline(obsID, before, after)
+var storeTimeline = func(s *store.Store, memID int64, count int) (*store.MemoryTimelineResult, error) {
+	return s.MemoryTimeline(memID, count)
 }
 
 // storeFormatContext formats context. Stubbed in tests.
@@ -207,7 +218,6 @@ var cmdSetup = realCmdSetup
 var cmdProjects = realCmdProjects
 var cmdProjectsList = realCmdProjectsList
 var cmdProjectsConsolidate = realCmdProjectsConsolidate
-var cmdObsidianExport = realCmdObsidianExport
 var cmdMaintain = realCmdMaintain
 var cmdBackup = realCmdBackup
 var cmdCheck = realCmdCheck
@@ -250,7 +260,6 @@ func printUsage() {
 	fmt.Println("  check              Run integrity checks")
 	fmt.Println("  tools [profile]    List MCP tool names (agent, admin, all)")
 	fmt.Println("  setup [agent]      Set up plugin for an agent")
-	fmt.Println("  obsidian-export    Export memories to Obsidian vault")
 	fmt.Println("  prime [project]   Build AI-optimised context pack for injection")
 	fmt.Println("  validate          Validate database schema and data integrity")
 	fmt.Println("  doctor [--fix]   Run health checks with optional auto-fix")
@@ -282,15 +291,6 @@ func printPostInstall(agent string) {
 	fmt.Printf("Setup complete for %s!\n", agent)
 	fmt.Printf("1. %s\n", info.restart)
 	fmt.Printf("2. Or copy the plugin config to %s\n", info.config)
-}
-
-// truncate truncates a string to max length.
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "..."
 }
 
 // ─── Maintenance Commands ─────────────────────────────────────────────────────
@@ -613,38 +613,53 @@ func realCmdTools(_ store.Config) {
 }
 
 func realCmdSearch(cfg store.Config) {
-	opts := store.SearchOptions{}
+	var project, kind, scope, domain, status, writtenBy string
+	var limit int
 	args := os.Args[2:]
 	positional := []string{}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if strings.HasPrefix(arg, "--project=") {
-			opts.Project = strings.TrimPrefix(arg, "--project=")
+			project = strings.TrimPrefix(arg, "--project=")
 		} else if arg == "--project" && i+1 < len(args) {
-			opts.Project = args[i+1]
+			project = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--kind=") {
+			kind = strings.TrimPrefix(arg, "--kind=")
+		} else if arg == "--kind" && i+1 < len(args) {
+			kind = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--type=") {
-			opts.Type = strings.TrimPrefix(arg, "--type=")
+			kind = strings.TrimPrefix(arg, "--type=")
 		} else if arg == "--type" && i+1 < len(args) {
-			opts.Type = args[i+1]
+			kind = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--scope=") {
-			opts.Scope = strings.TrimPrefix(arg, "--scope=")
+			scope = strings.TrimPrefix(arg, "--scope=")
 		} else if arg == "--scope" && i+1 < len(args) {
-			opts.Scope = args[i+1]
+			scope = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--domain=") {
+			domain = strings.TrimPrefix(arg, "--domain=")
+		} else if arg == "--domain" && i+1 < len(args) {
+			domain = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--status=") {
+			status = strings.TrimPrefix(arg, "--status=")
+		} else if arg == "--status" && i+1 < len(args) {
+			status = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--limit=") {
 			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit=")); err == nil {
-				opts.Limit = v
+				limit = v
 			}
 		} else if arg == "--limit" && i+1 < len(args) {
 			if v, err := strconv.Atoi(args[i+1]); err == nil {
-				opts.Limit = v
+				limit = v
 			}
 			i++
 		} else if strings.HasPrefix(arg, "--") {
-			// Ignore unknown flags (dangling flags).
 		} else {
 			positional = append(positional, arg)
 		}
@@ -655,19 +670,12 @@ func realCmdSearch(cfg store.Config) {
 		query = positional[0]
 	}
 
-	// Validation: missing query with --limit flag is an error.
-	hasLimitFlag := false
-	for _, a := range args {
-		if a == "--limit" || strings.HasPrefix(a, "--limit=") {
-			hasLimitFlag = true
-			break
-		}
-	}
-	if query == "" && hasLimitFlag {
-		fatal("search query is required")
-	}
 	if query == "" {
-		fatal("usage: ohara search <query>")
+		fatal("usage: ohara search <query> [--project=...] [--kind=...] [--domain=...] [--scope=...] [--limit=N]")
+	}
+
+	if project == "" {
+		project = os.Getenv("OHARA_PROJECT")
 	}
 
 	s, err := storeNew(cfg)
@@ -676,7 +684,7 @@ func realCmdSearch(cfg store.Config) {
 	}
 	defer s.Close()
 
-	results, err := storeSearch(s, query, opts)
+	results, err := storeSearchMemories(s, query, project, scope, kind, domain, status, limit, writtenBy)
 	if err != nil {
 		fatal("search: " + err.Error())
 	}
@@ -688,55 +696,89 @@ func realCmdSearch(cfg store.Config) {
 
 	fmt.Printf("Found %d memories\n", len(results))
 	for _, r := range results {
-		fmt.Printf("\n[%s] %s\n%s\n", r.Type, r.Title, r.Content)
+		fmt.Printf("\n[%s] %s (%s | %s | %s)\n%s\n", r.Kind, r.Title, r.Domain, r.Scope, r.Classification, r.Body)
 	}
 }
 
 func realCmdSave(cfg store.Config) {
-	params := store.AddObservationParams{}
+	params := store.AddMemoryParams{}
 	args := os.Args[2:]
 	positional := []string{}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if strings.HasPrefix(arg, "--type=") {
-			params.Type = strings.TrimPrefix(arg, "--type=")
-		} else if arg == "--type" && i+1 < len(args) {
-			params.Type = args[i+1]
+		if strings.HasPrefix(arg, "--type=") || strings.HasPrefix(arg, "--kind=") {
+			params.Kind = strings.TrimPrefix(arg, "--")
+			params.Kind = strings.TrimPrefix(params.Kind, "type=")
+			params.Kind = strings.TrimPrefix(params.Kind, "kind=")
+		} else if (arg == "--type" || arg == "--kind") && i+1 < len(args) {
+			params.Kind = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--project=") {
-			params.Project = strings.TrimPrefix(arg, "--project=")
+			params.ProjectID = strings.TrimPrefix(arg, "--project=")
 		} else if arg == "--project" && i+1 < len(args) {
-			params.Project = args[i+1]
+			params.ProjectID = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--scope=") {
 			params.Scope = strings.TrimPrefix(arg, "--scope=")
 		} else if arg == "--scope" && i+1 < len(args) {
 			params.Scope = args[i+1]
 			i++
-		} else if strings.HasPrefix(arg, "--topic=") {
-			params.TopicKey = strings.TrimPrefix(arg, "--topic=")
-		} else if arg == "--topic" && i+1 < len(args) {
-			params.TopicKey = args[i+1]
+		} else if strings.HasPrefix(arg, "--domain=") {
+			params.Domain = strings.TrimPrefix(arg, "--domain=")
+		} else if arg == "--domain" && i+1 < len(args) {
+			params.Domain = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--session=") {
+			params.SessionID = strings.TrimPrefix(arg, "--session=")
+		} else if arg == "--session" && i+1 < len(args) {
+			params.SessionID = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--classification=") {
+			params.Classification = strings.TrimPrefix(arg, "--classification=")
+		} else if arg == "--classification" && i+1 < len(args) {
+			params.Classification = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--evidence=") {
+			params.EvidenceJSON = strings.TrimPrefix(arg, "--evidence=")
+		} else if arg == "--evidence" && i+1 < len(args) {
+			params.EvidenceJSON = args[i+1]
+			i++
+		} else if strings.HasPrefix(arg, "--trigger=") {
+			params.TriggerCondition = strings.TrimPrefix(arg, "--trigger=")
+		} else if arg == "--trigger" && i+1 < len(args) {
+			params.TriggerCondition = args[i+1]
 			i++
 		} else if strings.HasPrefix(arg, "--") {
-			// Ignore dangling flags (e.g. --type without value).
 		} else {
 			positional = append(positional, arg)
 		}
 	}
 
 	if len(positional) < 1 {
-		fatal("usage: ohara save <title> <content>")
-	}
-	if len(positional) < 2 {
-		fatal("usage: ohara save <title> <content>")
+		fatal("usage: ohara save <title> [content] --kind=bugfix --project=myapp --domain=auth")
 	}
 	params.Title = positional[0]
-	params.Content = positional[1]
+	if len(positional) >= 2 {
+		params.Body = positional[1]
+	} else {
+		params.Body = params.Title
+	}
 
-	if params.Type == "" {
-		params.Type = "note"
+	if params.Kind == "" {
+		params.Kind = "note"
+	}
+	if params.ProjectID == "" {
+		params.ProjectID = os.Getenv("OHARA_PROJECT")
+	}
+	if params.ProjectID == "" {
+		params.ProjectID = detectProject(".")
+	}
+	if params.Source == "" {
+		params.Source = "cli"
+	}
+	if params.SessionID == "" {
+		params.SessionID = "cli-session"
 	}
 
 	s, err := storeNew(cfg)
@@ -745,18 +787,11 @@ func realCmdSave(cfg store.Config) {
 	}
 	defer s.Close()
 
-	// Ensure a session exists so AddObservation satisfies the FK constraint.
-	sessionID := "cli-session"
-	if params.Project != "" {
-		sessionID = "cli-session-" + params.Project
-	}
-	_ = s.CreateSession(sessionID, params.Project, "")
-	params.SessionID = sessionID
-
-	if _, err := storeAddObservation(s, params); err != nil {
+	id, err := storeAddMemory(s, params)
+	if err != nil {
 		fatal("save: " + err.Error())
 	}
-	fmt.Printf("Memory saved: %s\n", params.Title)
+	fmt.Printf("Memory saved (#%d): %s\n", id, params.Title)
 }
 
 func realCmdTimeline(cfg store.Config) {
@@ -767,20 +802,15 @@ func realCmdTimeline(cfg store.Config) {
 	idStr := os.Args[2]
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		fatal("invalid observation id: " + err.Error())
+		fatal("invalid id: " + err.Error())
 	}
 
-	before, after := 1, 1
+	count := 10
 	for i := 2; i < len(os.Args); i++ {
 		arg := os.Args[i]
-		if arg == "--before" && i+1 < len(os.Args) {
+		if arg == "--count" && i+1 < len(os.Args) {
 			if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
-				before = v
-			}
-			i++
-		} else if arg == "--after" && i+1 < len(os.Args) {
-			if v, err := strconv.Atoi(os.Args[i+1]); err == nil {
-				after = v
+				count = v
 			}
 			i++
 		}
@@ -792,32 +822,25 @@ func realCmdTimeline(cfg store.Config) {
 	}
 	defer s.Close()
 
-	result, err := storeTimeline(s, id, before, after)
+	result, err := storeTimeline(s, id, count)
 	if err != nil {
 		fatal("timeline: " + err.Error())
 	}
 
-	if result.SessionInfo != nil {
-		fmt.Printf("Session: %s\n", result.SessionInfo.Project)
-		if result.SessionInfo.Summary != nil && *result.SessionInfo.Summary != "" {
-			fmt.Printf("%s\n", *result.SessionInfo.Summary)
-		}
-	}
+	fmt.Printf("Memory #%d (%s): %s\n\n", result.Anchor.ID, result.Anchor.Kind, result.Anchor.Title)
+	fmt.Printf("%s\n\n", result.Anchor.Body)
 
-	fmt.Printf(">>> #%d\n", id)
-	fmt.Printf("[%s] %s — %s\n", result.Focus.Type, result.Focus.Title, result.Focus.Content)
-
-	if before > 0 && len(result.Before) > 0 {
+	if len(result.Before) > 0 {
 		fmt.Println("─── Before ───")
 		for _, e := range result.Before {
-			fmt.Printf("[%s] %s — %s\n", e.Type, e.Title, e.Content)
+			fmt.Printf("[%s] %s — %s\n", e.Kind, e.Title, e.Body)
 		}
 	}
 
-	if after > 0 && len(result.After) > 0 {
+	if len(result.After) > 0 {
 		fmt.Println("─── After ───")
 		for _, e := range result.After {
-			fmt.Printf("[%s] %s — %s\n", e.Type, e.Title, e.Content)
+			fmt.Printf("[%s] %s — %s\n", e.Kind, e.Title, e.Body)
 		}
 	}
 }
@@ -859,7 +882,7 @@ func realCmdStats(cfg store.Config) {
 	fmt.Println("Ohara Memory Stats")
 	fmt.Println("─────────────────")
 	fmt.Printf("Sessions:     %d\n", stats.TotalSessions)
-	fmt.Printf("Observations: %d\n", stats.TotalObservations)
+	fmt.Printf("Memories:     %d\n", stats.TotalMemories)
 	fmt.Printf("Prompts:       %d\n", stats.TotalPrompts)
 	if len(stats.Projects) > 0 {
 		fmt.Printf("Projects:     %s\n", strings.Join(stats.Projects, ", "))
@@ -1465,8 +1488,8 @@ func realCmdSync(cfg store.Config) {
 		if result.ChunksSkipped > 0 {
 			fmt.Printf("Skipped: %d chunk(s) (already imported)\n", result.ChunksSkipped)
 		}
-		fmt.Printf("Imported %d new chunk(s) (%d sessions, %d observations, %d prompts)\n",
-			result.ChunksImported, result.SessionsImported, result.ObservationsImported, result.PromptsImported)
+		fmt.Printf("Imported %d new chunk(s) (%d sessions, %d prompts)\n",
+			result.ChunksImported, result.SessionsImported, result.PromptsImported)
 		return
 	}
 
@@ -1494,8 +1517,8 @@ func realCmdSync(cfg store.Config) {
 			fmt.Println("Nothing new to sync")
 			return
 		}
-		fmt.Printf("Created chunk %s (%d sessions, %d observations, %d prompts)\n",
-			result.ChunkID, result.SessionsExported, result.ObservationsExported, result.PromptsExported)
+		fmt.Printf("Created chunk %s (%d sessions, %d prompts)\n",
+			result.ChunkID, result.SessionsExported, result.PromptsExported)
 	} else {
 		// Export specific project
 		fmt.Printf("Exporting memories for project %q\n", project)
@@ -1507,8 +1530,8 @@ func realCmdSync(cfg store.Config) {
 			fmt.Printf("Nothing new to sync for project %q\n", project)
 			return
 		}
-		fmt.Printf("Created chunk %s (%d sessions, %d observations, %d prompts)\n",
-			result.ChunkID, result.SessionsExported, result.ObservationsExported, result.PromptsExported)
+		fmt.Printf("Created chunk %s (%d sessions, %d prompts)\n",
+			result.ChunkID, result.SessionsExported, result.PromptsExported)
 	}
 }
 
@@ -1788,10 +1811,6 @@ func realCmdProjectsConsolidate(cfg store.Config) {
 	}
 }
 
-func realCmdObsidianExport(cfg store.Config) {
-	fatal("obsidian-export: not implemented in this binary")
-}
-
 // ─── Main Dispatch ──────────────────────────────────────────────────────────
 
 func main() {
@@ -1853,7 +1872,7 @@ func main() {
 		return
 	case "serve", "mcp", "tui", "search", "save", "timeline",
 		"context", "stats", "export", "import", "sync",
-		"setup", "projects", "obsidian-export",
+		"setup", "projects",
 		"prime", "validate", "doctor", "consolidate", "tools":
 		cfg, err := store.DefaultConfig()
 		if err != nil {
@@ -1890,8 +1909,6 @@ func main() {
 			cmdSetup(cfg)
 		case "projects":
 			cmdProjects(cfg)
-		case "obsidian-export":
-			cmdObsidianExport(cfg)
 		case "prime":
 			cmdPrime(cfg)
 		case "validate":

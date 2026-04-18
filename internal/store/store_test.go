@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ashwnn/ohara/internal/token"
+	"github.com/ashwnn/ohara/internal/util"
 	_ "modernc.org/sqlite"
 )
 
@@ -2985,7 +2986,7 @@ func TestTruncateUTF8(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := truncate(tc.in, tc.max)
+			got := util.Truncate(tc.in, tc.max)
 			if got != tc.want {
 				t.Fatalf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
 			}
