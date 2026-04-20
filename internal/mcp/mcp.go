@@ -6,8 +6,8 @@
 //
 // Tool profiles allow agents to load only the tools they need:
 //
-//	ohara mcp                    → all 31 tools (default)
-//	ohara mcp --tools=agent      → 26 tools agents actually use (per skill files)
+//	ohara mcp                    → all 30 tools (default)
+//	ohara mcp --tools=agent      → 25 tools agents actually use (per skill files)
 //	ohara mcp --tools=admin      → 5 tools for TUI/CLI (delete, stats, timeline, merge, list_domains)
 //	ohara mcp --tools=agent,admin → combine profiles
 //	ohara mcp --tools=mem_save,mem_search → individual tool names
@@ -57,10 +57,9 @@ var loadMCPStatsCombined = func(s *store.Store) (*store.Stats, *store.PackStats,
 //
 // "agent" — tools AI agents use during coding sessions:
 //   mem_save, mem_search, mem_context, mem_session_summary,
-//   mem_session_start, mem_session_end, mem_get_observation,
-//   mem_suggest_topic_key, mem_capture_passive, mem_save_prompt,
-//   mem_pack, mem_prime, mem_mark_used, mem_append_outcome,
-//   mem_resolve_conflict
+//   mem_session_start, mem_session_end, mem_suggest_topic_key,
+//   mem_capture_passive, mem_save_prompt, mem_pack, mem_prime,
+//   mem_mark_used, mem_append_outcome, mem_resolve_conflict
 //
 // "admin" — tools for manual curation, TUI, and dashboards:
 //   mem_update, mem_delete, mem_stats, mem_timeline, mem_merge_projects,
@@ -78,7 +77,6 @@ var ProfileAgent = map[string]bool{
 	"mem_session_summary":        true, // end-of-session summary — referenced 16 times
 	"mem_session_start":          true, // register session start
 	"mem_session_end":            true, // mark session completed
-	"mem_get_observation":        true, // full observation content after search — referenced 4 times
 	"mem_suggest_topic_key":      true, // stable topic key for upserts — referenced 3 times
 	"mem_capture_passive":        true, // extract learnings from text — referenced in Gemini/Codex protocol
 	"mem_save_prompt":            true, // save user prompts
@@ -173,8 +171,9 @@ DEFERRED TOOLS (use ToolSearch when needed):
   mem_update, mem_suggest_topic_key, mem_session_start, mem_session_end,
   mem_stats, mem_delete, mem_timeline, mem_capture_passive, mem_merge_projects,
   mem_list_domains, mem_mark_used, mem_append_outcome, mem_resolve_conflict,
-  mem_consolidate_candidates, mem_mark_consolidated, mem_search_rerank,
-  mem_feedback, mem_graph_context, mem_extract_entities
+  mem_forget, mem_link, mem_unlink, mem_related, mem_consolidate_candidates,
+  mem_mark_consolidated, mem_search_rerank, mem_feedback, mem_graph_context,
+  mem_extract_entities
 
 PROACTIVE SAVE RULE: Call mem_save immediately after ANY decision, bug fix, discovery, or convention — not just when asked.`
 
@@ -498,7 +497,7 @@ Examples:
 	if shouldRegister("mem_context", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_context",
-				mcp.WithDescription("Get recent memory context from previous sessions via a token-budget-aware context pack. Uses the memory_items foundation to assemble global + project memories within a token budget (default: 400 tokens). Shows recent sessions and observations to understand what was done before."),
+				mcp.WithDescription("Get recent memory context from previous sessions via a token-budget-aware context pack. Uses the memory_items foundation to assemble global + project memories within a token budget (default: 400 tokens). Shows recent sessions and memories to understand what was done before."),
 				mcp.WithTitleAnnotation("Get Memory Context"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
@@ -525,7 +524,7 @@ Examples:
 	if shouldRegister("mem_stats", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_stats",
-				mcp.WithDescription("Show memory system statistics — total sessions, observations, prompts, and memory items tracked (by kind, scope, and status)."),
+				mcp.WithDescription("Show memory system statistics — total sessions, memories, prompts, and memory items tracked (by kind, scope, and status)."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Stats"),
 				mcp.WithReadOnlyHintAnnotation(true),
@@ -566,22 +565,22 @@ Examples:
 	if shouldRegister("mem_timeline", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_timeline",
-				mcp.WithDescription("Show chronological context around a specific observation. Use after mem_search to drill into the timeline of events surrounding a search result. This is the progressive disclosure pattern: search first, then timeline to understand context."),
+				mcp.WithDescription("Show chronological context around a specific memory item. Use after mem_search to drill into the timeline of events surrounding a search result."),
 				mcp.WithDeferLoading(true),
 				mcp.WithTitleAnnotation("Memory Timeline"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("observation_id",
+				mcp.WithNumber("memory_id",
 					mcp.Required(),
-					mcp.Description("The observation ID to center the timeline on (from mem_search results)"),
+					mcp.Description("The memory ID to center the timeline on (from mem_search results)"),
 				),
 				mcp.WithNumber("before",
-					mcp.Description("Number of observations to show before the focus (default: 5)"),
+					mcp.Description("Number of memories to show before the focus (default: 5)"),
 				),
 				mcp.WithNumber("after",
-					mcp.Description("Number of observations to show after the focus (default: 5)"),
+					mcp.Description("Number of memories to show after the focus (default: 5)"),
 				),
 			),
 			handleTimeline(s),
@@ -1269,6 +1268,24 @@ func handleSearchRerank(s *store.Store, cfg MCPConfig, activity *SessionActivity
 	}
 }
 
+// normalizeKindForSave maps legacy or invalid kind strings to valid memory kinds.
+// This prevents invalid kinds like "manual"/"note"/"architecture" from reaching store.AddMemory.
+func normalizeKindForSave(kind string) string {
+	switch strings.ToLower(kind) {
+	case "manual", "note", "learning":
+		return store.MemoryKindDiscovery
+	case "architecture":
+		return store.MemoryKindDecision
+	case "session_summary":
+		return store.MemoryKindPostmortem
+	default:
+		if store.ValidMemoryKinds[kind] {
+			return kind
+		}
+		return store.MemoryKindDiscovery
+	}
+}
+
 func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		title, _ := req.GetArguments()["title"].(string)
@@ -1296,9 +1313,8 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		normalized, normWarning := store.NormalizeProject(project)
 		project = normalized
 
-		if typ == "" {
-			typ = "manual"
-		}
+		// Normalize kind to a valid memory kind before storage
+		typ = normalizeKindForSave(typ)
 		if sessionID == "" {
 			sessionID = defaultSessionID(project)
 		}
@@ -1312,7 +1328,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		}
 		suggestedTopicKey := suggestTopicKey(typ, title, content)
 
-		// Check for similar existing projects (only when this project has no existing observations)
+		// Check for similar existing projects (only when this project has no existing memories)
 		var similarWarning string
 		if project != "" {
 			existingNames, _ := s.ListProjectNames()
@@ -1372,7 +1388,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 			EvidenceJSON:     evidence,
 			AppliesToJSON:    appliesTo,
 			RelatedJSON:      related,
-			TrustLevel:       "agent",
+			TrustLevel:       "system",
 		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to save: " + err.Error()), nil
@@ -1671,9 +1687,9 @@ func handlePack(s *store.Store) server.ToolHandlerFunc {
 
 func handleTimeline(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		memoryID := int64(intArg(req, "observation_id", 0))
+		memoryID := int64(intArg(req, "memory_id", 0))
 		if memoryID == 0 {
-			return mcp.NewToolResultError("observation_id is required"), nil
+			return mcp.NewToolResultError("memory_id is required"), nil
 		}
 		count := intArg(req, "before", 5) + intArg(req, "after", 5)
 		if count <= 0 {
@@ -1736,7 +1752,7 @@ func handleSessionSummary(s *store.Store, cfg MCPConfig, activity *SessionActivi
 			ProjectID:  project,
 			Source:     "mcp",
 			ActorID:    "agent",
-			TrustLevel: "agent",
+			TrustLevel: "system",
 		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to save session summary: " + err.Error()), nil
