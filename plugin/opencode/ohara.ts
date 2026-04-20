@@ -59,7 +59,7 @@ Format for \`mem_save\`:
 
 Topic rules:
 - Different topics must not overwrite each other (e.g. architecture vs bugfix)
-- Reuse the same \`topic_key\` to update an evolving topic instead of creating new observations
+- Reuse the same \`topic_key\` to update an evolving topic instead of creating new memories
 - If unsure about the key, call \`mem_suggest_topic_key\` first and then reuse it
 - Use \`mem_update\` when you have an exact observation ID to correct
 
@@ -69,7 +69,7 @@ When the user asks to recall something — any variation of "remember", "recall"
 "how did we solve", "recordar", "acordate", "qué hicimos", or references to past work:
 1. First call \`mem_context\` — checks recent session history (fast, cheap)
 2. If not found, call \`mem_search\` with relevant keywords (FTS5 full-text search)
-3. If you find a match, use \`mem_get_observation\` for full untruncated content
+3. If you find a match, use \`mem_search\` to review the full content of top results
 
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
@@ -367,21 +367,23 @@ export const Ohara: Plugin = async (ctx) => {
         toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
       }
 
-      // Passive capture: extract learnings from Task tool output
-      if (input.tool === "Task" && output && sessionId) {
-        const text = typeof output === "string" ? output : JSON.stringify(output)
-        if (text.length > 50) {
-          await oharaFetch("/observations/passive", {
-            method: "POST",
-            body: {
-              session_id: sessionId,
-              content: stripPrivateTags(text),
-              project,
-              source: "task-complete",
-            },
-          })
-        }
-      }
+      // Passive capture: extract learnings from Task tool output.
+      // Note: mem_capture_passive is available as an MCP tool, not as an HTTP endpoint.
+      // This HTTP-based capture call is disabled until a server endpoint is added.
+      // if (input.tool === "Task" && output && sessionId) {
+      //   const text = typeof output === "string" ? output : JSON.stringify(output)
+      //   if (text.length > 50) {
+      //     await oharaFetch("/mem/capture_passive", {
+      //       method: "POST",
+      //       body: {
+      //         session_id: sessionId,
+      //         content: stripPrivateTags(text),
+      //         project,
+      //         source: "task-complete",
+      //       },
+      //     })
+      //   }
+      // }
     },
 
     // ─── System Prompt: Always-on memory instructions ──────────
