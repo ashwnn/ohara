@@ -43,28 +43,6 @@ func seedStoreForSync(t *testing.T, s *store.Store) {
 		t.Fatalf("create session proj-b: %v", err)
 	}
 
-	if _, err := s.AddObservation(store.AddObservationParams{
-		SessionID: "s-proj",
-		Type:      "decision",
-		Title:     "project observation",
-		Content:   "project scoped content",
-		Project:   "proj-a",
-		Scope:     "project",
-	}); err != nil {
-		t.Fatalf("add proj-a observation: %v", err)
-	}
-
-	if _, err := s.AddObservation(store.AddObservationParams{
-		SessionID: "s-other",
-		Type:      "decision",
-		Title:     "other observation",
-		Content:   "other scoped content",
-		Project:   "proj-b",
-		Scope:     "project",
-	}); err != nil {
-		t.Fatalf("add proj-b observation: %v", err)
-	}
-
 	if _, err := s.AddPrompt(store.AddPromptParams{SessionID: "s-proj", Content: "prompt-a", Project: "proj-a"}); err != nil {
 		t.Fatalf("add proj-a prompt: %v", err)
 	}
@@ -158,7 +136,7 @@ func TestExportImportFlowWithProjectFilter(t *testing.T) {
 	if exportResult.IsEmpty {
 		t.Fatal("expected non-empty export")
 	}
-	if exportResult.SessionsExported != 1 || exportResult.ObservationsExported != 1 || exportResult.PromptsExported != 1 {
+	if exportResult.SessionsExported != 1 || exportResult.PromptsExported != 1 {
 		t.Fatalf("unexpected export counts: %+v", exportResult)
 	}
 
@@ -193,7 +171,7 @@ func TestExportImportFlowWithProjectFilter(t *testing.T) {
 	if importResult.ChunksImported != 1 || importResult.ChunksSkipped != 0 {
 		t.Fatalf("unexpected chunk import counts: %+v", importResult)
 	}
-	if importResult.SessionsImported != 1 || importResult.ObservationsImported != 1 || importResult.PromptsImported != 1 {
+	if importResult.SessionsImported != 1 || importResult.PromptsImported != 1 {
 		t.Fatalf("unexpected imported row counts: %+v", importResult)
 	}
 
@@ -435,46 +413,6 @@ func TestImportBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("store import error", func(t *testing.T) {
-		s := newTestStore(t)
-		syncDir := t.TempDir()
-		id := "broken"
-		writeManifestFile(t, syncDir, &Manifest{
-			Version: 1,
-			Chunks:  []ChunkEntry{{ID: id, CreatedBy: "alice", CreatedAt: time.Now().UTC().Format(time.RFC3339)}},
-		})
-
-		chunk := ChunkData{
-			Observations: []store.Observation{{
-				ID:        1,
-				SessionID: "missing-session",
-				Type:      "bugfix",
-				Title:     "broken",
-				Content:   "missing session should violate FK",
-				Scope:     "project",
-				CreatedAt: "2025-01-01 00:00:01",
-				UpdatedAt: "2025-01-01 00:00:01",
-			}},
-		}
-		payload, err := json.Marshal(chunk)
-		if err != nil {
-			t.Fatalf("marshal chunk: %v", err)
-		}
-
-		chunksDir := filepath.Join(syncDir, "chunks")
-		if err := os.MkdirAll(chunksDir, 0o755); err != nil {
-			t.Fatalf("mkdir chunks: %v", err)
-		}
-		if err := writeGzip(filepath.Join(chunksDir, id+".jsonl.gz"), payload); err != nil {
-			t.Fatalf("write gzip chunk: %v", err)
-		}
-
-		sy := New(s, syncDir)
-		if _, err := sy.Import(); err == nil || !strings.Contains(err.Error(), "import chunk") {
-			t.Fatalf("expected import chunk error, got %v", err)
-		}
-	})
-
 	t.Run("get synced chunks", func(t *testing.T) {
 		s := newTestStore(t)
 		syncDir := t.TempDir()
@@ -640,10 +578,6 @@ func TestFilterFunctionsAndTimeNormalization(t *testing.T) {
 			{ID: "s1", Project: "proj-a", StartedAt: "2025-01-01 10:00:00"},
 			{ID: "s2", Project: "proj-b", StartedAt: "2025-01-01 11:00:00"},
 		},
-		Observations: []store.Observation{
-			{ID: 1, SessionID: "s1", CreatedAt: "2025-01-01 10:00:00"},
-			{ID: 2, SessionID: "s2", CreatedAt: "2025-01-01 11:00:00"},
-		},
 		Prompts: []store.Prompt{
 			{ID: 1, SessionID: "s1", CreatedAt: "2025-01-01 10:00:00"},
 			{ID: 2, SessionID: "s2", CreatedAt: "2025-01-01 11:00:00"},
@@ -654,25 +588,19 @@ func TestFilterFunctionsAndTimeNormalization(t *testing.T) {
 	if len(projectOnly.Sessions) != 1 || projectOnly.Sessions[0].ID != "s1" {
 		t.Fatalf("unexpected filtered sessions: %+v", projectOnly.Sessions)
 	}
-	if len(projectOnly.Observations) != 1 || projectOnly.Observations[0].SessionID != "s1" {
-		t.Fatalf("unexpected filtered observations: %+v", projectOnly.Observations)
-	}
 	if len(projectOnly.Prompts) != 1 || projectOnly.Prompts[0].SessionID != "s1" {
 		t.Fatalf("unexpected filtered prompts: %+v", projectOnly.Prompts)
 	}
 
 	sy := New(nil, t.TempDir())
 	all := sy.filterNewData(data, "")
-	if len(all.Sessions) != 2 || len(all.Observations) != 2 || len(all.Prompts) != 2 {
-		t.Fatalf("expected first sync to include all data, got %+v", all)
+	if len(all.Sessions) != 2 || len(all.Prompts) != 2 {
+		t.Fatalf("expected first sync to include all data, got sessions=%d prompts=%d", len(all.Sessions), len(all.Prompts))
 	}
 
 	newOnly := sy.filterNewData(data, "2025-01-01T10:30:00Z")
 	if len(newOnly.Sessions) != 1 || newOnly.Sessions[0].ID != "s2" {
 		t.Fatalf("unexpected new sessions: %+v", newOnly.Sessions)
-	}
-	if len(newOnly.Observations) != 1 || newOnly.Observations[0].ID != 2 {
-		t.Fatalf("unexpected new observations: %+v", newOnly.Observations)
 	}
 	if len(newOnly.Prompts) != 1 || newOnly.Prompts[0].ID != 2 {
 		t.Fatalf("unexpected new prompts: %+v", newOnly.Prompts)
@@ -692,32 +620,19 @@ func TestFilterFunctionsAndTimeNormalization(t *testing.T) {
 }
 
 func TestFilterByProjectEntityLevel(t *testing.T) {
-	projA := "proj-a"
-
 	data := &store.ExportData{
 		Version:    "0.1.0",
 		ExportedAt: "2025-01-01 00:00:00",
 		Sessions: []store.Session{
 			{ID: "s-match", Project: "proj-a", StartedAt: "2025-01-01 10:00:00"},
-			{ID: "s-empty", Project: "", StartedAt: "2025-01-01 11:00:00"},
 			{ID: "s-other", Project: "proj-b", StartedAt: "2025-01-01 12:00:00"},
 			{ID: "s-orphan", Project: "proj-c", StartedAt: "2025-01-01 13:00:00"},
-		},
-		Observations: []store.Observation{
-			// obs in matching session — included via session
-			{ID: 1, SessionID: "s-match", CreatedAt: "2025-01-01 10:00:00"},
-			// obs with own project but session has empty project — included via entity project
-			{ID: 2, SessionID: "s-empty", Project: &projA, CreatedAt: "2025-01-01 11:00:00"},
-			// obs with own project but session has different project — included via entity project
-			{ID: 3, SessionID: "s-other", Project: &projA, CreatedAt: "2025-01-01 12:00:00"},
-			// obs with nil project in non-matching session — excluded
-			{ID: 4, SessionID: "s-other", Project: nil, CreatedAt: "2025-01-01 12:30:00"},
 		},
 		Prompts: []store.Prompt{
 			// prompt in matching session — included via session
 			{ID: 1, SessionID: "s-match", CreatedAt: "2025-01-01 10:00:00"},
-			// prompt with own project but session has empty project — included via entity project
-			{ID: 2, SessionID: "s-empty", Project: "proj-a", CreatedAt: "2025-01-01 11:00:00"},
+			// prompt with own project but session has different project — included via entity project
+			{ID: 2, SessionID: "s-other", Project: "proj-a", CreatedAt: "2025-01-01 11:00:00"},
 			// prompt with wrong project in non-matching session — excluded
 			{ID: 3, SessionID: "s-other", Project: "proj-b", CreatedAt: "2025-01-01 12:00:00"},
 		},
@@ -725,24 +640,7 @@ func TestFilterByProjectEntityLevel(t *testing.T) {
 
 	result := filterByProject(data, "proj-a")
 
-	// Observations: IDs 1, 2, 3 should be included
-	if len(result.Observations) != 3 {
-		t.Fatalf("expected 3 observations, got %d: %+v", len(result.Observations), result.Observations)
-	}
-	obsIDs := map[int64]bool{}
-	for _, o := range result.Observations {
-		obsIDs[o.ID] = true
-	}
-	for _, id := range []int64{1, 2, 3} {
-		if !obsIDs[id] {
-			t.Errorf("expected observation %d to be included", id)
-		}
-	}
-	if obsIDs[4] {
-		t.Error("observation 4 (nil project, non-matching session) should be excluded")
-	}
-
-	// Prompts: IDs 1, 2 should be included
+	// Prompts: IDs 1, 2 should be included (s-match via session, s-other via own project)
 	if len(result.Prompts) != 2 {
 		t.Fatalf("expected 2 prompts, got %d: %+v", len(result.Prompts), result.Prompts)
 	}
@@ -757,17 +655,17 @@ func TestFilterByProjectEntityLevel(t *testing.T) {
 		t.Error("prompt 3 (wrong project, non-matching session) should be excluded")
 	}
 
-	// Sessions: s-match (direct), s-empty (referenced by obs 2), s-other (referenced by obs 3)
+	// Sessions: s-match (direct), s-other (referenced by prompt 2)
 	// s-orphan should be excluded (not referenced by any included entity)
-	if len(result.Sessions) != 3 {
-		t.Fatalf("expected 3 sessions, got %d: %+v", len(result.Sessions), result.Sessions)
+	if len(result.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d: %+v", len(result.Sessions), result.Sessions)
 	}
 	sessIDs := map[string]bool{}
 	for _, s := range result.Sessions {
 		sessIDs[s.ID] = true
 	}
-	if !sessIDs["s-match"] || !sessIDs["s-empty"] || !sessIDs["s-other"] {
-		t.Error("expected sessions s-match, s-empty, s-other to be included")
+	if !sessIDs["s-match"] || !sessIDs["s-other"] {
+		t.Error("expected sessions s-match, s-other to be included")
 	}
 	if sessIDs["s-orphan"] {
 		t.Error("session s-orphan should be excluded (no referenced entities)")

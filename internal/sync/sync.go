@@ -66,7 +66,7 @@ type ChunkEntry struct {
 	CreatedBy string `json:"created_by"` // Username or machine identifier
 	CreatedAt string `json:"created_at"` // ISO timestamp
 	Sessions  int    `json:"sessions"`   // Number of sessions in chunk
-	Memories  int    `json:"memories"`   // Number of observations in chunk
+	Memories  int    `json:"memories"`   // Number of memories in chunk
 	Prompts   int    `json:"prompts"`    // Number of prompts in chunk
 }
 

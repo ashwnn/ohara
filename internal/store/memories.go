@@ -215,6 +215,9 @@ func (s *Store) GetMemories(projectID, scope, kind, status string, limit int) ([
 	if limit <= 0 {
 		limit = 20
 	}
+	if projectID != "" {
+		projectID, _ = NormalizeProject(projectID)
+	}
 
 	// Preserve original status to determine if expires_at filter should apply.
 	// The expires_at filter only applies when status is implicitly or explicitly "active".
@@ -580,6 +583,9 @@ func parseTemporalFilters(query string) (ftsQuery string, filters temporalFilter
 func (s *Store) SearchMemories(query string, projectID, scope, kind, domain string, status string, limit int, writtenBy string) ([]MemoryItem, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	if projectID != "" {
+		projectID, _ = NormalizeProject(projectID)
 	}
 
 	// Parse temporal operators from query string before FTS sanitization
@@ -958,7 +964,7 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		       0 AS relevance_score
 		FROM memory_items
 		WHERE project_id = ? AND updated_at < ? AND status = 'active'
-		ORDER BY updated_at DESC
+		ORDER BY updated_at DESC, id DESC
 		LIMIT ?`,
 		anchor.ProjectID, anchor.UpdatedAt, count,
 	)
@@ -994,7 +1000,7 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		       0 AS relevance_score
 		FROM memory_items
 		WHERE project_id = ? AND updated_at > ? AND status = 'active'
-		ORDER BY updated_at ASC
+		ORDER BY updated_at ASC, id ASC
 		LIMIT ?`,
 		anchor.ProjectID, anchor.UpdatedAt, count,
 	)
