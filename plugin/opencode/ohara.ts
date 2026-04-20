@@ -21,12 +21,39 @@ import type { Plugin } from "@opencode-ai/plugin"
 const OHARA_PORT = parseInt(process.env.OHARA_PORT ?? "7331")
 const OHARA_URL = `http://127.0.0.1:${OHARA_PORT}`
 const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
+const OHARA_MEMORY_INJECTION = (process.env.OHARA_MEMORY_INJECTION ?? "1") !== "0"
+const OHARA_PASSIVE_CAPTURE = /^(1|true|yes|on)$/i.test(process.env.OHARA_PASSIVE_CAPTURE ?? "")
+const OHARA_MEMORY_AGENTS = new Set(
+  (process.env.OHARA_MEMORY_AGENTS ?? "deep,security-auditor,security-recon,researcher,planner")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+)
 
 // Ohara's own MCP tools — don't count these as "tool calls" for session stats.
 // V3 adds many mem_* tools; prefix check avoids stale hardcoded list drift.
 function isOharaTool(toolName: string): boolean {
   const name = (toolName ?? "").toLowerCase()
   return name.startsWith("mem_")
+}
+
+function parseAgentName(input: unknown): string {
+  const data = input as Record<string, unknown> | undefined
+  const raw =
+    data?.agent ??
+    data?.agentName ??
+    data?.agent_name ??
+    data?.route ??
+    data?.model ??
+    ""
+  return typeof raw === "string" ? raw.trim() : ""
+}
+
+function shouldInjectMemory(input: unknown): boolean {
+  if (!OHARA_MEMORY_INJECTION) return false
+  const agent = parseAgentName(input)
+  if (!agent) return false
+  return OHARA_MEMORY_AGENTS.has(agent)
 }
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
@@ -367,28 +394,25 @@ export const Ohara: Plugin = async (ctx) => {
         toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
       }
 
-      // Passive capture: extract learnings from Task tool output.
-      // Note: mem_capture_passive is available as an MCP tool, not as an HTTP endpoint.
-      // This HTTP-based capture call is disabled until a server endpoint is added.
-      // if (input.tool === "Task" && output && sessionId) {
-      //   const text = typeof output === "string" ? output : JSON.stringify(output)
-      //   if (text.length > 50) {
-      //     await oharaFetch("/mem/capture_passive", {
-      //       method: "POST",
-      //       body: {
-      //         session_id: sessionId,
-      //         content: stripPrivateTags(text),
-      //         project,
-      //         source: "task-complete",
-      //       },
-      //     })
-      //   }
-      // }
+      // Passive capture: extract learnings from Task tool output
+      if (OHARA_PASSIVE_CAPTURE && input.tool === "Task" && output && sessionId) {
+        const text = typeof output === "string" ? output : JSON.stringify(output)
+        if (text.length > 50) {
+          await oharaFetch("/observations/passive", {
+            method: "POST",
+            body: {
+              session_id: sessionId,
+              content: stripPrivateTags(text),
+              project,
+              source: "task-complete",
+            },
+          })
+        }
+      }
     },
 
-    // ─── System Prompt: Always-on memory instructions ──────────
-    // Injects MEMORY_INSTRUCTIONS into the system prompt of every message.
-    // This ensures the agent ALWAYS knows about Ohara, even after compaction.
+    // ─── System Prompt: Selective memory instructions ─────────
+    // Inject MEMORY_INSTRUCTIONS only for long-lived reasoning agents.
     //
     // We append to the last existing system entry instead of pushing a new one.
     // Some models (Qwen3.5, Mistral/Ministral via llama.cpp) reject multiple
@@ -396,7 +420,8 @@ export const Ohara: Plugin = async (ctx) => {
     // block at the beginning. By concatenating, we avoid adding extra system
     // messages that would break these models. See: GitHub issue #23.
 
-    "experimental.chat.system.transform": async (_input, output) => {
+    "experimental.chat.system.transform": async (input, output) => {
+      if (!shouldInjectMemory(input)) return
       if (output.system.length > 0) {
         output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
       } else {
@@ -415,6 +440,10 @@ export const Ohara: Plugin = async (ctx) => {
     "experimental.session.compacting": async (input, output) => {
       if (input.sessionID) {
         await ensureSession(input.sessionID)
+      }
+
+      if (!shouldInjectMemory(input)) {
+        return
       }
 
       // Inject context from previous sessions

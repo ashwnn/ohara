@@ -37,66 +37,18 @@ When working on this project, load the relevant skill(s) BEFORE writing any code
 
 ---
 
-## Memory Usage Guidelines
+## Memory — Contributor Field Guide
 
-The following guidelines apply when using Ohara's memory tools. These are based on the features now implemented.
+Runtime protocol (when to save, search, session close) is injected by the OpenCode plugin (`plugin/opencode/ohara.ts`).
+Do not duplicate those instructions here. This section covers **field conventions** only.
 
-### On domain
-
-Always set domain when saving a memory. Use the subsystem name in lowercase:
-"auth", "database", "k8s", "api", "ci", "infra", "test". Keep domain strings
-consistent across sessions. When searching, pass domain to narrow results if
-you know the relevant subsystem.
-
-### On evidence
-
-For decision and procedure memories, always set evidence with at least one of:
-commit hash, issue ID, or file path. This makes the memory auditable and allows
-file-targeted prime packs. For foundational memories, evidence is required before
-the record is considered active.
-
-### On classification
-
-Set classification when you have a strong signal: "foundational" for decisions and
-procedures that should never auto-expire, "tactical" for patterns and bugfixes with
-medium durability, "observational" for raw session notes. The default is "tactical".
-Foundational memories are never auto-pruned.
-
-### On procedure type
-
-Use kind "procedure" for step-by-step workflows you have personally verified work
-in this project. Set trigger_condition to a "When X happens" phrase so future searches
-can match on intent. Set evidence.verified_at. Update via mem_update on the original
-obs_id rather than saving a duplicate when the procedure changes.
-
-### On relations
-
-After saving a memory that directly relates to an existing one, call mem_link to
-record the relationship. Common patterns:
-  - A bugfix that resolves a known pattern:       relation "resolves"
-  - A procedure that implements a decision:       relation "implements"
-  - A new decision that replaces an old one:      relation "supersedes"
-  - A decision that caused a later bug:           relation "caused"
-
-### On actor-aware retrieval
-
-When a memory returned by mem_search or mem_prime is tagged [consolidation] or
-[import], treat it as an inference rather than a directly verified fact. Confirm
-against current environment state or a source memory before acting on it.
-When calling mem_save, you do not need to set written_by - it is set automatically.
-
-### On conflict resolution
-
-When mem_resolve_conflict is needed, choose the action by this logic:
-  - Both memories are correct and describe different things → "add"
-  - Partial overlap, should be one canonical memory → "merge"
-  - Old memory is actively wrong, new one replaces it → "invalidate"
-  - Memories are complementary, not contradictory → "relate"
-  - Known acceptable coexistence of contradictory facts → "suppress"
-
-### On forgetting
-
-When replacing an old decision with a new one, call mem_forget on the old obs_id
-with a clear reason. Prefer mem_forget over mem_delete: mem_forget preserves the
-audit trail. mem_delete physically removes the row and should be reserved for
-sensitive data removal.
+| Field | Convention |
+|-------|-----------|
+| **domain** | Lowercase subsystem: `auth`, `database`, `k8s`, `api`, `ci`, `infra`, `test`. Keep consistent across sessions. |
+| **evidence** | Required for `decision` and `procedure` types. At least one of: commit hash, issue ID, or file path. |
+| **classification** | `foundational` (never expires) for core decisions/procedures. `tactical` (default) for patterns/bugfixes. `observational` for raw notes. |
+| **procedure** | Set `trigger` to a "When X happens" phrase. Update via `mem_update` on original `obs_id`, don't duplicate. |
+| **relations** | `mem_link` patterns: bugfix→`resolves`, procedure→`implements`, replacement→`supersedes`, causal→`caused`. |
+| **conflict resolution** | `add` (both valid), `merge` (canonical), `invalidate` (wrong→replace), `relate` (complementary), `suppress` (acceptable coexistence). |
+| **forgetting** | Prefer `mem_forget` over `mem_delete` — preserves audit trail. |
+| **actor tags** | `[consolidation]`/`[import]` memories are inferences. Confirm against source before acting. `written_by` is set automatically. |
