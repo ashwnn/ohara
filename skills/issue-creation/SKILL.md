@@ -72,25 +72,25 @@ Auto-labels: `bug`, `status:needs-review`
 
 ```bash
 gh issue create --template "bug_report.yml" \
-  --title "fix(store): duplicate observations on concurrent saves" \
+  --title "fix(store): duplicate memories on concurrent saves" \
   --body "
 ### Pre-flight Checks
 - [x] I have searched existing issues and this is not a duplicate
 - [x] I understand this issue needs status:approved before a PR can be opened
 
 ### Bug Description
-When two agents save observations concurrently, duplicates are created.
+When two agents save memories concurrently, duplicates are created.
 
 ### Steps to Reproduce
 1. Start two ohara instances pointing to the same DB
-2. Both save an observation with the same title simultaneously
-3. Query observations — duplicates appear
+2. Both save a memory with the same title simultaneously
+3. Query memories — duplicates appear
 
 ### Expected Behavior
 The second save should upsert, not insert a duplicate.
 
 ### Actual Behavior
-Two identical observations exist with different IDs.
+Two identical memories exist with different IDs.
 
 ### Operating System
 macOS
@@ -103,7 +103,7 @@ Claude Code
 
 ### Relevant Logs
 \`\`\`
-UNIQUE constraint failed: observations.title
+UNIQUE constraint failed: memory_items.title
 \`\`\`
 "
 ```
