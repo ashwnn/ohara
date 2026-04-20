@@ -1,7 +1,7 @@
 // Package store implements the persistent memory engine for Ohara.
 //
 // It uses SQLite with FTS5 full-text search to store and retrieve
-// observations from AI coding sessions. This is the core of Ohara —
+// memories from AI coding sessions. This is the core of Ohara —
 // everything else (HTTP server, MCP server, CLI, plugins) talks to this.
 package store
 
@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,8 +156,7 @@ type ExportData struct {
 
 // ─── Memory Items (Ohara v2 spec) ──────────────────────────────────────────────
 // Memory items are the curated, typed, versioned memory records defined in the
-// Ohara v2 spec. They coexist alongside the existing observations system and
-// are the primary target for future migration.
+// Ohara v2 spec. They replaced the legacy observations system entirely.
 
 const (
 	// MemoryKind values — the 10 typed categories from the spec.
@@ -725,7 +725,7 @@ func (s *Store) Close() error {
 // ─── Migrations ──────────────────────────────────────────────────────────────
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 23
+const currentSchemaVersion = 24
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -737,7 +737,7 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("create schema_version table: %w", err)
 	}
 
-	// Bootstrap core schema
+	// Bootstrap core schema (memory_items is created after this block via runMigrations)
 	schema := `
 			CREATE TABLE IF NOT EXISTS sessions (
 				id         TEXT PRIMARY KEY,
@@ -746,43 +746,6 @@ func (s *Store) migrate() error {
 			started_at TEXT NOT NULL DEFAULT (datetime('now')),
 			ended_at   TEXT,
 			summary    TEXT
-		);
-
-			CREATE TABLE IF NOT EXISTS observations (
-				id         INTEGER PRIMARY KEY AUTOINCREMENT,
-				sync_id    TEXT,
-				session_id TEXT    NOT NULL,
-			type       TEXT    NOT NULL,
-			title      TEXT    NOT NULL,
-			content    TEXT    NOT NULL,
-			tool_name  TEXT,
-			project    TEXT,
-			scope      TEXT    NOT NULL DEFAULT 'project',
-			topic_key  TEXT,
-			normalized_hash TEXT,
-			revision_count INTEGER NOT NULL DEFAULT 1,
-			duplicate_count INTEGER NOT NULL DEFAULT 1,
-			last_seen_at TEXT,
-			created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-			updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
-			deleted_at TEXT,
-			FOREIGN KEY (session_id) REFERENCES sessions(id)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_obs_session  ON observations(session_id);
-		CREATE INDEX IF NOT EXISTS idx_obs_type     ON observations(type);
-		CREATE INDEX IF NOT EXISTS idx_obs_project  ON observations(project);
-		CREATE INDEX IF NOT EXISTS idx_obs_created  ON observations(created_at DESC);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-			title,
-			content,
-			tool_name,
-			type,
-			project,
-			topic_key,
-			content='observations',
-			content_rowid='id'
 		);
 
 			CREATE TABLE IF NOT EXISTS user_prompts (
@@ -842,36 +805,11 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	observationColumns := []struct {
-		name       string
-		definition string
-	}{
-		{name: "sync_id", definition: "TEXT"},
-		{name: "scope", definition: "TEXT NOT NULL DEFAULT 'project'"},
-		{name: "topic_key", definition: "TEXT"},
-		{name: "normalized_hash", definition: "TEXT"},
-		{name: "revision_count", definition: "INTEGER NOT NULL DEFAULT 1"},
-		{name: "duplicate_count", definition: "INTEGER NOT NULL DEFAULT 1"},
-		{name: "last_seen_at", definition: "TEXT"},
-		{name: "updated_at", definition: "TEXT NOT NULL DEFAULT ''"},
-		{name: "deleted_at", definition: "TEXT"},
-	}
-	for _, c := range observationColumns {
-		if err := s.addColumnIfNotExists("observations", c.name, c.definition); err != nil {
-			return err
-		}
-	}
-
 	if err := s.addColumnIfNotExists("user_prompts", "sync_id", "TEXT"); err != nil {
 		return err
 	}
 
 	if _, err := s.execHook(s.db, `
-		CREATE INDEX IF NOT EXISTS idx_obs_scope ON observations(scope);
-		CREATE INDEX IF NOT EXISTS idx_obs_sync_id ON observations(sync_id);
-		CREATE INDEX IF NOT EXISTS idx_obs_topic ON observations(topic_key, project, scope, updated_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_obs_deleted ON observations(deleted_at);
-		CREATE INDEX IF NOT EXISTS idx_obs_dedupe ON observations(normalized_hash, project, scope, type, title, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_prompts_sync_id ON user_prompts(sync_id);
 		CREATE INDEX IF NOT EXISTS idx_sync_mutations_target_seq ON sync_mutations(target_key, seq);
 		CREATE INDEX IF NOT EXISTS idx_sync_mutations_pending ON sync_mutations(target_key, acked_at, seq);
@@ -901,25 +839,6 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	if _, err := s.execHook(s.db, `UPDATE observations SET scope = 'project' WHERE scope IS NULL OR scope = ''`); err != nil {
-		return err
-	}
-	if _, err := s.execHook(s.db, `UPDATE observations SET topic_key = NULL WHERE topic_key = ''`); err != nil {
-		return err
-	}
-	if _, err := s.execHook(s.db, `UPDATE observations SET revision_count = 1 WHERE revision_count IS NULL OR revision_count < 1`); err != nil {
-		return err
-	}
-	if _, err := s.execHook(s.db, `UPDATE observations SET duplicate_count = 1 WHERE duplicate_count IS NULL OR duplicate_count < 1`); err != nil {
-		return err
-	}
-	if _, err := s.execHook(s.db, `UPDATE observations SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`); err != nil {
-		return err
-	}
-	if _, err := s.execHook(s.db, `UPDATE observations SET sync_id = 'obs-' || lower(hex(randomblob(16))) WHERE sync_id IS NULL OR sync_id = ''`); err != nil {
-		return err
-	}
-
 	if _, err := s.execHook(s.db, `UPDATE user_prompts SET project = '' WHERE project IS NULL`); err != nil {
 		return err
 	}
@@ -930,43 +849,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	// Create triggers to keep FTS in sync (idempotent check)
-	var name string
-	err := s.db.QueryRow(
-		"SELECT name FROM sqlite_master WHERE type='trigger' AND name='obs_fts_insert'",
-	).Scan(&name)
-
-	if err == sql.ErrNoRows {
-		triggers := `
-			CREATE TRIGGER obs_fts_insert AFTER INSERT ON observations BEGIN
-				INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-				VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
-			END;
-
-			CREATE TRIGGER obs_fts_delete AFTER DELETE ON observations BEGIN
-				INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
-				VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
-			END;
-
-			CREATE TRIGGER obs_fts_update AFTER UPDATE ON observations BEGIN
-				INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
-				VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
-				INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-				VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
-			END;
-		`
-		if _, err := s.execHook(s.db, triggers); err != nil {
-			return err
-		}
-	}
-
-	if err := s.migrateFTSTopicKey(); err != nil {
-		return err
-	}
-
-	// Prompts FTS triggers (separate idempotent check)
+	// Prompts FTS triggers (idempotent check)
 	var promptTrigger string
-	err = s.db.QueryRow(
+	err := s.db.QueryRow(
 		"SELECT name FROM sqlite_master WHERE type='trigger' AND name='prompt_fts_insert'",
 	).Scan(&promptTrigger)
 
@@ -995,7 +880,6 @@ func (s *Store) migrate() error {
 	}
 
 	// ── Memory Items schema (Ohara v2 spec) ─────────────────────────────────
-	// These tables coexist alongside the observations system.
 	if _, err := s.execHook(s.db, `
 		CREATE TABLE IF NOT EXISTS memory_items (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1100,6 +984,7 @@ func (s *Store) migrate() error {
 // runMigrations applies all pending schema migrations in order.
 // Each migration is idempotent: it checks the schema_version table and only
 // applies migrations that haven't been recorded yet.
+// Logs migration progress only when migrations are actually needed.
 func (s *Store) runMigrations() error {
 	// Get current version
 	var currentVersion int
@@ -1108,11 +993,20 @@ func (s *Store) runMigrations() error {
 		return fmt.Errorf("get schema version: %w", err)
 	}
 
+	// No-op: DB is at current schema — return silently.
+	if currentVersion >= currentSchemaVersion {
+		return nil
+	}
+
+	// At least one migration is needed: log the upgrade path.
+	log.Printf("[ohara] migrating schema %d → %d", currentVersion, currentSchemaVersion)
+
 	// Apply migrations 1 through currentSchemaVersion
 	for v := currentVersion + 1; v <= currentSchemaVersion; v++ {
 		if err := s.applyMigration(v); err != nil {
 			return fmt.Errorf("migration %d: %w", v, err)
 		}
+		log.Printf("[ohara] applied migration %d", v)
 	}
 	return nil
 }
@@ -1422,6 +1316,32 @@ func (s *Store) applyMigration(version int) error {
 			// Log but continue so migration doesn't block startup.
 		}
 
+	case 24:
+		// Migration 024: Final cleanup of legacy observations schema.
+		// Runs after migration 023 backfill completes.
+		// Safe to re-run: uses DROP IF EXISTS for all objects.
+		// Fresh DBs never created these objects (removed from bootstrap), so
+		// DROP IF EXISTS is a no-op on fresh DBs.
+		//
+		// Drop FTS triggers first (must drop triggers before FTS table).
+		if _, err := s.execHook(s.db, `DROP TRIGGER IF EXISTS obs_fts_insert`); err != nil {
+			return fmt.Errorf("migration 024 drop obs_fts_insert: %w", err)
+		}
+		if _, err := s.execHook(s.db, `DROP TRIGGER IF EXISTS obs_fts_update`); err != nil {
+			return fmt.Errorf("migration 024 drop obs_fts_update: %w", err)
+		}
+		if _, err := s.execHook(s.db, `DROP TRIGGER IF EXISTS obs_fts_delete`); err != nil {
+			return fmt.Errorf("migration 024 drop obs_fts_delete: %w", err)
+		}
+		// Drop the FTS virtual table.
+		if _, err := s.execHook(s.db, `DROP TABLE IF EXISTS observations_fts`); err != nil {
+			return fmt.Errorf("migration 024 drop observations_fts: %w", err)
+		}
+		// Drop the base observations table (cascades to all idx_obs_* indexes).
+		if _, err := s.execHook(s.db, `DROP TABLE IF EXISTS observations`); err != nil {
+			return fmt.Errorf("migration 024 drop observations: %w", err)
+		}
+
 	default:
 		return fmt.Errorf("unknown migration version %d (current: %d)", version, currentSchemaVersion)
 	}
@@ -1518,55 +1438,6 @@ func (s *Store) migrateMemFTSTriggerCondition() error {
 	return nil
 }
 
-func (s *Store) migrateFTSTopicKey() error {
-	var colCount int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM pragma_table_xinfo('observations_fts') WHERE name = 'topic_key'").Scan(&colCount)
-	if err != nil || colCount > 0 {
-		return nil
-	}
-
-	if _, err := s.execHook(s.db, `
-		DROP TRIGGER IF EXISTS obs_fts_insert;
-		DROP TRIGGER IF EXISTS obs_fts_update;
-		DROP TRIGGER IF EXISTS obs_fts_delete;
-		DROP TABLE IF EXISTS observations_fts;
-		CREATE VIRTUAL TABLE observations_fts USING fts5(
-			title,
-			content,
-			tool_name,
-			type,
-			project,
-			topic_key,
-			content='observations',
-			content_rowid='id'
-		);
-		INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-		SELECT id, title, content, tool_name, type, project, topic_key
-		FROM observations
-		WHERE deleted_at IS NULL;
-
-		CREATE TRIGGER obs_fts_insert AFTER INSERT ON observations BEGIN
-			INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-			VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
-		END;
-
-		CREATE TRIGGER obs_fts_delete AFTER DELETE ON observations BEGIN
-			INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
-			VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
-		END;
-
-		CREATE TRIGGER obs_fts_update AFTER UPDATE ON observations BEGIN
-			INSERT INTO observations_fts(observations_fts, rowid, title, content, tool_name, type, project, topic_key)
-			VALUES ('delete', old.id, old.title, old.content, old.tool_name, old.type, old.project, old.topic_key);
-			INSERT INTO observations_fts(rowid, title, content, tool_name, type, project, topic_key)
-			VALUES (new.id, new.title, new.content, new.tool_name, new.type, new.project, new.topic_key);
-		END;
-	`); err != nil {
-		return fmt.Errorf("migrate fts topic_key: %w", err)
-	}
-	return nil
-}
-
 // ─── Sessions ────────────────────────────────────────────────────────────────
 
 func (s *Store) CreateSession(id, project, directory string) error {
@@ -1643,9 +1514,9 @@ func (s *Store) RecentSessions(project string, limit int) ([]SessionSummary, err
 
 	query := `
 		SELECT s.id, s.project, s.started_at, s.ended_at, s.summary,
-		       COUNT(o.id) as observation_count
+		       COUNT(m.id) as memory_count
 		FROM sessions s
-		LEFT JOIN observations o ON o.session_id = s.id AND o.deleted_at IS NULL
+		LEFT JOIN memory_items m ON m.session_id = s.id AND m.status = 'active'
 		WHERE 1=1
 	`
 	args := []any{}
@@ -1655,7 +1526,7 @@ func (s *Store) RecentSessions(project string, limit int) ([]SessionSummary, err
 		args = append(args, project)
 	}
 
-	query += " GROUP BY s.id ORDER BY MAX(COALESCE(o.created_at, s.started_at)) DESC LIMIT ?"
+	query += " GROUP BY s.id ORDER BY MAX(COALESCE(m.created_at, s.started_at)) DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.queryItHook(s.db, query, args...)
@@ -1683,9 +1554,9 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 
 	query := `
 		SELECT s.id, s.project, s.started_at, s.ended_at, s.summary,
-		       COUNT(o.id) as observation_count
+		       COUNT(m.id) as memory_count
 		FROM sessions s
-		LEFT JOIN observations o ON o.session_id = s.id AND o.deleted_at IS NULL
+		LEFT JOIN memory_items m ON m.session_id = s.id AND m.status = 'active'
 		WHERE 1=1
 	`
 	args := []any{}
@@ -1695,7 +1566,7 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 		args = append(args, project)
 	}
 
-	query += " GROUP BY s.id ORDER BY MAX(COALESCE(o.created_at, s.started_at)) DESC LIMIT ?"
+	query += " GROUP BY s.id ORDER BY MAX(COALESCE(m.created_at, s.started_at)) DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.queryItHook(s.db, query, args...)
@@ -1834,8 +1705,8 @@ func (s *Store) SearchPrompts(query string, project string, limit int) ([]Prompt
 // ─── Delete Session ──────────────────────────────────────────────────────────
 
 // DeleteSession hard-deletes a session and its prompts.
-// It returns fmt.Errorf("session has memories") if the session has any observations
-// (including soft-deleted ones) to prevent orphaned rows.
+// It returns fmt.Errorf("session has memories") if the session has any memory_items
+// to prevent orphaned rows.
 // It returns ErrSessionNotFound if no session with that ID exists.
 //
 // Note: this delete only removes local rows. It does not enqueue a delete
@@ -1844,22 +1715,21 @@ func (s *Store) SearchPrompts(query string, project string, limit int) ([]Prompt
 // may recreate the deleted rows locally.
 func (s *Store) DeleteSession(id string) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		// Count ALL observations for the session, including soft-deleted ones,
-		// because the FK constraint on observations.session_id has no ON DELETE CASCADE.
+		// Guard: refuse to delete session if it has associated memory items.
 		var count int
-		rows, err := s.queryItHook(tx, `SELECT COUNT(*) FROM observations WHERE session_id = ?`, id)
+		rows, err := s.queryItHook(tx, `SELECT COUNT(*) FROM memory_items WHERE session_id = ?`, id)
 		if err != nil {
-			return fmt.Errorf("delete session: count observations: %w", err)
+			return fmt.Errorf("delete session: count memories: %w", err)
 		}
 		if rows.Next() {
 			if err := rows.Scan(&count); err != nil {
 				_ = rows.Close()
-				return fmt.Errorf("delete session: count observations: %w", err)
+				return fmt.Errorf("delete session: count memories: %w", err)
 			}
 		}
 		_ = rows.Close()
 		if count > 0 {
-			return fmt.Errorf("%w: session %q has %d observation(s)", fmt.Errorf("session has memories"), id, count)
+			return fmt.Errorf("%w: session %q has %d memory item(s)", fmt.Errorf("session has memories"), id, count)
 		}
 
 		if _, err := s.execHook(tx, `DELETE FROM user_prompts WHERE session_id = ?`, id); err != nil {
@@ -1870,7 +1740,7 @@ func (s *Store) DeleteSession(id string) error {
 		if err != nil {
 			var sqliteErr *sqlite.Error
 			if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqliteConstraintForeignKey {
-				return fmt.Errorf("%w: session %q has observation(s)", fmt.Errorf("session has memories"), id)
+				return fmt.Errorf("%w: session %q has memory item(s)", fmt.Errorf("session has memories"), id)
 			}
 			return fmt.Errorf("delete session: %w", err)
 		}
@@ -1918,10 +1788,10 @@ func (s *Store) Stats() (*Stats, error) {
 	stats := &Stats{}
 
 	s.db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&stats.TotalSessions)
-	s.db.QueryRow("SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL").Scan(&stats.TotalMemories)
+	s.db.QueryRow("SELECT COUNT(*) FROM memory_items WHERE status = 'active'").Scan(&stats.TotalMemories)
 	s.db.QueryRow("SELECT COUNT(*) FROM user_prompts").Scan(&stats.TotalPrompts)
 
-	rows, err := s.queryItHook(s.db, "SELECT project FROM observations WHERE project IS NOT NULL AND deleted_at IS NULL GROUP BY project ORDER BY MAX(created_at) DESC")
+	rows, err := s.queryItHook(s.db, "SELECT DISTINCT project_id AS project FROM memory_items WHERE status = 'active' AND project_id IS NOT NULL AND project_id != '' ORDER BY project")
 	if err != nil {
 		return stats, nil
 	}
@@ -2461,10 +2331,9 @@ func (s *Store) IsProjectEnrolled(project string) (bool, error) {
 // ─── Project Migration ───────────────────────────────────────────────────────
 
 type MigrateResult struct {
-	Migrated            bool  `json:"migrated"`
-	ObservationsUpdated int64 `json:"observations_updated"`
-	SessionsUpdated     int64 `json:"sessions_updated"`
-	PromptsUpdated      int64 `json:"prompts_updated"`
+	Migrated        bool  `json:"migrated"`
+	SessionsUpdated int64 `json:"sessions_updated"`
+	PromptsUpdated  int64 `json:"prompts_updated"`
 }
 
 func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) {
@@ -2476,11 +2345,11 @@ func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) 
 	var exists bool
 	err := s.db.QueryRow(
 		`SELECT EXISTS(
-			SELECT 1 FROM observations WHERE project = ?
-			UNION ALL
 			SELECT 1 FROM sessions WHERE project = ?
 			UNION ALL
 			SELECT 1 FROM user_prompts WHERE project = ?
+			UNION ALL
+			SELECT 1 FROM memory_items WHERE project_id = ?
 		)`, oldName, oldName, oldName,
 	).Scan(&exists)
 	if err != nil {
@@ -2493,14 +2362,7 @@ func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) 
 	result := &MigrateResult{Migrated: true}
 
 	err = s.withTx(func(tx *sql.Tx) error {
-		// FTS triggers handle index updates automatically on UPDATE
-		res, err := s.execHook(tx, `UPDATE observations SET project = ? WHERE project = ?`, newName, oldName)
-		if err != nil {
-			return fmt.Errorf("migrate observations: %w", err)
-		}
-		result.ObservationsUpdated, _ = res.RowsAffected()
-
-		res, err = s.execHook(tx, `UPDATE sessions SET project = ? WHERE project = ?`, newName, oldName)
+		res, err := s.execHook(tx, `UPDATE sessions SET project = ? WHERE project = ?`, newName, oldName)
 		if err != nil {
 			return fmt.Errorf("migrate sessions: %w", err)
 		}
@@ -2511,6 +2373,11 @@ func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) 
 			return fmt.Errorf("migrate prompts: %w", err)
 		}
 		result.PromptsUpdated, _ = res.RowsAffected()
+
+		_, err = s.execHook(tx, `UPDATE memory_items SET project_id = ? WHERE project_id = ?`, newName, oldName)
+		if err != nil {
+			return fmt.Errorf("migrate memory_items: %w", err)
+		}
 
 		// Enqueue sync mutations so cloud sync picks up the migrated records.
 		// Same pattern used by EnrollProject and MergeProjects.
@@ -2525,18 +2392,23 @@ func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) 
 
 // ─── Project Queries ──────────────────────────────────────────────────────────
 
-// ProjectNameCount holds a project name and how many observations it has.
+// ProjectNameCount holds a project name and how many memory items it has.
 type ProjectNameCount struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
 }
 
-// ListProjectNames returns all distinct project names from observations,
-// ordered alphabetically. Used for fuzzy matching and consolidation.
+// ListProjectNames returns all distinct project names from sessions and
+// memory_items, ordered alphabetically. Used for fuzzy matching and consolidation.
 func (s *Store) ListProjectNames() ([]string, error) {
 	rows, err := s.queryItHook(s.db,
-		`SELECT DISTINCT project FROM observations
-		 WHERE project IS NOT NULL AND project != '' AND deleted_at IS NULL
+		`SELECT DISTINCT project FROM (
+			 SELECT DISTINCT project FROM sessions
+			 WHERE project IS NOT NULL AND project != ''
+			 UNION
+			 SELECT DISTINCT project_id AS project FROM memory_items
+			 WHERE status = 'active' AND project_id IS NOT NULL AND project_id != ''
+		 )
 		 ORDER BY project`,
 	)
 	if err != nil {
@@ -2565,30 +2437,30 @@ type ProjectStats struct {
 }
 
 // ListProjectsWithStats returns all projects with aggregated counts.
-// Ordered by observation count descending.
+// Ordered by memory count descending.
 func (s *Store) ListProjectsWithStats() ([]ProjectStats, error) {
-	// Observation counts per project
-	obsRows, err := s.queryItHook(s.db,
-		`SELECT project, COUNT(*) as cnt
-		 FROM observations
-		 WHERE project IS NOT NULL AND project != '' AND deleted_at IS NULL
-		 GROUP BY project`,
+	// Memory item counts per project
+	memRows, err := s.queryItHook(s.db,
+		`SELECT project_id, COUNT(*) as cnt
+		 FROM memory_items
+		 WHERE status = 'active' AND project_id IS NOT NULL AND project_id != ''
+		 GROUP BY project_id`,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list projects obs: %w", err)
+		return nil, fmt.Errorf("list projects mem items: %w", err)
 	}
-	defer obsRows.Close()
+	defer memRows.Close()
 
 	statsMap := make(map[string]*ProjectStats)
-	for obsRows.Next() {
+	for memRows.Next() {
 		var name string
 		var cnt int
-		if err := obsRows.Scan(&name, &cnt); err != nil {
+		if err := memRows.Scan(&name, &cnt); err != nil {
 			return nil, err
 		}
 		statsMap[name] = &ProjectStats{Name: name, MemoryCount: cnt}
 	}
-	if err := obsRows.Err(); err != nil {
+	if err := memRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -2708,18 +2580,11 @@ func (s *Store) MergeProjects(sources []string, canonical string) (*MergeResult,
 				continue
 			}
 
-			res, err := s.execHook(tx, `UPDATE observations SET project = ? WHERE project = ?`, canonical, src)
-			if err != nil {
-				return fmt.Errorf("merge observations %q → %q: %w", src, canonical, err)
-			}
-			n, _ := res.RowsAffected()
-			result.ObservationsUpdated += n
-
-			res, err = s.execHook(tx, `UPDATE sessions SET project = ? WHERE project = ?`, canonical, src)
+			res, err := s.execHook(tx, `UPDATE sessions SET project = ? WHERE project = ?`, canonical, src)
 			if err != nil {
 				return fmt.Errorf("merge sessions %q → %q: %w", src, canonical, err)
 			}
-			n, _ = res.RowsAffected()
+			n, _ := res.RowsAffected()
 			result.SessionsUpdated += n
 
 			res, err = s.execHook(tx, `UPDATE user_prompts SET project = ? WHERE project = ?`, canonical, src)
@@ -2728,6 +2593,11 @@ func (s *Store) MergeProjects(sources []string, canonical string) (*MergeResult,
 			}
 			n, _ = res.RowsAffected()
 			result.PromptsUpdated += n
+
+			_, err = s.execHook(tx, `UPDATE memory_items SET project_id = ? WHERE project_id = ?`, canonical, src)
+			if err != nil {
+				return fmt.Errorf("merge memory_items %q → %q: %w", src, canonical, err)
+			}
 
 			result.SourcesMerged = append(result.SourcesMerged, src)
 		}
@@ -2752,8 +2622,8 @@ type PruneResult struct {
 }
 
 // PruneProject removes all sessions and prompts for a project that has zero
-// (non-deleted) observations. Returns an error if the project still has
-// observations — the caller must verify first.
+// active memory items. Returns an error if the project still has
+// memory items — the caller must verify first.
 func (s *Store) PruneProject(project string) (*PruneResult, error) {
 	if project == "" {
 		return nil, fmt.Errorf("project name must not be empty")
@@ -3346,7 +3216,7 @@ type PassiveCaptureParams struct {
 // PassiveCaptureResult holds the output of passive memory capture.
 type PassiveCaptureResult struct {
 	Extracted  int `json:"extracted"`  // Total learnings found in text
-	Saved      int `json:"saved"`      // New observations created
+	Saved      int `json:"saved"`      // New memories created
 	Duplicates int `json:"duplicates"` // Skipped because already existed
 }
 
@@ -3484,4 +3354,14 @@ func ClassifyTool(toolName string) string {
 // Now returns the current time formatted for SQLite.
 func Now() string {
 	return time.Now().UTC().Format("2006-01-02 15:04:05")
+}
+
+// SchemaVersion returns the current schema version recorded in schema_version.
+// Returns 0 if the schema_version table is empty (fresh DB with no migrations applied).
+func (s *Store) SchemaVersion() int {
+	var v int
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&v); err != nil {
+		return 0
+	}
+	return v
 }
