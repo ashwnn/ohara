@@ -56,8 +56,7 @@ Next session starts → Previous session context is injected automatically
 | `mem_context` | Get recent context from previous sessions |
 | `mem_prime` | Build structured prime context with Knowledge vs Episode tier separation |
 | `mem_pack` | Build a token-budgeted context pack from memory items |
-| `mem_timeline` | Chronological context around a specific observation |
-| `mem_get_observation` | Get full content of a specific memory |
+| `mem_timeline` | Chronological context around a specific memory |
 | `mem_link` | Create a typed relation between two memories |
 | `mem_unlink` | Remove a relation |
 | `mem_related` | Traverse relations from a given memory |
@@ -86,8 +85,7 @@ Token-efficient memory retrieval — don't dump everything, drill in:
 
 ```
 1. mem_search "auth middleware"     → compact results with IDs (~100 tokens each)
-2. mem_timeline observation_id=42  → what happened before/after in that session
-3. mem_get_observation id=42       → full untruncated content
+2. mem_timeline memory_id=42        → what happened before/after in that session
 ```
 
 ---
@@ -101,7 +99,7 @@ Token-efficient memory retrieval — don't dump everything, drill in:
 - Topic upserts increment `revision_count`
 - `mem_delete` uses soft-delete by default
 - `mem_forget` archives with a documented reason and preserves the audit trail
-- Search operations ignore soft-deleted and archived observations
+- Search operations ignore soft-deleted and archived memories
 
 ---
 

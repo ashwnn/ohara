@@ -189,7 +189,7 @@ Ohara uses typed memory kinds, each with different durability and injection prio
 | `pattern` | Recurring solutions and conventions | tactical | always |
 | `bugfix` | Root cause + resolution of bugs | tactical | always |
 | `learned` | Non-obvious discoveries and gotchas | tactical | always |
-| `discovery` | Raw session notes and observations | observational | only with `--include-episodes` |
+| `discovery` | Raw session notes and memories | observational | only with `--include-episodes` |
 
 **Classification tiers** control shelf life and injection priority:
 - **foundational** — never auto-pruned, always included in context injection

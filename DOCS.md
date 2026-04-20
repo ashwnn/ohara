@@ -18,15 +18,13 @@
 ### Tables
 
 - **sessions** — `id` (TEXT PK), `project`, `directory`, `started_at`, `ended_at`, `summary`, `status`
-- **observations** — `id` (INTEGER PK), `session_id` (FK), `type`, `title`, `content`, `tool_name`, `project`, `scope`, `topic_key`, `normalized_hash`, `revision_count`, `duplicate_count`, `last_seen_at`, `created_at`, `updated_at`, `deleted_at`
 - **memory_items** — `id` (INTEGER PK), `project_id`, `actor_id`, `kind`, `scope`, `title`, `body`, `tags`, `source`, `status`, `superseded_by`, `expires_at`, `domain`, `evidence_json`, `applies_to_json`, `related_json`, `classification`, `access_count`, `last_accessed`, `valid_from`, `valid_to`, `superseded_at`, `session_id`, `trust_level`, `ingested_at`, `written_by`, `trigger_condition`, `utility_weight`, `consolidated_from`
 - **memory_relations** — `id` (INTEGER PK), `from_id`, `to_id`, `relation`, `created_at` — typed directional links between memories
 - **memory_outcomes** — `id` (INTEGER PK), `memory_id`, `status`, `notes`, `actor_id`, `ts` — success/failure tracking per memory
 - **memory_usage** — `id` (INTEGER PK), `memory_id`, `event`, `session_id`, `ts` — explicit usage events
-- **obs_embeddings** — `obs_id` (PK), `embedding` (BLOB), `model`, `created_at` — float32 embedding vectors
-- **entities** + **obs_entities** — entity graph for cross-memory entity queries
-- **audit_log** — `id` (INTEGER PK), `obs_id`, `action`, `actor_id`, `session_id`, `trust_level`, `ts`, `snapshot` — append-only
-- **observations_fts** — FTS5 virtual table synced via triggers
+- **memory_embeddings** — `memory_id` (PK), `embedding` (BLOB), `model`, `created_at` — float32 embedding vectors
+- **entities** + **memory_entities** — entity graph for cross-memory entity queries
+- **audit_log** — `id` (INTEGER PK), `memory_id`, `action`, `actor_id`, `session_id`, `trust_level`, `ts`, `snapshot` — append-only
 - **user_prompts** + **prompts_fts** — user prompt storage with FTS5
 
 ### SQLite Configuration
@@ -53,21 +51,13 @@ All endpoints return JSON. Server listens on `127.0.0.1:7331`.
 - `POST /sessions/{id}/end` — End session with summary
 - `GET /sessions/recent` — Recent sessions
 
-### Observations
-
-- `POST /observations` — Add observation
-- `GET /observations/recent` — Recent observations
-- `GET /observations/{id}` — Get by ID
-- `PATCH /observations/{id}` — Update fields
-- `DELETE /observations/{id}` — Delete (soft or hard)
-
 ### Search
 
 - `GET /search` — FTS5 search with type/project/scope/limit filters
 
 ### Timeline
 
-- `GET /timeline` — Chronological context around an observation
+- `GET /timeline` — Chronological context around a memory
 
 ### Prompts
 
@@ -81,7 +71,7 @@ All endpoints return JSON. Server listens on `127.0.0.1:7331`.
 
 ### Passive Capture
 
-- `POST /observations/passive` — Extract learnings from text
+- `POST /mem/capture_passive` — Extract learnings from text
 
 ### Export / Import
 
@@ -115,8 +105,7 @@ All endpoints return JSON. Server listens on `127.0.0.1:7331`.
 | `mem_context` | Recent session context |
 | `mem_prime` | Structured prime context with Knowledge vs Episode tier separation |
 | `mem_pack` | Token-budgeted context pack |
-| `mem_timeline` | Chronological context around an observation |
-| `mem_get_observation` | Full untruncated content by ID |
+| `mem_timeline` | Chronological context around a memory |
 | `mem_graph_context` | Entity-centric graph traversal |
 
 ### Relations
@@ -192,7 +181,6 @@ Format:
 
 1. `mem_context` — check recent session history
 2. `mem_search` — FTS5 + optional hybrid search with domain filters
-3. `mem_get_observation` — full content of a specific result
 
 ### SESSION CLOSE
 
@@ -229,10 +217,9 @@ Token-budgeted markdown packs for direct system prompt injection. Two-tier model
 
 ### Progressive Disclosure
 
-Three-layer retrieval pattern:
+Two-layer retrieval pattern:
 1. `mem_search` — compact results with IDs
 2. `mem_timeline` — chronological neighborhood
-3. `mem_get_observation` — full content
 
 ### Relation Graph
 
@@ -256,7 +243,7 @@ Regex-based pre-write redaction strips GitHub tokens, OpenAI keys, and other cre
 
 ### Export / Import
 
-JSON dump and restore of all sessions, observations, and prompts.
+JSON dump and restore of all sessions, memories, and prompts.
 
 ### No Raw Auto-Capture
 
