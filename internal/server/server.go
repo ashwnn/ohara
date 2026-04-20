@@ -625,17 +625,16 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[ohara] migrated project %q → %q (obs: %d, sessions: %d, prompts: %d)",
+	log.Printf("[ohara] migrated project %q → %q (sessions: %d, prompts: %d)",
 		body.OldProject, body.NewProject,
-		result.ObservationsUpdated, result.SessionsUpdated, result.PromptsUpdated)
+		result.SessionsUpdated, result.PromptsUpdated)
 
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"status":       "migrated",
-		"old_project":  body.OldProject,
-		"new_project":  body.NewProject,
-		"observations": result.ObservationsUpdated,
-		"sessions":     result.SessionsUpdated,
-		"prompts":      result.PromptsUpdated,
+		"status":      "migrated",
+		"old_project": body.OldProject,
+		"new_project": body.NewProject,
+		"sessions":    result.SessionsUpdated,
+		"prompts":     result.PromptsUpdated,
 	})
 }
 

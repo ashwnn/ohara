@@ -115,19 +115,19 @@ func TestAdditionalServerErrorBranches(t *testing.T) {
 		t.Fatalf("expected session create 201, got %d", createRec.Code)
 	}
 
-	getBadIDReq := httptest.NewRequest(http.MethodGet, "/observations/not-a-number", nil)
+	getBadIDReq := httptest.NewRequest(http.MethodGet, "/memories/not-a-number", nil)
 	getBadIDRec := httptest.NewRecorder()
 	h.ServeHTTP(getBadIDRec, getBadIDReq)
 	if getBadIDRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid observation id, got %d", getBadIDRec.Code)
+		t.Fatalf("expected 400 for invalid memory id, got %d", getBadIDRec.Code)
 	}
 
-	updateNotFoundReq := httptest.NewRequest(http.MethodPatch, "/observations/99999", strings.NewReader(`{"title":"updated"}`))
+	updateNotFoundReq := httptest.NewRequest(http.MethodPatch, "/memories/99999", strings.NewReader(`{"title":"updated"}`))
 	updateNotFoundReq.Header.Set("Content-Type", "application/json")
 	updateNotFoundRec := httptest.NewRecorder()
 	h.ServeHTTP(updateNotFoundRec, updateNotFoundReq)
 	if updateNotFoundRec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 updating missing observation, got %d", updateNotFoundRec.Code)
+		t.Fatalf("expected 404 updating missing memory, got %d", updateNotFoundRec.Code)
 	}
 
 	promptBadJSONReq := httptest.NewRequest(http.MethodPost, "/prompts", strings.NewReader("{"))
@@ -302,18 +302,18 @@ func TestOnWriteCalledAfterSuccessfulWrites(t *testing.T) {
 		t.Fatalf("expected 2 onWrite after session end, got %d", writeCount.Load())
 	}
 
-	// Add observation → should trigger onWrite.
-	obsBody := `{"session_id":"s-test","type":"test","title":"Test","content":"test content"}`
-	obsReq := httptest.NewRequest(http.MethodPost, "/observations",
-		strings.NewReader(obsBody))
-	obsReq.Header.Set("Content-Type", "application/json")
-	obsRec := httptest.NewRecorder()
-	h.ServeHTTP(obsRec, obsReq)
-	if obsRec.Code != http.StatusCreated {
-		t.Fatalf("add observation: expected 201, got %d", obsRec.Code)
+	// Add memory → should trigger onWrite.
+	memBody := `{"project_id":"ohara","kind":"decision","title":"Test","body":"test content","scope":"project","session_id":"s-test","actor_id":"test"}`
+	memReq := httptest.NewRequest(http.MethodPost, "/memories",
+		strings.NewReader(memBody))
+	memReq.Header.Set("Content-Type", "application/json")
+	memRec := httptest.NewRecorder()
+	h.ServeHTTP(memRec, memReq)
+	if memRec.Code != http.StatusCreated {
+		t.Fatalf("add memory: expected 201, got %d", memRec.Code)
 	}
 	if writeCount.Load() != 3 {
-		t.Fatalf("expected 3 onWrite after add observation, got %d", writeCount.Load())
+		t.Fatalf("expected 3 onWrite after add memory, got %d", writeCount.Load())
 	}
 
 	// Add prompt → should trigger onWrite.
@@ -374,8 +374,8 @@ func TestOnWriteNotCalledOnFailedWrites(t *testing.T) {
 		writeCount.Add(1)
 	})
 
-	// POST /observations with bad JSON → should NOT trigger onWrite.
-	badReq := httptest.NewRequest(http.MethodPost, "/observations",
+	// POST /memories with bad JSON → should NOT trigger onWrite.
+	badReq := httptest.NewRequest(http.MethodPost, "/memories",
 		strings.NewReader(`{invalid`))
 	badReq.Header.Set("Content-Type", "application/json")
 	badRec := httptest.NewRecorder()
@@ -384,9 +384,9 @@ func TestOnWriteNotCalledOnFailedWrites(t *testing.T) {
 		t.Fatalf("expected 400 for bad json, got %d", badRec.Code)
 	}
 
-	// POST /observations with missing required fields → should NOT trigger onWrite.
-	missingReq := httptest.NewRequest(http.MethodPost, "/observations",
-		strings.NewReader(`{"session_id":"s-test"}`))
+	// POST /memories with missing required fields → should NOT trigger onWrite.
+	missingReq := httptest.NewRequest(http.MethodPost, "/memories",
+		strings.NewReader(`{"project_id":"ohara"}`))
 	missingReq.Header.Set("Content-Type", "application/json")
 	missingRec := httptest.NewRecorder()
 	h.ServeHTTP(missingRec, missingReq)
@@ -455,35 +455,6 @@ func TestHandleDeleteSession_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
-	}
-}
-
-func TestHandleDeleteSession_HasObservations(t *testing.T) {
-	st := newServerTestStore(t)
-	srv := New(st, 0)
-	h := srv.Handler()
-
-	// Create session + add an observation via the store directly.
-	if err := st.CreateSession("sess-obs", "proj", "/tmp"); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := st.AddObservation(store.AddObservationParams{
-		SessionID: "sess-obs",
-		Type:      "decision",
-		Title:     "some obs",
-		Content:   "content",
-		Project:   "proj",
-		Scope:     "project",
-	}); err != nil {
-		t.Fatalf("add observation: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-obs", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when session has observations, got %d", rec.Code)
 	}
 }
 
