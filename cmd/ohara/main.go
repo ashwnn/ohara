@@ -410,7 +410,7 @@ func realCmdCheck(cfg store.Config) {
 		fatal("integrity check: " + err.Error())
 	}
 	if ok {
-		fmt.Println("integrity: ok")
+		fmt.Printf("integrity: ok (schema: v%d)\n", s.SchemaVersion())
 	} else {
 		fmt.Printf("integrity: WARN — %s\n", result)
 		exitFunc(1)
@@ -766,7 +766,7 @@ func realCmdSave(cfg store.Config) {
 	}
 
 	if params.Kind == "" {
-		params.Kind = "note"
+		params.Kind = store.MemoryKindDiscovery
 	}
 	if params.ProjectID == "" {
 		params.ProjectID = os.Getenv("OHARA_PROJECT")
@@ -1240,6 +1240,7 @@ func realCmdDoctor(cfg store.Config) {
 	}
 
 	fmt.Println()
+	fmt.Printf("[INFO] schema: v%d\n", s.SchemaVersion())
 
 	fmt.Println("Conflict Resolution Guide (mem_resolve_conflict):")
 	fmt.Println("  add         — Both memories are correct, describing different things")

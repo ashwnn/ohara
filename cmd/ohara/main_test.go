@@ -93,7 +93,7 @@ func captureOutput(t *testing.T, fn func()) (stdout string, stderr string) {
 	return string(outBytes), string(errBytes)
 }
 
-func mustSeedObservation(t *testing.T, cfg store.Config, sessionID, project, typ, title, content, scope string) int64 {
+func mustSeedMemory(t *testing.T, cfg store.Config, sessionID, project, kind, title, body, scope string) int64 {
 	t.Helper()
 
 	s, err := store.New(cfg)
@@ -106,16 +106,17 @@ func mustSeedObservation(t *testing.T, cfg store.Config, sessionID, project, typ
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	id, err := s.AddObservation(store.AddObservationParams{
+	id, err := s.AddMemory(store.AddMemoryParams{
 		SessionID: sessionID,
-		Type:      typ,
+		Kind:      kind,
 		Title:     title,
-		Content:   content,
-		Project:   project,
+		Body:      body,
+		ProjectID: project,
 		Scope:     scope,
+		Source:    "cli",
 	})
 	if err != nil {
-		t.Fatalf("AddObservation: %v", err)
+		t.Fatalf("AddMemory: %v", err)
 	}
 
 	return id
@@ -202,14 +203,13 @@ func TestCmdSaveAndSearch(t *testing.T) {
 		"--type", "bugfix",
 		"--project", "alpha",
 		"--scope", "personal",
-		"--topic", "auth/token",
 	)
 
 	stdout, stderr := captureOutput(t, func() { cmdSave(cfg) })
 	if stderr != "" {
 		t.Fatalf("expected no stderr, got: %q", stderr)
 	}
-	if !strings.Contains(stdout, "Memory saved:") || !strings.Contains(stdout, "my-title") {
+	if !strings.Contains(stdout, "Memory saved (#") || !strings.Contains(stdout, "my-title") {
 		t.Fatalf("unexpected save output: %q", stdout)
 	}
 
@@ -234,19 +234,19 @@ func TestCmdSaveAndSearch(t *testing.T) {
 
 func TestCmdTimeline(t *testing.T) {
 	cfg := testConfig(t)
-	mustSeedObservation(t, cfg, "s-1", "proj", "note", "first", "first content", "project")
-	focusID := mustSeedObservation(t, cfg, "s-1", "proj", "note", "focus", "focus content", "project")
-	mustSeedObservation(t, cfg, "s-1", "proj", "note", "third", "third content", "project")
+	mustSeedMemory(t, cfg, "s-1", "proj", "discovery", "first", "first content", "project")
+	focusID := mustSeedMemory(t, cfg, "s-1", "proj", "discovery", "focus", "focus content", "project")
+	mustSeedMemory(t, cfg, "s-1", "proj", "discovery", "third", "third content", "project")
 
-	withArgs(t, "ohara", "timeline", strconv.FormatInt(focusID, 10), "--before", "1", "--after", "1")
+	withArgs(t, "ohara", "timeline", strconv.FormatInt(focusID, 10), "--count", "1")
 	stdout, stderr := captureOutput(t, func() { cmdTimeline(cfg) })
 	if stderr != "" {
 		t.Fatalf("expected no stderr, got: %q", stderr)
 	}
-	if !strings.Contains(stdout, "Session:") || !strings.Contains(stdout, ">>> #"+strconv.FormatInt(focusID, 10)) {
-		t.Fatalf("timeline output missing expected focus/session info: %q", stdout)
+	if !strings.Contains(stdout, "Memory #"+strconv.FormatInt(focusID, 10)) {
+		t.Fatalf("timeline output missing expected memory anchor: %q", stdout)
 	}
-	if !strings.Contains(stdout, "Before") || !strings.Contains(stdout, "After") {
+	if !strings.Contains(stdout, "─── Before ───") || !strings.Contains(stdout, "─── After ───") {
 		t.Fatalf("timeline output missing before/after sections: %q", stdout)
 	}
 }
@@ -263,7 +263,7 @@ func TestCmdContextAndStats(t *testing.T) {
 		t.Fatalf("unexpected empty context output: %q", emptyCtxOut)
 	}
 
-	mustSeedObservation(t, cfg, "s-ctx", "project-x", "decision", "title", "content", "project")
+	mustSeedMemory(t, cfg, "s-ctx", "project-x", "decision", "title", "content", "project")
 
 	s, err := store.New(cfg)
 	if err != nil {
@@ -280,7 +280,7 @@ func TestCmdContextAndStats(t *testing.T) {
 	if ctxErr != "" {
 		t.Fatalf("expected no stderr for populated context, got: %q", ctxErr)
 	}
-	if !strings.Contains(ctxOut, "## Memory from Previous Sessions") || !strings.Contains(ctxOut, "Recent Observations") {
+	if !strings.Contains(ctxOut, "## Memory from Previous Sessions") || !strings.Contains(ctxOut, "Recent Memories") {
 		t.Fatalf("unexpected populated context output: %q", ctxOut)
 	}
 
@@ -298,7 +298,18 @@ func TestCmdExportAndImport(t *testing.T) {
 	sourceCfg := testConfig(t)
 	targetCfg := testConfig(t)
 
-	mustSeedObservation(t, sourceCfg, "s-exp", "proj-exp", "pattern", "exported", "export me", "project")
+	// ExportData contains Sessions + Prompts (not memories)
+	srcStore, err := store.New(sourceCfg)
+	if err != nil {
+		t.Fatalf("store.New source: %v", err)
+	}
+	if err := srcStore.CreateSession("s-exp", "proj-exp", "/tmp"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := srcStore.AddPrompt(store.AddPromptParams{SessionID: "s-exp", Content: "export me", Project: "proj-exp"}); err != nil {
+		t.Fatalf("AddPrompt: %v", err)
+	}
+	srcStore.Close()
 
 	exportPath := filepath.Join(t.TempDir(), "memories.json")
 
@@ -326,12 +337,22 @@ func TestCmdExportAndImport(t *testing.T) {
 	}
 	defer s.Close()
 
-	results, err := s.Search("export", store.SearchOptions{Limit: 10, Project: "proj-exp"})
+	// Verify session was imported
+	session, err := s.GetSession("s-exp")
 	if err != nil {
-		t.Fatalf("Search after import: %v", err)
+		t.Fatalf("GetSession after import: %v", err)
 	}
-	if len(results) == 0 {
-		t.Fatalf("expected imported data to be searchable")
+	if session == nil {
+		t.Fatalf("expected imported session to exist")
+	}
+
+	// Verify prompt was imported
+	prompts, err := s.SearchPrompts("export", "proj-exp", 10)
+	if err != nil {
+		t.Fatalf("SearchPrompts after import: %v", err)
+	}
+	if len(prompts) == 0 {
+		t.Fatalf("expected imported prompt to be searchable")
 	}
 }
 
@@ -343,7 +364,7 @@ func TestCmdSyncStatusExportAndImport(t *testing.T) {
 	exportCfg := testConfig(t)
 	importCfg := testConfig(t)
 
-	mustSeedObservation(t, exportCfg, "s-sync", "sync-project", "note", "sync title", "sync content", "project")
+	mustSeedMemory(t, exportCfg, "s-sync", "sync-project", "discovery", "sync title", "sync content", "project")
 
 	withArgs(t, "ohara", "sync", "--status")
 	statusOut, statusErr := captureOutput(t, func() { cmdSync(exportCfg) })
@@ -548,7 +569,7 @@ func TestMainExitHelper(t *testing.T) {
 
 func TestCmdSearchLocalMode(t *testing.T) {
 	cfg := testConfig(t)
-	mustSeedObservation(t, cfg, "s-local", "proj-local", "note", "local-result", "local content for search", "project")
+	mustSeedMemory(t, cfg, "s-local", "proj-local", "discovery", "local-result", "local content for search", "project")
 
 	withArgs(t, "ohara", "search", "local", "--project", "proj-local")
 	stdout, stderr := captureOutput(t, func() { cmdSearch(cfg) })
@@ -578,10 +599,10 @@ func TestCmdProjectsListEmpty(t *testing.T) {
 func TestCmdProjectsList(t *testing.T) {
 	cfg := testConfig(t)
 
-	// Seed observations for two projects
-	mustSeedObservation(t, cfg, "s-alpha", "alpha", "note", "alpha-note", "alpha content", "project")
-	mustSeedObservation(t, cfg, "s-alpha", "alpha", "bugfix", "alpha-bug", "alpha bug", "project")
-	mustSeedObservation(t, cfg, "s-beta", "beta", "decision", "beta-note", "beta content", "project")
+	// Seed memories for two projects
+	mustSeedMemory(t, cfg, "s-alpha", "alpha", "discovery", "alpha-note", "alpha content", "project")
+	mustSeedMemory(t, cfg, "s-alpha", "alpha", "bugfix", "alpha-bug", "alpha bug", "project")
+	mustSeedMemory(t, cfg, "s-beta", "beta", "decision", "beta-note", "beta content", "project")
 
 	withArgs(t, "ohara", "projects", "list")
 	stdout, stderr := captureOutput(t, func() { cmdProjectsList(cfg) })
@@ -594,11 +615,11 @@ func TestCmdProjectsList(t *testing.T) {
 	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, "beta") {
 		t.Fatalf("expected project names in output, got: %q", stdout)
 	}
-	// alpha has 2 observations, beta has 1 — alpha should appear first
+	// alpha has 2 memories, beta has 1 — alpha should appear first
 	alphaIdx := strings.Index(stdout, "alpha")
 	betaIdx := strings.Index(stdout, "beta")
 	if alphaIdx > betaIdx {
-		t.Fatalf("expected alpha (more obs) before beta, got: %q", stdout)
+		t.Fatalf("expected alpha (more memories) before beta, got: %q", stdout)
 	}
 }
 
@@ -622,7 +643,7 @@ func TestCmdProjectsConsolidateNoSimilar(t *testing.T) {
 	cfg := testConfig(t)
 
 	// Seed a single unique project
-	mustSeedObservation(t, cfg, "s-unique", "unique-project", "note", "unique note", "content", "project")
+	mustSeedMemory(t, cfg, "s-unique", "unique-project", "discovery", "unique note", "content", "project")
 
 	// Set cwd to a temp dir named "unique-project" with no git
 	workDir := filepath.Join(t.TempDir(), "unique-project")
@@ -650,8 +671,8 @@ func TestCmdProjectsConsolidateDryRun(t *testing.T) {
 	cfg := testConfig(t)
 
 	// Seed a canonical and a similar variant (substring match, distinct after normalize)
-	mustSeedObservation(t, cfg, "s-eng", "ohara", "note", "eng note", "content", "project")
-	mustSeedObservation(t, cfg, "s-engm", "ohara-memory", "note", "engm note", "content", "project")
+	mustSeedMemory(t, cfg, "s-eng", "ohara", "discovery", "eng note", "content", "project")
+	mustSeedMemory(t, cfg, "s-engm", "ohara-memory", "discovery", "engm note", "content", "project")
 
 	old := detectProject
 	detectProject = func(string) string { return "ohara" }
@@ -685,8 +706,8 @@ func TestCmdProjectsConsolidateSingleProject(t *testing.T) {
 	cfg := testConfig(t)
 
 	// Seed canonical and a similar variant (substring match, distinct after normalize)
-	mustSeedObservation(t, cfg, "s-eng", "ohara", "note", "eng note", "content", "project")
-	mustSeedObservation(t, cfg, "s-engm", "ohara-memory", "note", "engm note", "content", "project")
+	mustSeedMemory(t, cfg, "s-eng", "ohara", "discovery", "eng note", "content", "project")
+	mustSeedMemory(t, cfg, "s-engm", "ohara-memory", "discovery", "engm note", "content", "project")
 
 	old := detectProject
 	detectProject = func(string) string { return "ohara" }
@@ -730,8 +751,8 @@ func TestCmdProjectsConsolidateAllDryRun(t *testing.T) {
 	cfg := testConfig(t)
 
 	// Seed similar projects (substring match, stays distinct after normalize)
-	mustSeedObservation(t, cfg, "s-eng", "ohara", "note", "eng note", "content", "project")
-	mustSeedObservation(t, cfg, "s-engm", "ohara-memory", "note", "engm note", "content", "project")
+	mustSeedMemory(t, cfg, "s-eng", "ohara", "discovery", "eng note", "content", "project")
+	mustSeedMemory(t, cfg, "s-engm", "ohara-memory", "discovery", "engm note", "content", "project")
 
 	withArgs(t, "ohara", "projects", "consolidate", "--all", "--dry-run")
 	stdout, stderr := captureOutput(t, func() { cmdProjectsConsolidate(cfg) })
@@ -747,9 +768,9 @@ func TestCmdProjectsAllNoGroups(t *testing.T) {
 	cfg := testConfig(t)
 
 	// Seed completely unrelated projects
-	mustSeedObservation(t, cfg, "s-foo", "fooproject", "note", "foo", "content", "project")
-	mustSeedObservation(t, cfg, "s-bar", "barproject", "note", "bar", "content", "project")
-	mustSeedObservation(t, cfg, "s-qux", "quxproject", "note", "qux", "content", "project")
+	mustSeedMemory(t, cfg, "s-foo", "fooproject", "discovery", "foo", "content", "project")
+	mustSeedMemory(t, cfg, "s-bar", "barproject", "discovery", "bar", "content", "project")
+	mustSeedMemory(t, cfg, "s-qux", "quxproject", "discovery", "qux", "content", "project")
 
 	withArgs(t, "ohara", "projects", "consolidate", "--all")
 	stdout, stderr := captureOutput(t, func() { cmdProjectsConsolidate(cfg) })
