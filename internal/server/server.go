@@ -225,6 +225,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /prompts/search", s.handleSearchPrompts)
 	s.mux.HandleFunc("DELETE /prompts/{id}", s.handleDeletePrompt)
 
+	// Passive capture
+	s.mux.HandleFunc("POST /capture/passive", s.handlePassiveCapture)
+
 	// Context
 	s.mux.HandleFunc("GET /context", s.handleContext)
 
@@ -241,8 +244,7 @@ func (s *Server) routes() {
 	// Sync status (degraded-state visibility for autosync)
 	s.mux.HandleFunc("GET /sync/status", s.handleSyncStatus)
 
-	// ── Memory Items (Ohara v2 spec) ─────────────────────────────────────────
-	// These are the spec-aligned aliases for the typed memory system.
+	// Memory Items (Ohara v2 spec) — spec-aligned aliases for the typed memory system.
 	s.mux.HandleFunc("POST /memories", s.handleAddMemory)
 	s.mux.HandleFunc("GET /memories", s.handleGetMemories)
 	s.mux.HandleFunc("GET /memories/search", s.handleSearchMemories)
@@ -255,8 +257,6 @@ func (s *Server) routes() {
 	// Pack (context pack assembly)
 	s.mux.HandleFunc("POST /pack", s.handlePack)
 }
-
-// ─── Handlers ────────────────────────────────────────────────────────────────
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	dbSize := int64(0)
@@ -405,8 +405,6 @@ func (s *Server) handleGetSessionContext(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, map[string]string{"context": prevSummary})
 }
 
-// ─── Prompts ─────────────────────────────────────────────────────────────────
-
 func (s *Server) handleAddPrompt(w http.ResponseWriter, r *http.Request) {
 	var body store.AddPromptParams
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -461,6 +459,28 @@ func (s *Server) handleSearchPrompts(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, prompts)
 }
 
+func (s *Server) handlePassiveCapture(w http.ResponseWriter, r *http.Request) {
+	var body store.PassiveCaptureParams
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.SessionID == "" || body.Content == "" {
+		jsonError(w, http.StatusBadRequest, "session_id and content are required")
+		return
+	}
+
+	result, err := s.store.PassiveCapture(body)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if result.Saved > 0 {
+		s.notifyWrite()
+	}
+	jsonResponse(w, http.StatusOK, result)
+}
+
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -505,8 +525,6 @@ func (s *Server) handleDeletePrompt(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
 }
 
-// ─── Export / Import ─────────────────────────────────────────────────────────
-
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	data, err := s.store.Export()
 	if err != nil {
@@ -545,8 +563,6 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, result)
 }
 
-// ─── Context ─────────────────────────────────────────────────────────────────
-
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	scope := r.URL.Query().Get("scope")
@@ -570,8 +586,6 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, stats)
 }
 
-// ─── Sync Status ─────────────────────────────────────────────────────────────
-
 func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	if s.syncStatus == nil {
 		jsonResponse(w, http.StatusOK, map[string]any{
@@ -591,8 +605,6 @@ func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 		"last_sync_at":         status.LastSyncAt,
 	})
 }
-
-// ─── Project Migration ───────────────────────────────────────────────────────
 
 func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10) // 1 KB max
@@ -637,8 +649,6 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		"prompts":     result.PromptsUpdated,
 	})
 }
-
-// ─── Memory Items (Ohara v2 spec) ───────────────────────────────────────────
 
 func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	var body store.AddMemoryParams
@@ -896,8 +906,6 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, http.StatusOK, result)
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func jsonResponse(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")

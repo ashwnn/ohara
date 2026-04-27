@@ -23,6 +23,7 @@ const OHARA_URL = `http://127.0.0.1:${OHARA_PORT}`
 const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
 const OHARA_MEMORY_INJECTION = (process.env.OHARA_MEMORY_INJECTION ?? "1") !== "0"
 const OHARA_PASSIVE_CAPTURE = /^(1|true|yes|on)$/i.test(process.env.OHARA_PASSIVE_CAPTURE ?? "")
+const OHARA_DEBUG = /^(1|true|yes|on)$/i.test(process.env.OHARA_DEBUG ?? "")
 const OHARA_MEMORY_AGENTS = new Set(
   (process.env.OHARA_MEMORY_AGENTS ?? "deep,security-auditor,security-recon,researcher,planner")
     .split(",")
@@ -54,6 +55,12 @@ function shouldInjectMemory(input: unknown): boolean {
   const agent = parseAgentName(input)
   if (!agent) return false
   return OHARA_MEMORY_AGENTS.has(agent)
+}
+
+function debug(message: string, err?: unknown): void {
+  if (!OHARA_DEBUG) return
+  const suffix = err instanceof Error ? `: ${err.message}` : err ? `: ${String(err)}` : ""
+  console.error(`[ohara] ${message}${suffix}`)
 }
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
@@ -150,9 +157,13 @@ async function oharaFetch(
       headers: opts.body ? { "Content-Type": "application/json" } : undefined,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     })
+    if (!res.ok) {
+      debug(`${opts.method ?? "GET"} ${path} failed with HTTP ${res.status}`)
+      return null
+    }
     return await res.json()
-  } catch {
-    // Ohara server not running — silently fail
+  } catch (err) {
+    debug(`${opts.method ?? "GET"} ${path} failed`, err)
     return null
   }
 }
@@ -163,7 +174,8 @@ async function isOharaRunning(): Promise<boolean> {
       signal: AbortSignal.timeout(500),
     })
     return res.ok
-  } catch {
+  } catch (err) {
+    debug("health check failed", err)
     return false
   }
 }
@@ -181,7 +193,9 @@ function extractProjectName(directory: string): string {
         if (name) return name
       }
     }
-  } catch {}
+  } catch (err) {
+    debug("git remote project detection failed", err)
+  }
 
   // Fallback: git root directory name (works in worktrees)
   try {
@@ -190,7 +204,9 @@ function extractProjectName(directory: string): string {
       const root = result.stdout?.toString().trim()
       if (root) return root.split("/").pop() ?? "unknown"
     }
-  } catch {}
+  } catch (err) {
+    debug("git root project detection failed", err)
+  }
 
   // Final fallback: cwd basename
   return directory.split("/").pop() ?? "unknown"
@@ -260,8 +276,8 @@ export const Ohara: Plugin = async (ctx) => {
         stdin: "ignore",
       })
       await new Promise((r) => setTimeout(r, 500))
-    } catch {
-      // Binary not found or can't start — plugin will silently no-op
+    } catch (err) {
+      debug(`failed to start ${OHARA_BIN}`, err)
     }
   }
 
@@ -289,8 +305,8 @@ export const Ohara: Plugin = async (ctx) => {
         stdin: "ignore",
       })
     }
-  } catch {
-    // Manifest doesn't exist or binary not found — silently skip
+  } catch (err) {
+    debug("sync auto-import skipped", err)
   }
 
   return {
@@ -398,7 +414,7 @@ export const Ohara: Plugin = async (ctx) => {
       if (OHARA_PASSIVE_CAPTURE && input.tool === "Task" && output && sessionId) {
         const text = typeof output === "string" ? output : JSON.stringify(output)
         if (text.length > 50) {
-          await oharaFetch("/observations/passive", {
+          await oharaFetch("/capture/passive", {
             method: "POST",
             body: {
               session_id: sessionId,

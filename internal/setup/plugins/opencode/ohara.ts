@@ -398,7 +398,7 @@ export const Ohara: Plugin = async (ctx) => {
       if (OHARA_PASSIVE_CAPTURE && input.tool === "Task" && output && sessionId) {
         const text = typeof output === "string" ? output : JSON.stringify(output)
         if (text.length > 50) {
-          await oharaFetch("/observations/passive", {
+          await oharaFetch("/capture/passive", {
             method: "POST",
             body: {
               session_id: sessionId,

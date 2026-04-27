@@ -164,6 +164,70 @@ func TestAdditionalServerErrorBranches(t *testing.T) {
 	}
 }
 
+func TestPassiveCaptureEndpoint(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	h := srv.Handler()
+
+	createReq := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(`{"id":"s-passive","project":"ohara"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected session create 201, got %d", createRec.Code)
+	}
+
+	body := `{
+		"session_id":"s-passive",
+		"project":"ohara",
+		"source":"task-complete",
+		"content":"## Key Learnings\n- Passive capture endpoint must save structured learnings from plugin output"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/capture/passive", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected passive capture 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp store.PassiveCaptureResult
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Extracted != 1 || resp.Saved != 1 || resp.Duplicates != 0 {
+		t.Fatalf("unexpected passive capture result: %+v", resp)
+	}
+
+	results, err := st.SearchMemories("passive capture endpoint", "ohara", "", "", "", store.MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("search saved passive memory: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one saved passive memory, got %d", len(results))
+	}
+}
+
+func TestPassiveCaptureEndpointValidation(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+
+	badJSONReq := httptest.NewRequest(http.MethodPost, "/capture/passive", strings.NewReader("{"))
+	badJSONReq.Header.Set("Content-Type", "application/json")
+	badJSONRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badJSONRec, badJSONReq)
+	if badJSONRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid json, got %d", badJSONRec.Code)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodPost, "/capture/passive", strings.NewReader(`{"session_id":"s-passive"}`))
+	missingReq.Header.Set("Content-Type", "application/json")
+	missingRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing content, got %d", missingRec.Code)
+	}
+}
+
 // ─── Sync Status Tests ───────────────────────────────────────────────────────
 
 // stubSyncStatusProvider is a fake SyncStatusProvider for tests.
