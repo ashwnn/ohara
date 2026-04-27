@@ -4,6 +4,8 @@
   <em>Persistent memory with typed retrieval, conflict detection, and context injection for AI coding agents</em>
 </p>
 
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-blue.svg)](LICENSE)
+
 ---
 
 > **Ohara** is a fork of [**Engram**](https://github.com/Gentleman-Programming/engram) by [**Gentleman-Programming**](https://github.com/Gentleman-Programming). The core memory system and MCP architecture were built by the Engram authors. This fork adds typed memory, conflict detection, relation graphs, hybrid search, and context injection for multi-project, multi-agent workflows.
@@ -283,10 +285,26 @@ Each feature was motivated by a specific failure mode identified through compara
 - **Git sync** — JSONL mirror for repo-portable project memory with union merge strategy
 - **Schema validation and health checks** — `ohara validate` for CI, `ohara doctor --fix` for periodic maintenance
 
-## Fork Status
+## Production Ready
 
-Personal fork of Engram. Source-build only. No TUI or marketplace. Tracks upstream selectively.
+Ohara is production-oriented for local, source-built use:
+
+- Source-build only: no release binaries, package-manager formulas, Docker images, or marketplace packages
+- Local-first by default: HTTP binds to loopback; Unix socket mode is available for single-user setups
+- Operational tooling: `ohara check`, `ohara validate`, `ohara doctor`, `ohara backup`, and `ohara maintain`
+- Recovery path: SQLite snapshots plus import/export and git-sync JSONL mirrors
+
+Start with [Installation](docs/INSTALLATION.md), then use [Operations](docs/OPERATIONS.md) for service, backup, restore, and migration runbooks.
+
+## Community Ready
+
+This is an open project. Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+- **License**: [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution
+- **Source-build only**: build from source, no release artifacts to trust
+- **No TUI**: CLI and MCP are the production interface
+- **Battle tested**: see [Production Notes](docs/PRODUCTION_NOTES.md) for testing evidence and known limitations
 
 ## License
 
-MIT (same as upstream Engram)
+[CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution. Built on the Engram core memory system (MIT).
