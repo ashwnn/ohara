@@ -2,20 +2,20 @@
   ⚠️ READ BEFORE SUBMITTING
   
   Every PR must:
-  1. Link an approved issue (with status:approved label)
+  1. Explain the problem, scope, risk, and verification
   2. Have exactly one type:* label
-  3. Pass all 5 automated checks
+  3. Pass all required automated checks
   
   See CONTRIBUTING.md for the full workflow.
 -->
 
-## 🔗 Linked Issue
+## Problem / Scope
 
-<!-- REQUIRED: Replace the # below with the issue number. -->
-<!-- Automated check: "Check Issue Reference" verifies this exists. -->
-<!-- Automated check: "Check Issue Has status:approved" verifies the issue is approved. -->
+<!-- Required. If an issue exists, link it. If Issues are disabled, describe the proposal here. -->
 
-Closes #
+- Problem or goal:
+- User-visible behavior change:
+- Migration, security, or data-handling risk:
 
 ---
 
@@ -52,7 +52,11 @@ Closes #
 <!-- How did you verify this works? -->
 
 - [ ] Unit tests pass locally: `go test ./...`
+- [ ] Race tests pass locally: `go test -race ./...`
 - [ ] E2E tests pass locally: `go test -tags e2e ./internal/server/...`
+- [ ] Build passes locally: `go build -trimpath ./cmd/ohara`
+- [ ] Vet passes locally: `go vet ./...`
+- [ ] Vuln scan passes locally: `govulncheck ./...`
 - [ ] Manually tested the affected functionality
 
 <!-- Describe any manual testing steps: -->
@@ -65,20 +69,26 @@ These run automatically and **all must pass** before merge:
 
 | Check | What it verifies | Status |
 |-------|-----------------|--------|
-| **Check Issue Reference** | PR body contains `Closes #N` / `Fixes #N` / `Resolves #N` | ⏳ |
-| **Check Issue Has status:approved** | Linked issue has `status:approved` label | ⏳ |
 | **Check PR Has type:\* Label** | PR has exactly one `type:*` label | ⏳ |
 | **Unit Tests** | `go test ./...` passes | ⏳ |
+| **Race Tests** | `go test -race ./...` passes | ⏳ |
 | **E2E Tests** | `go test -tags e2e ./internal/server/...` passes | ⏳ |
+| **Build** | `go build -trimpath ./cmd/ohara` passes | ⏳ |
+| **Vet** | `go vet ./...` passes | ⏳ |
+| **Vulnerability Scan** | `govulncheck ./...` passes | ⏳ |
 
 ---
 
 ## ✅ Contributor Checklist
 
-- [ ] I linked an approved issue above (`Closes #N`)
+- [ ] I described the problem, scope, risk, and verification
 - [ ] I added exactly **one** `type:*` label to this PR
 - [ ] I ran unit tests locally: `go test ./...`
+- [ ] I ran race tests locally: `go test -race ./...`
 - [ ] I ran e2e tests locally: `go test -tags e2e ./internal/server/...`
+- [ ] I ran build locally: `go build -trimpath ./cmd/ohara`
+- [ ] I ran vet locally: `go vet ./...`
+- [ ] I ran vuln scan locally: `govulncheck ./...`
 - [ ] Docs updated (if behavior changed)
 - [ ] Commits follow [conventional commits](https://www.conventionalcommits.org/) format
 - [ ] No `Co-Authored-By` trailers in commits

@@ -1,50 +1,43 @@
 # Contributing to Ohara
 
-Thanks for contributing. Ohara enforces a strict **issue-first workflow** — every change starts with an approved issue.
+Thanks for contributing. Ohara is a source-build project. GitHub Issues may be
+disabled, so contribution review is **proposal-first**: describe the problem and
+scope in the PR body before implementation review.
 
 ---
 
 ## Contribution Workflow
 
 ```
-Open Issue → Get status:approved → Open PR → Add type:* label → Review & Merge
+Discuss scope → Open PR with rationale → Add type:* label → Review & Merge
 ```
 
-### Step 1: Open an Issue
+### Step 1: Describe the Change
 
-Use the correct template:
-- **Bug Report** — for bugs
-- **Feature Request** — for new features or improvements
+If Issues are enabled, open an issue first. If Issues are disabled, include this
+in the PR body:
 
-> ⚠️ Blank issues are disabled. You must use a template.
+- Problem or goal
+- User-visible behavior change
+- Files/packages touched
+- Verification commands run
+- Any migration, security, or data-handling risk
 
-Fill in all required fields. Your issue will automatically receive the `status:needs-review` label.
-
-### Step 2: Wait for Approval
-
-A maintainer will review the issue and add the `status:approved` label if it's accepted for implementation.
-
-**Do not open a PR until the issue is approved.** Automated checks will block PRs that reference unapproved issues.
-
-### Step 3: Open a Pull Request
-
-Once the issue is approved:
+### Step 2: Open a Pull Request
 
 1. Fork the repo and create a branch from `main`
-2. Implement your change
-3. Open a PR using the PR template — **link the approved issue** with `Closes #N`
+2. Implement one focused change
+3. Open a PR with the rationale and verification notes
 4. Add exactly **one `type:*` label** to the PR (see label system below)
 
-### Step 4: Automated PR Checks
+### Step 3: Automated PR Checks
 
-Five checks run automatically on every PR:
+CI checks run automatically on every PR:
 
 #### PR Validation
 
 | Check | What it verifies |
 |-------|-----------------|
-| **Check Issue Reference** | PR body contains `Closes #N`, `Fixes #N`, or `Resolves #N` |
-| **Check Issue Has status:approved** | The linked issue has the `status:approved` label |
 | **Check PR Has type:* Label** | PR has exactly one `type:*` label |
 
 #### CI Tests
@@ -52,11 +45,15 @@ Five checks run automatically on every PR:
 | Check | What it runs |
 |-------|-------------|
 | **Unit Tests** | `go test ./...` — all tests except those tagged with `//go:build e2e` |
+| **Race Tests** | `go test -race ./...` |
 | **E2E Tests** | `go test -tags e2e ./internal/server/...` — end-to-end integration tests |
+| **Build** | `go build -trimpath ./cmd/ohara` |
+| **Vet** | `go vet ./...` |
+| **Vulnerability Scan** | `govulncheck ./...` |
 
-All five checks must pass before a PR can be merged.
+All required checks must pass before a PR can be merged.
 
-> **Repo admin note:** Set these as required status checks in branch protection rules for `main`: `Unit Tests`, `E2E Tests`, and `PR Validation`.
+> **Repo admin note:** Set these as required status checks in branch protection rules for `main`: `Unit Tests`, `Race Tests`, `E2E Tests`, `Build`, `Vet`, `Vulnerability Scan`, and `PR Validation`.
 
 ---
 
@@ -77,8 +74,8 @@ All five checks must pass before a PR can be merged.
 
 | Label | Meaning |
 |-------|---------|
-| `status:needs-review` | Awaiting maintainer review (auto-applied to new issues) |
-| `status:approved` | Approved for implementation — PRs can now be opened |
+| `status:needs-review` | Awaiting maintainer review |
+| `status:approved` | Approved for implementation or merge |
 | `status:in-progress` | Actively being worked on — auto-exempt from stale bot |
 | `status:blocked` | Blocked by another issue or external dependency |
 | `status:stale` | No activity for 30 days — auto-applied by stale bot |
@@ -88,7 +85,7 @@ All five checks must pass before a PR can be merged.
 
 `priority:high`, `priority:medium`, `priority:low`
 
-> Issues with `priority:high` and `status:approved` are never auto-closed by the stale bot.
+> If Issues are disabled, use priority/effort labels only on PRs.
 
 ### Effort Labels (set by maintainers, for contributor guidance)
 
@@ -175,10 +172,10 @@ If you haven't received a response within 7 days on a PR or issue, a single ping
 
 ## What Gets Closed Without Merging
 
-- PRs opened without an approved issue
 - PRs that fail CI and aren't updated within 30 days
-- Issues that are vague, a duplicate, or belong in [Discussions](https://github.com/ashwnn/ohara/discussions)
-- Issues with no response to a maintainer question after 14 days
+- PRs without a clear problem statement and verification notes
+- Issues or PRs that are vague, duplicate, or belong in Discussions
+- Issues or PRs with no response to a maintainer question after 14 days
 
 ---
 
