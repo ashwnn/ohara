@@ -400,16 +400,18 @@ func TestCmdMCPAndTUIBranches(t *testing.T) {
 		t.Fatalf("unexpected panic on successful mcp: %v", recovered)
 	}
 
-	runTeaProgram = func(p interface{}) (interface{}, error) { return nil, errors.New("tui failed") }
-	_, tuiErr, recovered := captureOutputAndRecover(t, func() { cmdTUI(cfg) })
-	if _, ok := recovered.(exitCode); !ok || !strings.Contains(tuiErr, "tui failed") {
-		t.Fatalf("expected tui fatal, got panic=%v stderr=%q", recovered, tuiErr)
+	// TUI is always unavailable — realCmdTUI prints then calls exitFunc(1).
+	// We override exitFunc to record the call without exiting, then check stdout.
+	var exitCalled int
+	savedExit := exitFunc
+	exitFunc = func(code int) { exitCalled = code }
+	out, _, _ := captureOutputAndRecover(t, func() { cmdTUI(cfg) })
+	exitFunc = savedExit
+	if exitCalled != 1 {
+		t.Fatalf("expected exitFunc(1), got %d", exitCalled)
 	}
-
-	runTeaProgram = func(p interface{}) (interface{}, error) { return nil, nil }
-	_, _, recovered = captureOutputAndRecover(t, func() { cmdTUI(cfg) })
-	if recovered != nil {
-		t.Fatalf("unexpected panic on successful tui: %v", recovered)
+	if !strings.Contains(out, "TUI is not available") {
+		t.Fatalf("expected TUI unavailable message, got stdout=%q", out)
 	}
 }
 
@@ -656,6 +658,7 @@ func TestCmdExportDefaultAndCmdImportErrors(t *testing.T) {
 
 func TestMainDispatchServeMCPAndTUI(t *testing.T) {
 	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
 
 	t.Setenv("OHARA_DATA_DIR", t.TempDir())
 	withArgs(t, "ohara", "serve", "8088")
@@ -672,7 +675,7 @@ func TestMainDispatchServeMCPAndTUI(t *testing.T) {
 
 	withArgs(t, "ohara", "tui")
 	_, stderr, recovered = captureOutputAndRecover(t, func() { main() })
-	if recovered != nil || stderr != "" {
+	if _, ok := recovered.(exitCode); !ok || stderr != "" {
 		t.Fatalf("tui dispatch failed: panic=%v stderr=%q", recovered, stderr)
 	}
 }
@@ -693,7 +696,7 @@ func TestStoreInitFailurePaths(t *testing.T) {
 	cmds := []func(store.Config){
 		cmdServe,
 		cmdMCP,
-		cmdTUI,
+		// cmdTUI no longer calls storeNew — removed from store init failure test
 		cmdSearch,
 		cmdSave,
 		cmdTimeline,
@@ -707,7 +710,6 @@ func TestStoreInitFailurePaths(t *testing.T) {
 	argsByCmd := [][]string{
 		{"ohara", "serve"},
 		{"ohara", "mcp"},
-		{"ohara", "tui"},
 		{"ohara", "search", "q"},
 		{"ohara", "save", "t", "c"},
 		{"ohara", "timeline", "1"},
