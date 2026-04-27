@@ -17,7 +17,7 @@
 | **Web UI** | None (source-build only, no TUI) | Web viewer on localhost:37777 |
 | **Privacy** | `<private>` tags stripped at 2 layers | `<private>` tags stripped |
 | **Auto-capture** | No. Agent decides what matters | Yes. Captures all tool calls then compresses |
-| **License** | MIT | AGPL-3.0 |
+| **License** | CC BY-NC 4.0 | AGPL-3.0 |
 
 ## The Core Philosophy Difference
 

@@ -24,6 +24,7 @@ Use this skill when:
 2. **Every issue gets `status:needs-review` automatically** on creation
 3. **A maintainer MUST add `status:approved`** before any PR can be opened
 4. **Questions belong in Discussions**, not issues
+5. **If Issues are disabled**, use the PR body for problem statement + scope instead
 
 ---
 
@@ -37,6 +38,8 @@ Use this skill when:
 5. Submit → issue gets status:needs-review automatically
 6. Wait for maintainer to add status:approved
 7. Only then open a PR linking this issue
+
+[If Issues are disabled → skip steps 1-7; instead include problem statement + scope directly in PR body]
 ```
 
 ---
@@ -195,6 +198,8 @@ Using \`jq\` to parse the current output, but it's unreliable since the format i
 3. If YES → add status:approved label
 4. If NO → comment with reason, close if needed
 5. Contributor can now open a PR linking this issue
+
+[If Issues are disabled → contributor opens PR with problem statement + scope in body instead]
 ```
 
 ---

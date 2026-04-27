@@ -20,6 +20,11 @@ ohara setup opencode
 
 The plugin auto-starts the HTTP server if it's not already running — no manual `ohara serve` needed.
 
+By default, failed plugin calls are quiet so OpenCode remains usable even when
+Ohara is not installed or not running. For diagnostics, start OpenCode with
+`OHARA_DEBUG=1` to log failed health checks, HTTP writes, auto-start attempts,
+and sync imports to stderr.
+
 > **Local model compatibility:** The plugin works with all models, including local ones served via llama.cpp, Ollama, or similar. The Memory Protocol is concatenated into the existing system prompt (not added as a separate system message), so models with strict Jinja templates (Qwen, Mistral/Ministral) work correctly.
 
 ### What the Plugin Does
@@ -31,6 +36,7 @@ The plugin:
 - **Injects previous session context** into the compaction prompt
 - **Instructs the compressor** to tell the new agent to persist the compacted summary via `mem_session_summary`
 - **Strips `<private>` tags** before sending data
+- **Debug logs when requested** via `OHARA_DEBUG=1`; normal mode stays quiet
 
 **No raw tool call recording** — the agent handles all memory via `mem_save` and `mem_session_summary`.
 
@@ -66,3 +72,6 @@ Set up API with <private>sk-abc123</private> key
 
 1. **Plugin layer** — stripped before data leaves the process
 2. **Store layer** — `stripPrivateTags()` in Go before any DB write
+
+Regex-based secret redaction is best effort. Treat Ohara as a local knowledge
+store, not a password manager or secret vault.

@@ -20,23 +20,23 @@ Use this skill when:
 
 ## Critical Rules
 
-1. **Every PR MUST link an approved issue** — no exceptions
+1. **Every PR MUST link an approved issue** — OR, if Issues are disabled, include clear rationale in the PR body (problem statement + scope)
 2. **Every PR MUST have exactly one `type:*` label**
-3. **5 automated checks must pass** before merge is possible
-4. **Blank PRs without issue linkage will be blocked** by GitHub Actions
+3. **7 automated checks must pass** before merge is possible
+4. **Blank PRs without issue linkage will be blocked** by GitHub Actions — unless Issues are disabled
 
 ---
 
 ## Workflow
 
 ```
-1. Verify issue has `status:approved` label
+1. Verify issue has `status:approved` label (OR, if Issues disabled: prepare clear problem statement + scope)
 2. Create branch: feat/*, fix/*, docs/*, refactor/*, chore/*
 3. Implement changes
-4. Run tests locally (unit + e2e)
+4. Run tests locally (unit + race + e2e)
 5. Open PR using the template
 6. Add exactly one type:* label
-7. Wait for 5 automated checks to pass
+7. Wait for 7 automated checks to pass
 ```
 
 ---
@@ -72,7 +72,7 @@ Branch names are validated by a GitHub ruleset. Pushes that don't match **will b
 
 The PR template is at `.github/PULL_REQUEST_TEMPLATE.md`. Every PR body MUST contain:
 
-### 1. Linked Issue (REQUIRED)
+### 1. Linked Issue (REQUIRED — unless Issues are disabled)
 
 ```markdown
 Closes #<issue-number>
@@ -80,6 +80,8 @@ Closes #<issue-number>
 
 Valid keywords: `Closes #N`, `Fixes #N`, `Resolves #N` (case insensitive).
 The linked issue MUST have the `status:approved` label.
+
+**If Issues are disabled:** Replace the above with a `## Problem Statement` and `## Scope` section in the PR body instead.
 
 ### 2. PR Type (REQUIRED)
 
@@ -127,15 +129,19 @@ All boxes must be checked:
 
 ---
 
-## Automated Checks (all 5 must pass)
+## Automated Checks (all 7 must pass)
 
 | Check | Job name | What it verifies |
 |-------|----------|-----------------|
-| PR Validation | `Check Issue Reference` | Body contains `Closes/Fixes/Resolves #N` |
-| PR Validation | `Check Issue Has status:approved` | Linked issue has `status:approved` |
+| PR Validation | `Check Issue Reference` | Body contains `Closes/Fixes/Resolves #N` OR (if Issues disabled) Problem Statement + Scope |
+| PR Validation | `Check Issue Has status:approved` | Linked issue has `status:approved` (skipped if Issues disabled) |
 | PR Validation | `Check PR Has type:* Label` | PR has exactly one `type:*` label |
 | CI | `Unit Tests` | `go test ./...` passes |
+| CI | `Race Tests` | `go test -race ./...` passes |
 | CI | `E2E Tests` | `go test -tags e2e ./internal/server/...` passes |
+| CI | `Build` | `go build ./...` passes |
+| CI | `Vet` | `go vet ./...` passes |
+| CI | `Vuln` | `go vuln ./...` passes |
 
 ---
 

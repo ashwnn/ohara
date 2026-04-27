@@ -32,7 +32,7 @@ These are the non-negotiable product values. Every triage decision is filtered t
 | **Single binary** | One `ohara` binary. No daemon, no service, no secondary processes needed. |
 | **Terminal-first** | CLI and TUI are the primary UX. No web dashboard, no Electron. |
 | **Thin adapters** | Plugin scripts (Claude, OpenCode, Gemini, Codex) are thin shims — logic lives in Go core. |
-| **Issue-first** | Every PR must link a `status:approved` issue. No approved issue → no PR. |
+| **Proposal-first** | When Issues are enabled: every PR must link a `status:approved` issue. When Issues are disabled: PR without issue linkage is valid if it has clear rationale (problem statement + scope) in the body. |
 | **Evidence-based reviews** | Request changes with specific, actionable items. No vague "needs improvement". |
 | **Tight scope** | Reject features that expand Ohara's surface area without a compelling case. |
 | **Small focused contributions** | Prefer 50-line PRs solving one problem over 500-line PRs solving five. |
@@ -93,9 +93,10 @@ For every issue, answer:
 For every PR, answer:
 
 ```
-1. Does it link a status:approved issue? → if not → CLOSE (process violation)
+1. Does it link a status:approved issue? → if not AND Issues enabled → CLOSE (process violation)
+   → if not AND Issues disabled → verify body has clear problem statement + scope; if missing → REQUEST CHANGES
 2. Does it have exactly one type:* label? → if not → REQUEST CHANGES
-3. Do all 5 CI checks pass? → if not → REQUEST CHANGES (list failures)
+3. Do all 7 CI checks pass? → if not → REQUEST CHANGES (list failures)
 4. Is the scope tight (one issue, minimal diff)? → if sprawling → REQUEST CHANGES
 5. Does it follow conventional commits + branch naming? → if not → REQUEST CHANGES
 6. Is the change correct and well-tested? → if yes → MERGE
@@ -265,7 +266,7 @@ for <owner/repo> and produce a disposition report.
 ## Tradeoffs and Assumptions
 
 - **Ideology is inferred, not computed.** Maintainer comments are the ground truth — written philosophy is secondary. When they conflict, follow the comments.
-- **Issue-first is non-negotiable for PRs.** PRs without a `status:approved` issue always get CLOSE, not REQUEST CHANGES, because the contributor skipped the process entirely.
+- **Proposal-first supersedes issue-first when Issues are disabled.** If Issues are disabled, PRs without issue linkage are valid if they include clear rationale in the body. When Issues are enabled, issue-first remains strict: no `status:approved` link → CLOSE.
 - **Noise should be closed, not left open.** An open issue with no actionable content trains contributors to expect low quality to be tolerated.
 - **NEEDS DESIGN is a valid, non-blocking action.** It signals "good idea, wrong time" without rejecting the contributor.
 - **This skill targets Ohara's workflow.** Adapt the philosophy table and label system when applying the reusable prompt to a different repository.
