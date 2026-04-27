@@ -154,7 +154,6 @@ type ExportData struct {
 	Prompts    []Prompt  `json:"prompts"`
 }
 
-// ─── Memory Items (Ohara v2 spec) ──────────────────────────────────────────────
 // Memory items are the curated, typed, versioned memory records defined in the
 // Ohara v2 spec. They replaced the legacy observations system entirely.
 
@@ -340,7 +339,6 @@ func TruncateBodyToTokenLimit(text string, kind string) (body string) {
 		return text
 	}
 
-	// Quick check: if total tokens fit, return as-is.
 	if token.CountStrict(text) <= limit {
 		return text
 	}
@@ -470,8 +468,6 @@ type UpdateMemoryParams struct {
 	UtilityWeight    *float64 `json:"utility_weight,omitempty"`
 }
 
-// ─── Config ──────────────────────────────────────────────────────────────────
-
 type Config struct {
 	DataDir           string
 	MaxContextResults int
@@ -544,8 +540,6 @@ func FallbackConfig(dataDir string) Config {
 		OllamaURL:         "http://localhost:11434",
 	}
 }
-
-// ─── Store ───────────────────────────────────────────────────────────────────
 
 type Store struct {
 	db    *sql.DB
@@ -721,8 +715,6 @@ func New(cfg Config) (*Store, error) {
 func (s *Store) Close() error {
 	return s.db.Close()
 }
-
-// ─── Migrations ──────────────────────────────────────────────────────────────
 
 // Current schema version — increment by 1 for each new migration.
 const currentSchemaVersion = 24
@@ -986,7 +978,7 @@ func (s *Store) migrate() error {
 // applies migrations that haven't been recorded yet.
 // Logs migration progress only when migrations are actually needed.
 func (s *Store) runMigrations() error {
-	// Get current version
+
 	var currentVersion int
 	err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&currentVersion)
 	if err != nil {
@@ -1438,10 +1430,7 @@ func (s *Store) migrateMemFTSTriggerCondition() error {
 	return nil
 }
 
-// ─── Sessions ────────────────────────────────────────────────────────────────
-
 func (s *Store) CreateSession(id, project, directory string) error {
-	// Normalize project name before storing
 	project, _ = NormalizeProject(project)
 
 	return s.withTx(func(tx *sql.Tx) error {
@@ -1586,12 +1575,7 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 	return results, rows.Err()
 }
 
-// ─── User Prompts ────────────────────────────────────────────────────────────
-
-// ─── User Prompts ────────────────────────────────────────────────────────────
-
 func (s *Store) AddPrompt(p AddPromptParams) (int64, error) {
-	// Normalize project name before storing
 	p.Project, _ = NormalizeProject(p.Project)
 
 	content := stripPrivateTags(p.Content)
@@ -1702,8 +1686,6 @@ func (s *Store) SearchPrompts(query string, project string, limit int) ([]Prompt
 	return results, rows.Err()
 }
 
-// ─── Delete Session ──────────────────────────────────────────────────────────
-
 // DeleteSession hard-deletes a session and its prompts.
 // It returns fmt.Errorf("session has memories") if the session has any memory_items
 // to prevent orphaned rows.
@@ -1756,8 +1738,6 @@ func (s *Store) DeleteSession(id string) error {
 	})
 }
 
-// ─── Delete Prompt ───────────────────────────────────────────────────────────
-
 // DeletePrompt hard-deletes a single prompt by ID.
 // It returns ErrPromptNotFound if no prompt with that ID exists.
 //
@@ -1782,8 +1762,6 @@ func (s *Store) DeletePrompt(id int64) error {
 	})
 }
 
-// ─── Stats ───────────────────────────────────────────────────────────────────
-
 func (s *Store) Stats() (*Stats, error) {
 	stats := &Stats{}
 
@@ -1806,8 +1784,6 @@ func (s *Store) Stats() (*Stats, error) {
 
 	return stats, nil
 }
-
-// ─── Context Formatting ─────────────────────────────────────────────────────
 
 func (s *Store) FormatContext(project, scope string) (string, error) {
 	sessions, err := s.RecentSessions(project, 5)
@@ -1864,8 +1840,6 @@ func (s *Store) FormatContext(project, scope string) (string, error) {
 
 	return b.String(), nil
 }
-
-// ─── Export / Import ─────────────────────────────────────────────────────────
 
 func (s *Store) Export() (*ExportData, error) {
 	data := &ExportData{
@@ -1964,8 +1938,6 @@ type ImportResult struct {
 	PromptsImported      int `json:"prompts_imported"`
 }
 
-// ─── Sync Chunk Tracking ─────────────────────────────────────────────────────
-
 // GetSyncedChunks returns a set of chunk IDs that have been imported/exported.
 func (s *Store) GetSyncedChunks() (map[string]bool, error) {
 	rows, err := s.queryItHook(s.db, "SELECT chunk_id FROM sync_chunks")
@@ -1993,8 +1965,6 @@ func (s *Store) RecordSyncedChunk(chunkID string) error {
 	)
 	return err
 }
-
-// ─── Local Sync State & Mutation Journal ─────────────────────────────────────
 
 func (s *Store) GetSyncState(targetKey string) (*SyncState, error) {
 	targetKey = normalizeSyncTargetKey(targetKey)
@@ -2251,8 +2221,6 @@ func (s *Store) ApplyPulledMutation(targetKey string, mutation SyncMutation) err
 	})
 }
 
-// ─── Project Enrollment for Cloud Sync ───────────────────────────────────────
-
 // EnrollProject registers a project for cloud sync. Idempotent — re-enrolling
 // an already-enrolled project is a no-op.
 func (s *Store) EnrollProject(project string) error {
@@ -2328,8 +2296,6 @@ func (s *Store) IsProjectEnrolled(project string) (bool, error) {
 	return true, nil
 }
 
-// ─── Project Migration ───────────────────────────────────────────────────────
-
 type MigrateResult struct {
 	Migrated        bool  `json:"migrated"`
 	SessionsUpdated int64 `json:"sessions_updated"`
@@ -2389,8 +2355,6 @@ func (s *Store) MigrateProject(oldName, newName string) (*MigrateResult, error) 
 
 	return result, nil
 }
-
-// ─── Project Queries ──────────────────────────────────────────────────────────
 
 // ProjectNameCount holds a project name and how many memory items it has.
 type ProjectNameCount struct {
@@ -2612,8 +2576,6 @@ func (s *Store) MergeProjects(sources []string, canonical string) (*MergeResult,
 	return result, nil
 }
 
-// ─── Project Pruning ─────────────────────────────────────────────────────────
-
 // PruneResult holds the outcome of pruning a single project.
 type PruneResult struct {
 	Project         string `json:"project"`
@@ -2662,8 +2624,6 @@ func (s *Store) PruneProject(project string) (*PruneResult, error) {
 
 	return result, nil
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
 	tx, err := s.beginTxHook()
@@ -3186,7 +3146,6 @@ var privateTagRegex = regexp.MustCompile(`(?is)<private>.*?</private>`)
 // is never persisted to the memory database.
 func stripPrivateTags(s string) string {
 	result := privateTagRegex.ReplaceAllString(s, "[REDACTED]")
-	// Clean up multiple consecutive [REDACTED] and excessive whitespace
 	result = strings.TrimSpace(result)
 	return result
 }
@@ -3202,8 +3161,6 @@ func sanitizeFTS(query string) string {
 	}
 	return strings.Join(words, " ")
 }
-
-// ─── Passive Capture ─────────────────────────────────────────────────────────
 
 // PassiveCaptureParams holds the input for passive memory capture.
 type PassiveCaptureParams struct {

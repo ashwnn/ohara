@@ -53,7 +53,6 @@ var loadMCPStatsCombined = func(s *store.Store) (*store.Stats, *store.PackStats,
 	return stats, memStats, nil
 }
 
-// ─── Tool Profiles ───────────────────────────────────────────────────────────
 //
 // "agent" — tools AI agents use during coding sessions:
 //   mem_save, mem_search, mem_context, mem_session_summary,
@@ -211,7 +210,6 @@ func shouldRegister(name string, allowlist map[string]bool) bool {
 }
 
 func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
-	// ─── mem_search (profile: agent, core — always in context) ─────────
 	if shouldRegister("mem_search", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search",
@@ -251,7 +249,6 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 		)
 	}
 
-	// ─── mem_search_rerank (profile: agent, deferred slow path) ──────────
 	if shouldRegister("mem_search_rerank", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search_rerank",
@@ -292,7 +289,6 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 		)
 	}
 
-	// ─── mem_save (profile: agent, core — always in context) ───────────
 	if shouldRegister("mem_save", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_save",
@@ -382,7 +378,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_update (profile: agent, deferred) ──────────────────────────
 	if shouldRegister("mem_update", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_update",
@@ -420,7 +415,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_suggest_topic_key (profile: agent, deferred) ───────────────
 	if shouldRegister("mem_suggest_topic_key", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_suggest_topic_key",
@@ -445,7 +439,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_delete (profile: admin, deferred) ──────────────────────────
 	if shouldRegister("mem_delete", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_delete",
@@ -468,7 +461,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_save_prompt (profile: agent, eager) ────────────────────────
 	if shouldRegister("mem_save_prompt", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_save_prompt",
@@ -493,7 +485,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_context (profile: agent, core — always in context) ────────
 	if shouldRegister("mem_context", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_context",
@@ -520,7 +511,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_stats (profile: admin, deferred) ───────────────────────────
 	if shouldRegister("mem_stats", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_stats",
@@ -536,7 +526,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_pack (profile: agent, eager) ───────────────────────────────
 	if shouldRegister("mem_pack", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_pack",
@@ -561,7 +550,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_timeline (profile: admin, deferred) ────────────────────────
 	if shouldRegister("mem_timeline", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_timeline",
@@ -587,7 +575,6 @@ Examples:
 		)
 	}
 
-	// ─── mem_session_summary (profile: agent, core — always in context) ─
 	if shouldRegister("mem_session_summary", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_summary",
@@ -642,7 +629,6 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_session_start (profile: agent, deferred) ───────────────────
 	if shouldRegister("mem_session_start", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_start",
@@ -669,7 +655,6 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_session_end (profile: agent, deferred) ─────────────────────
 	if shouldRegister("mem_session_end", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_end",
@@ -695,7 +680,6 @@ GUIDELINES:
 		)
 	}
 
-	// ─── mem_capture_passive (profile: agent, deferred) ─────────────────
 	if shouldRegister("mem_capture_passive", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_capture_passive",
@@ -728,7 +712,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_merge_projects (profile: admin, deferred) ──────────────────
 	if shouldRegister("mem_merge_projects", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_merge_projects",
@@ -752,7 +735,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_list_domains (profile: admin, deferred) ──────────────────────────
 	if shouldRegister("mem_list_domains", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_list_domains",
@@ -772,7 +754,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_prime (profile: agent, eager) ────────────────────────────────────
 	if shouldRegister("mem_prime", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_prime",
@@ -809,7 +790,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_mark_used (profile: agent, deferred) ─────────────────────────────
 	if shouldRegister("mem_mark_used", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_mark_used",
@@ -835,7 +815,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_append_outcome (profile: agent, deferred) ───────────────────────
 	if shouldRegister("mem_append_outcome", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_append_outcome",
@@ -865,7 +844,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_resolve_conflict (profile: agent, deferred) ────────────────────
 	if shouldRegister("mem_resolve_conflict", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_resolve_conflict",
@@ -899,7 +877,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_forget (profile: agent, deferred) ───────────────────────────────
 	if shouldRegister("mem_forget", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_forget",
@@ -926,7 +903,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_link (profile: agent, deferred) ─────────────────────────────────
 	if shouldRegister("mem_link", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_link",
@@ -954,7 +930,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_unlink (profile: agent, deferred) ───────────────────────────────
 	if shouldRegister("mem_unlink", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_unlink",
@@ -982,7 +957,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_related (profile: agent, deferred) ──────────────────────────────
 	if shouldRegister("mem_related", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_related",
@@ -1005,7 +979,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	// ─── mem_consolidate_candidates (profile: agent, deferred) ──────────────
 	if shouldRegister("mem_consolidate_candidates", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_consolidate_candidates",

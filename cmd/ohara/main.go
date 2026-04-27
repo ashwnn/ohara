@@ -29,16 +29,12 @@ import (
 // version is set at build time via -ldflags.
 var version = "dev"
 
-// exitFunc is called on fatal errors. Stubbed in tests.
 var exitFunc = func(code int) { os.Exit(code) }
 
-// checkForUpdates returns version check results. Stubbed in tests.
 var checkForUpdates = versionpkg.CheckLatest
 
-// storeNew opens a store. Stubbed in tests.
 var storeNew = store.New
 
-// newHTTPServer creates an HTTP server. Stubbed in tests.
 // socketPath is empty when TCP mode is used.
 var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg server.PackConfig, conflictCfg server.ConflictConfig) *server.Server {
 	opts := []server.ServerOption{}
@@ -54,41 +50,31 @@ var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg se
 	return server.New(s, port, opts...)
 }
 
-// startHTTP starts the HTTP server. Stubbed in tests.
 var startHTTP = func(srv *server.Server) error { return srv.Start() }
 
-// newMCPServer creates an MCP server. Stubbed in tests.
 var newMCPServer = func(s *store.Store) *mcpserver.MCPServer { return mcp.NewServer(s) }
 
-// newMCPServerWithTools creates an MCP server with tools. Stubbed in tests.
 var newMCPServerWithTools = func(s *store.Store, allowlist map[string]bool) *mcpserver.MCPServer {
 	return mcp.NewServerWithTools(s, allowlist)
 }
 
-// newMCPServerWithConfig creates an MCP server with config. Stubbed in tests.
 var newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
 	return mcp.NewServerWithConfig(s, mcpCfg, allowlist)
 }
 
-// serveMCP starts the MCP stdio server. Stubbed in tests.
 var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) error {
 	stdio := mcpserver.NewStdioServer(srv)
 	return stdio.Listen(context.Background(), os.Stdin, os.Stdout)
 }
 
-// setupSupportedAgents lists supported agents. Stubbed in tests.
 var setupSupportedAgents = setup.SupportedAgents
 
-// setupInstallAgent installs an agent plugin. Stubbed in tests.
 var setupInstallAgent = setup.Install
 
-// setupCheckAgent checks agent configuration. Stubbed in tests.
 var setupCheckAgent = setup.Check
 
-// setupRemoveAgent removes agent configuration. Stubbed in tests.
 var setupRemoveAgent = setup.Remove
 
-// scanInputLine reads a line from stdin. Stubbed in tests.
 var scanInputLine = func(a ...interface{}) (int, error) {
 	out := make([]any, len(a))
 	for i := range a {
@@ -101,84 +87,66 @@ var scanInputLine = func(a ...interface{}) (int, error) {
 	return fmt.Scanln(out...)
 }
 
-// storeSearchMemories searches memory_items. Stubbed in tests.
 var storeSearchMemories = func(s *store.Store, query, projectID, scope, kind, domain, status string, limit int, writtenBy string) ([]store.MemoryItem, error) {
 	return s.SearchMemories(query, projectID, scope, kind, domain, status, limit, writtenBy)
 }
 
-// storeAddMemory adds a memory item. Stubbed in tests.
 var storeAddMemory = func(s *store.Store, p store.AddMemoryParams) (int64, error) {
 	return s.AddMemory(p)
 }
 
-// storeTimeline returns a timeline. Stubbed in tests.
 var storeTimeline = func(s *store.Store, memID int64, count int) (*store.MemoryTimelineResult, error) {
 	return s.MemoryTimeline(memID, count)
 }
 
-// storeFormatContext formats context. Stubbed in tests.
 var storeFormatContext = func(s *store.Store, project, scope string) (string, error) {
 	return s.FormatContext(project, scope)
 }
 
-// storeStats returns stats. Stubbed in tests.
 var storeStats = func(s *store.Store) (*store.Stats, error) { return s.Stats() }
 
-// storeExport exports data. Stubbed in tests.
 var storeExport = func(s *store.Store) (*store.ExportData, error) { return s.Export() }
 
-// storeImport imports data. Stubbed in tests.
 var storeImport = func(s *store.Store, data *store.ExportData) (*store.ImportResult, error) { return s.Import(data) }
 
-// syncStatus returns sync status. Stubbed in tests.
 var syncStatus = func(sy *oharasync.Syncer) (int, int, int, error) {
 	return 0, 0, 0, nil
 }
 
-// syncImport imports sync data. Stubbed in tests.
 var syncImport = func(sy *oharasync.Syncer) (*oharasync.ImportResult, error) {
 	return &oharasync.ImportResult{}, nil
 }
 
-// syncExport exports sync data. Stubbed in tests.
 var syncExport = func(sy *oharasync.Syncer, createdBy, project string) (*oharasync.SyncResult, error) {
 	return &oharasync.SyncResult{IsEmpty: true}, nil
 }
 
-// jsonMarshalIndent marshals JSON. Stubbed in tests.
 var jsonMarshalIndent = json.MarshalIndent
 
-// jsonUnmarshal unmarshals JSON. Stubbed in tests.
 var jsonUnmarshal = json.Unmarshal
 
-// detectProject detects the project from a directory. Stubbed in tests.
 var detectProject = func(dir string) string {
 	name := filepath.Base(dir)
 	name = strings.TrimSuffix(name, "-git")
 	return strings.ToLower(name)
 }
 
-// storeConsolidate merges project records. Stubbed in tests.
 var storeConsolidate = func(s *store.Store, sources []string, canonical string) (*store.MergeResult, error) {
 	return s.MergeProjects(sources, canonical)
 }
 
-// storeConsolidateCandidates runs consolidation candidate generation. Stubbed in tests.
 var storeConsolidateCandidates = func(s *store.Store, project, domain string, dryRun bool) (int, []string, error) {
 	return s.GenerateConsolidationCandidates(project, domain, dryRun)
 }
 
-// newObsidianWatcher creates an obsidian watcher. Stubbed in tests.
 var newObsidianWatcher = func(c interface{}) interface{} { return nil }
 
-// loadRuntimeConfig loads the runtime config. Stubbed in tests.
 var loadRuntimeConfig = func(cfgPath string) (config.RuntimeConfig, error) {
 	return config.Load(cfgPath)
 }
 
 // loadRuntimeMaintain loads the runtime config for maintenance commands.
 // Uses the same two-phase loading as cmdServe (env-derived DataDir → config file).
-// Stubbed in tests.
 var loadRuntimeMaintain = func() (config.RuntimeConfig, error) {
 	baseCfg, err := loadRuntimeConfig("")
 	if err != nil {
@@ -193,16 +161,11 @@ var loadRuntimeMaintain = func() (config.RuntimeConfig, error) {
 	return loadRuntimeConfig(configFile)
 }
 
-// newTUIModel creates a TUI model. Stubbed in tests.
 var newTUIModel = func(s *store.Store) interface{} { return nil }
 
-// newTeaProgram creates a tea.Program. Stubbed in tests.
 var newTeaProgram = func(m interface{}) interface{} { return nil }
 
-// runTeaProgram runs a tea.Program. Stubbed in tests.
 var runTeaProgram = func(p interface{}) (interface{}, error) { return nil, nil }
-
-// ─── Command Variables (can be overridden by test stubs) ──────────────────────
 
 var cmdMCP = realCmdMCP
 var cmdTUI = realCmdTUI
@@ -228,14 +191,10 @@ var cmdDoctor = realCmdDoctor
 var cmdConsolidate = realCmdConsolidate
 var cmdTools = realCmdTools
 
-// ─── fatal / exit helpers ────────────────────────────────────────────────────
-
 func fatal(msg interface{}) {
 	fmt.Fprintln(os.Stderr, "ohara: "+fmt.Sprint(msg))
 	exitFunc(1)
 }
-
-// ─── Usage ──────────────────────────────────────────────────────────────────
 
 func printUsage() {
 	fmt.Println("ohara v" + version + " — local memory for AI agents")
@@ -245,7 +204,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  serve              Start the HTTP API server (foreground)")
 	fmt.Println("  mcp                Start the MCP stdio server")
-	fmt.Println("  tui                Start the terminal UI")
+	fmt.Println("  tui (unavailable)  Start the terminal UI")
 	fmt.Println("  search <query>     Search memories")
 	fmt.Println("  save <title> <content>  Save a new memory")
 	fmt.Println("  timeline <id>       Browse timeline around an observation")
@@ -292,8 +251,6 @@ func printPostInstall(agent string) {
 	fmt.Printf("1. %s\n", info.restart)
 	fmt.Printf("2. Or copy the plugin config to %s\n", info.config)
 }
-
-// ─── Maintenance Commands ─────────────────────────────────────────────────────
 
 func realCmdMaintain(cfg store.Config) {
 	s, err := storeNew(cfg)
@@ -416,8 +373,6 @@ func realCmdCheck(cfg store.Config) {
 		exitFunc(1)
 	}
 }
-
-// ─── Stub implementations for other commands ─────────────────────────────────
 
 func realCmdServe(cfg store.Config) {
 	// Load config from {DataDir}/config.json with env-var overrides.
@@ -548,18 +503,11 @@ func realCmdMCP(cfg store.Config) {
 	}
 }
 
-func realCmdTUI(cfg store.Config) {
-	s, err := storeNew(cfg)
-	if err != nil {
-		fatal("store: " + err.Error())
-	}
-	defer s.Close()
-
-	model := newTUIModel(s)
-	program := newTeaProgram(model)
-	if _, err := runTeaProgram(program); err != nil {
-		fatal("tui: " + err.Error())
-	}
+func realCmdTUI(_ store.Config) {
+	fmt.Println("ohara tui: TUI is not available.")
+	fmt.Println("The terminal UI was designed but not implemented.")
+	fmt.Println("Use 'ohara serve' for the HTTP API or 'ohara mcp' for MCP stdio access.")
+	exitFunc(1)
 }
 
 func realCmdTools(_ store.Config) {
@@ -1811,8 +1759,6 @@ func realCmdProjectsConsolidate(cfg store.Config) {
 		}
 	}
 }
-
-// ─── Main Dispatch ──────────────────────────────────────────────────────────
 
 func main() {
 	if len(os.Args) < 2 {
