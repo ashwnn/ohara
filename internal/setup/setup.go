@@ -129,13 +129,8 @@ func SupportedAgents() []Agent {
 // patchOharaBINLine rewrites the OHARA_BIN constant declaration in the
 // plugin source so the installed copy contains an absolute fallback path.
 //
-// Original line in source:
-//
-//	const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
-//
-// Patched line in installed copy:
-//
-//	const OHARA_BIN = process.env.OHARA_BIN ?? Bun.which("ohara") ?? "/abs/path/ohara"
+// Original line in source: `const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"`
+// Patched line in installed copy: `const OHARA_BIN = process.env.OHARA_BIN ?? Bun.which("ohara") ?? "/abs/path/ohara"`
 //
 // Priority (left to right, first truthy wins):
 //  1. OHARA_BIN env var — explicit user override, always respected.
