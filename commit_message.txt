@@ -1,0 +1,7 @@
+🧪 [testing] Improve ExtractLearnings test coverage
+
+🎯 **What:** The ExtractLearnings function had individual, somewhat disconnected test functions that lacked comprehensive coverage and used weak substring assertions.
+
+📊 **Coverage:** Refactored tests into a robust table-driven structure (TestExtractLearnings). Added exact match assertions and included coverage for new edge cases: empty strings, asterisk bullets, parentheses list formats, and singular headers.
+
+✨ **Result:** Test coverage for ExtractLearnings is now verifiably robust at 100%, and the test file is cleaner and adheres strictly to idiomatic Go table-driven testing patterns.

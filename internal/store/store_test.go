@@ -235,8 +235,15 @@ func TestPromptProjectNullScan(t *testing.T) {
 
 // ─── Passive Capture Tests ───────────────────────────────────────────────────
 
-func TestExtractLearningsNumberedList(t *testing.T) {
-	text := `Some preamble text here.
+func TestExtractLearnings(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		expected []string
+	}{
+		{
+			name: "NumberedList",
+			text: `Some preamble text here.
 
 ## Key Learnings:
 
@@ -246,77 +253,68 @@ func TestExtractLearningsNumberedList(t *testing.T) {
 
 ## Next Steps
 - something else
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 3 {
-		t.Fatalf("expected 3 learnings, got %d: %v", len(learnings), learnings)
-	}
-	if !strings.Contains(learnings[0], "bcrypt") {
-		t.Fatalf("expected first learning about bcrypt, got %q", learnings[0])
-	}
-}
-
-func TestExtractLearningsSpanishHeader(t *testing.T) {
-	text := `## Aprendizajes Clave:
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+				"JWT refresh tokens need atomic rotation to prevent race conditions",
+				"Always validate the audience claim in JWT tokens before trusting them",
+			},
+		},
+		{
+			name: "SpanishHeader",
+			text: `## Aprendizajes Clave:
 
 1. El costo de bcrypt=12 es el balance correcto para nuestro servidor
 2. Los refresh tokens de JWT necesitan rotacion atomica
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 2 {
-		t.Fatalf("expected 2 learnings, got %d: %v", len(learnings), learnings)
-	}
-}
-
-func TestExtractLearningsBulletList(t *testing.T) {
-	text := `### Learnings:
+`,
+			expected: []string{
+				"El costo de bcrypt=12 es el balance correcto para nuestro servidor",
+				"Los refresh tokens de JWT necesitan rotacion atomica",
+			},
+		},
+		{
+			name: "BulletList",
+			text: `### Learnings:
 
 - bcrypt cost=12 is the right balance for our server performance
 - JWT refresh tokens need atomic rotation to prevent race conditions
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 2 {
-		t.Fatalf("expected 2 learnings, got %d: %v", len(learnings), learnings)
-	}
-}
-
-func TestExtractLearningsIgnoresShortItems(t *testing.T) {
-	text := `## Key Learnings:
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+				"JWT refresh tokens need atomic rotation to prevent race conditions",
+			},
+		},
+		{
+			name: "IgnoresShortItems",
+			text: `## Key Learnings:
 
 1. too short
 2. bcrypt cost=12 is the right balance for our server performance
 3. also short
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 1 {
-		t.Fatalf("expected 1 learning (short ones filtered), got %d: %v", len(learnings), learnings)
-	}
-}
-
-func TestExtractLearningsNoSection(t *testing.T) {
-	text := `This is just regular text without any learning section headers.
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+			},
+		},
+		{
+			name: "NoSection",
+			text: `This is just regular text without any learning section headers.
 It has multiple lines but no ## Key Learnings or similar.
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 0 {
-		t.Fatalf("expected 0 learnings, got %d: %v", len(learnings), learnings)
-	}
-}
-
-func TestExtractLearningsSectionPresentButNoValidItems(t *testing.T) {
-	text := `## Key Learnings:
+`,
+			expected: nil,
+		},
+		{
+			name: "SectionPresentButNoValidItems",
+			text: `## Key Learnings:
 
 1. short
 2. tiny
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 0 {
-		t.Fatalf("expected 0 learnings when section has no valid items, got %d: %v", len(learnings), learnings)
-	}
-}
-
-func TestExtractLearningsUsesLastSection(t *testing.T) {
-	text := `## Key Learnings:
+`,
+			expected: nil,
+		},
+		{
+			name: "UsesLastSection",
+			text: `## Key Learnings:
 
 1. This is from the first section and should be ignored
 
@@ -325,18 +323,14 @@ Some other text here.
 ## Key Learnings:
 
 1. This is from the last section and should be captured as the real one
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 1 {
-		t.Fatalf("expected 1 learning from last section, got %d: %v", len(learnings), learnings)
-	}
-	if !strings.Contains(learnings[0], "last section") {
-		t.Fatalf("expected learning from last section, got %q", learnings[0])
-	}
-}
-
-func TestExtractLearningsFallsBackWhenLastSectionHasNoValidItems(t *testing.T) {
-	text := `## Key Learnings:
+`,
+			expected: []string{
+				"This is from the last section and should be captured as the real one",
+			},
+		},
+		{
+			name: "FallsBackWhenLastSectionHasNoValidItems",
+			text: `## Key Learnings:
 
 1. This is long enough and should be captured from the previous section
 
@@ -344,24 +338,73 @@ func TestExtractLearningsFallsBackWhenLastSectionHasNoValidItems(t *testing.T) {
 
 1. short
 2. tiny
-`
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 1 {
-		t.Fatalf("expected fallback to previous valid section, got %d: %v", len(learnings), learnings)
-	}
-	if !strings.Contains(learnings[0], "previous section") {
-		t.Fatalf("expected learning from previous section, got %q", learnings[0])
-	}
-}
+`,
+			expected: []string{
+				"This is long enough and should be captured from the previous section",
+			},
+		},
+		{
+			name: "CleansMarkdown",
+			text: "## Key Learnings:\n\n1. **Use** `context.Context` in *all* handlers to support cancellation correctly\n",
+			expected: []string{
+				"Use context.Context in all handlers to support cancellation correctly",
+			},
+		},
+		{
+			name: "ParenthesesList",
+			text: `## Key Learnings:
 
-func TestExtractLearningsCleansMarkdown(t *testing.T) {
-	text := "## Key Learnings:\n\n1. **Use** `context.Context` in *all* handlers to support cancellation correctly\n"
-	learnings := ExtractLearnings(text)
-	if len(learnings) != 1 {
-		t.Fatalf("expected 1 learning, got %d: %v", len(learnings), learnings)
+1) bcrypt cost=12 is the right balance for our server performance
+2) JWT refresh tokens need atomic rotation to prevent race conditions
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+				"JWT refresh tokens need atomic rotation to prevent race conditions",
+			},
+		},
+		{
+			name: "AsteriskBulletList",
+			text: `## Key Learnings:
+
+* bcrypt cost=12 is the right balance for our server performance
+* JWT refresh tokens need atomic rotation to prevent race conditions
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+				"JWT refresh tokens need atomic rotation to prevent race conditions",
+			},
+		},
+		{
+			name: "SingularHeader",
+			text: `## Key Learning:
+
+1. bcrypt cost=12 is the right balance for our server performance
+`,
+			expected: []string{
+				"bcrypt cost=12 is the right balance for our server performance",
+			},
+		},
+		{
+			name:     "EmptyString",
+			text:     "",
+			expected: nil,
+		},
 	}
-	if strings.Contains(learnings[0], "**") || strings.Contains(learnings[0], "`") || strings.Contains(learnings[0], "*") {
-		t.Fatalf("expected markdown to be stripped, got %q", learnings[0])
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			learnings := ExtractLearnings(tt.text)
+
+			if len(learnings) != len(tt.expected) {
+				t.Fatalf("expected %d learnings, got %d: %v", len(tt.expected), len(learnings), learnings)
+			}
+
+			for i, expected := range tt.expected {
+				if learnings[i] != expected {
+					t.Errorf("expected learning %d to be %q, got %q", i, expected, learnings[i])
+				}
+			}
+		})
 	}
 }
 
