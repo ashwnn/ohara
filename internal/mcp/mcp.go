@@ -210,6 +210,16 @@ func shouldRegister(name string, allowlist map[string]bool) bool {
 }
 
 func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+	registerSearchTools(srv, s, cfg, allowlist, activity)
+	registerWriteTools(srv, s, cfg, allowlist, activity)
+	registerContextTools(srv, s, cfg, allowlist, activity)
+	registerSessionTools(srv, s, cfg, allowlist, activity)
+	registerAdminProjectTools(srv, s, cfg, allowlist, activity)
+	registerGraphRelationTools(srv, s, cfg, allowlist, activity)
+	registerGovernanceTools(srv, s, cfg, allowlist, activity)
+}
+
+func registerSearchTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_search", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search",
@@ -288,7 +298,8 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 			handleSearchRerank(s, cfg, activity),
 		)
 	}
-
+}
+func registerWriteTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_save", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_save",
@@ -299,30 +310,30 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription(`Save an important observation to persistent memory. Call this PROACTIVELY after completing significant work — don't wait to be asked.
 
-WHEN to save (call this after each of these):
-- Architectural decisions or tradeoffs
-- Bug fixes (what was wrong, why, how you fixed it)
-- New patterns or conventions established
-- Configuration changes or environment setup
-- Important discoveries or gotchas
-- File structure changes
+	WHEN to save (call this after each of these):
+	- Architectural decisions or tradeoffs
+	- Bug fixes (what was wrong, why, how you fixed it)
+	- New patterns or conventions established
+	- Configuration changes or environment setup
+	- Important discoveries or gotchas
+	- File structure changes
 
-FORMAT for content — use this structured format:
-  **What**: [concise description of what was done]
-  **Why**: [the reasoning, user request, or problem that drove it]
-  **Where**: [files/paths affected, e.g. src/auth/middleware.ts, internal/store/store.go]
-  **Learned**: [any gotchas, edge cases, or decisions made — omit if none]
+	FORMAT for content — use this structured format:
+	  **What**: [concise description of what was done]
+	  **Why**: [the reasoning, user request, or problem that drove it]
+	  **Where**: [files/paths affected, e.g. src/auth/middleware.ts, internal/store/store.go]
+	  **Learned**: [any gotchas, edge cases, or decisions made — omit if none]
 
-TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query sanitization", "Fixed N+1 in user list"
+	TITLE should be short and searchable, like: "JWT auth middleware", "FTS5 query sanitization", "Fixed N+1 in user list"
 
-Examples:
-  title: "Switched from sessions to JWT"
-  type: "decision"
-  content: "**What**: Replaced express-session with jsonwebtoken for auth\n**Why**: Session storage doesn't scale across multiple instances\n**Where**: src/middleware/auth.ts, src/routes/login.ts\n**Learned**: Must set httpOnly and secure flags on the cookie, refresh tokens need separate rotation logic"
+	Examples:
+	  title: "Switched from sessions to JWT"
+	  type: "decision"
+	  content: "**What**: Replaced express-session with jsonwebtoken for auth\n**Why**: Session storage doesn't scale across multiple instances\n**Where**: src/middleware/auth.ts, src/routes/login.ts\n**Learned**: Must set httpOnly and secure flags on the cookie, refresh tokens need separate rotation logic"
 
-  title: "Fixed FTS5 syntax error on special chars"
-  type: "bugfix"
-  content: "**What**: Wrapped each search term in quotes before passing to FTS5 MATCH\n**Why**: Users typing queries like 'fix auth bug' would crash because FTS5 interprets special chars as operators\n**Where**: internal/store/store.go — sanitizeFTS() function\n**Learned**: FTS5 MATCH syntax is NOT the same as LIKE — always sanitize user input"`),
+	  title: "Fixed FTS5 syntax error on special chars"
+	  type: "bugfix"
+	  content: "**What**: Wrapped each search term in quotes before passing to FTS5 MATCH\n**Why**: Users typing queries like 'fix auth bug' would crash because FTS5 interprets special chars as operators\n**Where**: internal/store/store.go — sanitizeFTS() function\n**Learned**: FTS5 MATCH syntax is NOT the same as LIKE — always sanitize user input"`),
 				mcp.WithString("title",
 					mcp.Required(),
 					mcp.Description("Short, searchable title (e.g. 'JWT auth middleware', 'Fixed N+1 query')"),
@@ -415,30 +426,6 @@ Examples:
 		)
 	}
 
-	if shouldRegister("mem_suggest_topic_key", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_suggest_topic_key",
-				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before mem_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Suggest Topic Key"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("type",
-					mcp.Description("Observation type/category, e.g. architecture, decision, bugfix"),
-				),
-				mcp.WithString("title",
-					mcp.Description("Observation title (preferred input for stable keys)"),
-				),
-				mcp.WithString("content",
-					mcp.Description("Observation content used as fallback if title is empty"),
-				),
-			),
-			handleSuggestTopicKey(),
-		)
-	}
-
 	if shouldRegister("mem_delete", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_delete",
@@ -482,6 +469,31 @@ Examples:
 				),
 			),
 			handleSavePrompt(s, cfg),
+		)
+	}
+}
+func registerContextTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+	if shouldRegister("mem_suggest_topic_key", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_suggest_topic_key",
+				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before mem_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Suggest Topic Key"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("type",
+					mcp.Description("Observation type/category, e.g. architecture, decision, bugfix"),
+				),
+				mcp.WithString("title",
+					mcp.Description("Observation title (preferred input for stable keys)"),
+				),
+				mcp.WithString("content",
+					mcp.Description("Observation content used as fallback if title is empty"),
+				),
+			),
+			handleSuggestTopicKey(),
 		)
 	}
 
@@ -575,6 +587,43 @@ Examples:
 		)
 	}
 
+	if shouldRegister("mem_prime", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_prime",
+				mcp.WithDescription("Build a structured prime context pack with Knowledge vs Episode tier separation. Returns memory items organized by Decisions, Patterns, Known Failures, and Procedures sections."),
+				mcp.WithTitleAnnotation("Prime Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project_id",
+					mcp.Required(),
+					mcp.Description("Project ID to build prime context for"),
+				),
+				mcp.WithString("domain",
+					mcp.Description("Filter by domain/namespace"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the prime context (default: 2000)"),
+				),
+				mcp.WithString("kinds",
+					mcp.Description("Filter by memory kinds (comma-separated)"),
+				),
+				mcp.WithString("files",
+					mcp.Description("Comma-separated file/path hints to bias matching applies_to_json"),
+				),
+				mcp.WithString("format",
+					mcp.Description("Output format: md (default), xml, or json"),
+				),
+				mcp.WithBoolean("show_actor",
+					mcp.Description("Include [written_by] actor tags in output entries"),
+				),
+			),
+			handlePrime(s),
+		)
+	}
+}
+func registerSessionTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_session_summary", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_session_summary",
@@ -585,34 +634,34 @@ Examples:
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription(`Save a comprehensive end-of-session summary. Call this when a session is ending or when significant work is complete. This creates a structured summary that future sessions will use to understand what happened.
 
-FORMAT — use this exact structure in the content field:
+	FORMAT — use this exact structure in the content field:
 
-## Goal
-[One sentence: what were we building/working on in this session]
+	## Goal
+	[One sentence: what were we building/working on in this session]
 
-## Instructions
-[User preferences, constraints, or context discovered during this session. Things a future agent needs to know about HOW the user wants things done. Skip if nothing notable.]
+	## Instructions
+	[User preferences, constraints, or context discovered during this session. Things a future agent needs to know about HOW the user wants things done. Skip if nothing notable.]
 
-## Discoveries
-- [Technical finding, gotcha, or learning 1]
-- [Technical finding 2]
-- [Important API behavior, config quirk, etc.]
+	## Discoveries
+	- [Technical finding, gotcha, or learning 1]
+	- [Technical finding 2]
+	- [Important API behavior, config quirk, etc.]
 
-## Accomplished
-- ✅ [Completed task 1 — with key implementation details]
-- ✅ [Completed task 2 — mention files changed]
-- 🔲 [Identified but not yet done — for next session]
+	## Accomplished
+	- ✅ [Completed task 1 — with key implementation details]
+	- ✅ [Completed task 2 — mention files changed]
+	- 🔲 [Identified but not yet done — for next session]
 
-## Relevant Files
-- path/to/file.ts — [what it does or what changed]
-- path/to/other.go — [role in the architecture]
+	## Relevant Files
+	- path/to/file.ts — [what it does or what changed]
+	- path/to/other.go — [role in the architecture]
 
-GUIDELINES:
-- Be CONCISE but don't lose important details (file paths, error messages, decisions)
-- Focus on WHAT and WHY, not HOW (the code itself is in the repo)
-- Include things that would save a future agent time
-- The Discoveries section is the most valuable — capture gotchas and non-obvious learnings
-- Relevant Files should only include files that were significantly changed or are important for context`),
+	GUIDELINES:
+	- Be CONCISE but don't lose important details (file paths, error messages, decisions)
+	- Focus on WHAT and WHY, not HOW (the code itself is in the repo)
+	- Include things that would save a future agent time
+	- The Discoveries section is the most valuable — capture gotchas and non-obvious learnings
+	- Relevant Files should only include files that were significantly changed or are important for context`),
 				mcp.WithString("content",
 					mcp.Required(),
 					mcp.Description("Full session summary using the Goal/Instructions/Discoveries/Accomplished/Files format"),
@@ -691,9 +740,9 @@ GUIDELINES:
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithDescription(`Extract and save structured learnings from text output. Use this at the end of a task to capture knowledge automatically.
 
-The tool looks for sections like "## Key Learnings:" or "## Aprendizajes Clave:" and extracts numbered or bulleted items. Each item is saved as a separate observation.
+	The tool looks for sections like "## Key Learnings:" or "## Aprendizajes Clave:" and extracts numbered or bulleted items. Each item is saved as a separate observation.
 
-Duplicates are automatically detected and skipped — safe to call multiple times with the same content.`),
+	Duplicates are automatically detected and skipped — safe to call multiple times with the same content.`),
 				mcp.WithString("content",
 					mcp.Required(),
 					mcp.Description("The text output containing a '## Key Learnings:' section with numbered or bulleted items"),
@@ -711,7 +760,8 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleCapturePassive(s, cfg, activity),
 		)
 	}
-
+}
+func registerAdminProjectTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_merge_projects", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_merge_projects",
@@ -753,43 +803,122 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleListDomains(s),
 		)
 	}
-
-	if shouldRegister("mem_prime", allowlist) {
+}
+func registerGraphRelationTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+	if shouldRegister("mem_link", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_prime",
-				mcp.WithDescription("Build a structured prime context pack with Knowledge vs Episode tier separation. Returns memory items organized by Decisions, Patterns, Known Failures, and Procedures sections."),
-				mcp.WithTitleAnnotation("Prime Context"),
+			mcp.NewTool("mem_link",
+				mcp.WithDescription("Create a typed relation between two memories. Relation types: caused, resolves, supersedes, related_to, implements, contradicts."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Link Memories"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("from_obs_id",
+					mcp.Required(),
+					mcp.Description("Source memory ID"),
+				),
+				mcp.WithNumber("to_obs_id",
+					mcp.Required(),
+					mcp.Description("Target memory ID"),
+				),
+				mcp.WithString("relation",
+					mcp.Required(),
+					mcp.Description("Relation type: caused, resolves, supersedes, related_to, implements, contradicts"),
+				),
+			),
+			handleLink(s),
+		)
+	}
+
+	if shouldRegister("mem_unlink", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_unlink",
+				mcp.WithDescription("Remove a typed relation between two memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Unlink Memories"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("from_obs_id",
+					mcp.Required(),
+					mcp.Description("Source memory ID"),
+				),
+				mcp.WithNumber("to_obs_id",
+					mcp.Required(),
+					mcp.Description("Target memory ID"),
+				),
+				mcp.WithString("relation",
+					mcp.Required(),
+					mcp.Description("Relation type to remove"),
+				),
+			),
+			handleUnlink(s),
+		)
+	}
+
+	if shouldRegister("mem_related", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_related",
+				mcp.WithDescription("Traverse relations from a given memory. Returns related memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Related Memories"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("project_id",
+				mcp.WithNumber("obs_id",
 					mcp.Required(),
-					mcp.Description("Project ID to build prime context for"),
+					mcp.Description("Memory ID to traverse relations from"),
 				),
-				mcp.WithString("domain",
-					mcp.Description("Filter by domain/namespace"),
-				),
-				mcp.WithNumber("budget_tokens",
-					mcp.Description("Token budget for the prime context (default: 2000)"),
-				),
-				mcp.WithString("kinds",
-					mcp.Description("Filter by memory kinds (comma-separated)"),
-				),
-				mcp.WithString("files",
-					mcp.Description("Comma-separated file/path hints to bias matching applies_to_json"),
-				),
-				mcp.WithString("format",
-					mcp.Description("Output format: md (default), xml, or json"),
-				),
-				mcp.WithBoolean("show_actor",
-					mcp.Description("Include [written_by] actor tags in output entries"),
+				mcp.WithString("relation",
+					mcp.Description("Filter by relation type (optional)"),
 				),
 			),
-			handlePrime(s),
+			handleRelated(s),
 		)
 	}
 
+	// ─── mem_extract_entities (profile: agent, deferred) ─────────────────
+	if shouldRegister("mem_extract_entities", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_extract_entities",
+				mcp.WithDescription("Extract entities from a memory and link them into the optional graph index."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Extract Entities"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(false),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to extract entities from")),
+				mcp.WithString("project", mcp.Description("Project key override (default: memory project)")),
+			),
+			handleExtractEntities(s),
+		)
+	}
+
+	// ─── mem_graph_context (profile: agent, deferred) ────────────────────
+	if shouldRegister("mem_graph_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_graph_context",
+				mcp.WithDescription("Entity-centric graph context retrieval from entities -> linked memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Graph Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("entity", mcp.Required(), mcp.Description("Entity name to pivot graph retrieval on")),
+				mcp.WithString("project", mcp.Description("Project scope")),
+				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
+			),
+			handleGraphContext(s),
+		)
+	}
+}
+func registerGovernanceTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_mark_used", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_mark_used",
@@ -903,82 +1032,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 		)
 	}
 
-	if shouldRegister("mem_link", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_link",
-				mcp.WithDescription("Create a typed relation between two memories. Relation types: caused, resolves, supersedes, related_to, implements, contradicts."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Link Memories"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("from_obs_id",
-					mcp.Required(),
-					mcp.Description("Source memory ID"),
-				),
-				mcp.WithNumber("to_obs_id",
-					mcp.Required(),
-					mcp.Description("Target memory ID"),
-				),
-				mcp.WithString("relation",
-					mcp.Required(),
-					mcp.Description("Relation type: caused, resolves, supersedes, related_to, implements, contradicts"),
-				),
-			),
-			handleLink(s),
-		)
-	}
-
-	if shouldRegister("mem_unlink", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_unlink",
-				mcp.WithDescription("Remove a typed relation between two memories."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Unlink Memories"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("from_obs_id",
-					mcp.Required(),
-					mcp.Description("Source memory ID"),
-				),
-				mcp.WithNumber("to_obs_id",
-					mcp.Required(),
-					mcp.Description("Target memory ID"),
-				),
-				mcp.WithString("relation",
-					mcp.Required(),
-					mcp.Description("Relation type to remove"),
-				),
-			),
-			handleUnlink(s),
-		)
-	}
-
-	if shouldRegister("mem_related", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_related",
-				mcp.WithDescription("Traverse relations from a given memory. Returns related memories."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Related Memories"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id",
-					mcp.Required(),
-					mcp.Description("Memory ID to traverse relations from"),
-				),
-				mcp.WithString("relation",
-					mcp.Description("Filter by relation type (optional)"),
-				),
-			),
-			handleRelated(s),
-		)
-	}
-
 	if shouldRegister("mem_consolidate_candidates", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_consolidate_candidates",
@@ -1041,43 +1094,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithString("actor_id", mcp.Description("Actor recording feedback (default: agent)")),
 			),
 			handleFeedback(s),
-		)
-	}
-
-	// ─── mem_extract_entities (profile: agent, deferred) ─────────────────
-	if shouldRegister("mem_extract_entities", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_extract_entities",
-				mcp.WithDescription("Extract entities from a memory and link them into the optional graph index."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Extract Entities"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(false),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to extract entities from")),
-				mcp.WithString("project", mcp.Description("Project key override (default: memory project)")),
-			),
-			handleExtractEntities(s),
-		)
-	}
-
-	// ─── mem_graph_context (profile: agent, deferred) ────────────────────
-	if shouldRegister("mem_graph_context", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_graph_context",
-				mcp.WithDescription("Entity-centric graph context retrieval from entities -> linked memories."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Graph Context"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("entity", mcp.Required(), mcp.Description("Entity name to pivot graph retrieval on")),
-				mcp.WithString("project", mcp.Description("Project scope")),
-				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
-			),
-			handleGraphContext(s),
 		)
 	}
 }
