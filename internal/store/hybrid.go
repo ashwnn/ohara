@@ -138,19 +138,39 @@ func (s *Store) blendHybridScores(items []MemoryItem, query string, alpha float6
 	if alpha < 0 || alpha > 1 {
 		alpha = 0.6
 	}
+	args := make([]any, len(items))
+	placeholders := make([]string, len(items))
 	for i := range items {
-		var embBlob []byte
-		err := s.db.QueryRow(`SELECT embedding FROM obs_embeddings WHERE obs_id = ?`, items[i].ID).Scan(&embBlob)
-		if err != nil || len(embBlob) == 0 {
-			continue
+		args[i] = items[i].ID
+		placeholders[i] = "?"
+	}
+
+	querySQL := fmt.Sprintf(`SELECT obs_id, embedding FROM obs_embeddings WHERE obs_id IN (%s)`, strings.Join(placeholders, ","))
+	rows, err := s.db.Query(querySQL, args...)
+	if err == nil {
+		defer rows.Close()
+		embMap := make(map[int64][]byte, len(items))
+		for rows.Next() {
+			var id int64
+			var embBlob []byte
+			if err := rows.Scan(&id, &embBlob); err == nil {
+				embMap[id] = embBlob
+			}
 		}
-		mVec, err := bytesToFloats(embBlob)
-		if err != nil {
-			continue
+
+		for i := range items {
+			embBlob, ok := embMap[items[i].ID]
+			if !ok || len(embBlob) == 0 {
+				continue
+			}
+			mVec, err := bytesToFloats(embBlob)
+			if err != nil {
+				continue
+			}
+			cos := cosineSimilarity(qVec, mVec)
+			vecScore := (cos + 1.0) / 2.0
+			items[i].RelevanceScore = alpha*items[i].RelevanceScore + (1.0-alpha)*vecScore
 		}
-		cos := cosineSimilarity(qVec, mVec)
-		vecScore := (cos + 1.0) / 2.0
-		items[i].RelevanceScore = alpha*items[i].RelevanceScore + (1.0-alpha)*vecScore
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].RelevanceScore > items[j].RelevanceScore
