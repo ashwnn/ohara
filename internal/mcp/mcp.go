@@ -210,6 +210,16 @@ func shouldRegister(name string, allowlist map[string]bool) bool {
 }
 
 func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+	registerSearchTools(srv, s, cfg, allowlist, activity)
+	registerCoreTools(srv, s, cfg, allowlist, activity)
+	registerSessionTools(srv, s, cfg, allowlist, activity)
+	registerAdminTools(srv, s, cfg, allowlist, activity)
+	registerOutcomesTools(srv, s, cfg, allowlist, activity)
+	registerRelationsTools(srv, s, cfg, allowlist, activity)
+	registerConsolidationTools(srv, s, cfg, allowlist, activity)
+}
+
+func registerSearchTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 	if shouldRegister("mem_search", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search",
@@ -288,6 +298,135 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 			handleSearchRerank(s, cfg, activity),
 		)
 	}
+
+	if shouldRegister("mem_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_context",
+				mcp.WithDescription("Get recent memory context from previous sessions via a token-budget-aware context pack. Uses the memory_items foundation to assemble global + project memories within a token budget (default: 400 tokens). Shows recent sessions and memories to understand what was done before."),
+				mcp.WithTitleAnnotation("Get Memory Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project",
+					mcp.Description("Filter by project (omit for all projects)"),
+				),
+				mcp.WithString("domain",
+					mcp.Description("Optional domain/subsystem filter"),
+				),
+				mcp.WithString("asof",
+					mcp.Description("Optional as-of timestamp filter (RFC3339)"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the context pack (default: 400, max: 800)"),
+				),
+			),
+			handleContext(s, cfg, activity),
+		)
+	}
+
+	if shouldRegister("mem_pack", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_pack",
+				mcp.WithDescription("Build a token-budget-aware context pack from memory items within a token budget."),
+				mcp.WithTitleAnnotation("Build Memory Pack"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project_id",
+					mcp.Required(),
+					mcp.Description("Project ID to build context pack for"),
+				),
+				mcp.WithString("session_id",
+					mcp.Description("Optional session ID — includes postmortems from that session in the pack"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
+				),
+			),
+			handlePack(s),
+		)
+	}
+
+	if shouldRegister("mem_prime", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_prime",
+				mcp.WithDescription("Build a structured prime context pack with Knowledge vs Episode tier separation. Returns memory items organized by Decisions, Patterns, Known Failures, and Procedures sections."),
+				mcp.WithTitleAnnotation("Prime Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project_id",
+					mcp.Required(),
+					mcp.Description("Project ID to build prime context for"),
+				),
+				mcp.WithString("domain",
+					mcp.Description("Filter by domain/namespace"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the prime context (default: 2000)"),
+				),
+				mcp.WithString("kinds",
+					mcp.Description("Filter by memory kinds (comma-separated)"),
+				),
+				mcp.WithString("files",
+					mcp.Description("Comma-separated file/path hints to bias matching applies_to_json"),
+				),
+				mcp.WithString("format",
+					mcp.Description("Output format: md (default), xml, or json"),
+				),
+				mcp.WithBoolean("show_actor",
+					mcp.Description("Include [written_by] actor tags in output entries"),
+				),
+			),
+			handlePrime(s),
+		)
+	}
+
+	if shouldRegister("mem_related", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_related",
+				mcp.WithDescription("Traverse relations from a given memory. Returns related memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Related Memories"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("obs_id",
+					mcp.Required(),
+					mcp.Description("Memory ID to traverse relations from"),
+				),
+				mcp.WithString("relation",
+					mcp.Description("Filter by relation type (optional)"),
+				),
+			),
+			handleRelated(s),
+		)
+	}
+	// ─── mem_graph_context (profile: agent, deferred) ────────────────────
+	if shouldRegister("mem_graph_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_graph_context",
+				mcp.WithDescription("Entity-centric graph context retrieval from entities -> linked memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Graph Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("entity", mcp.Required(), mcp.Description("Entity name to pivot graph retrieval on")),
+				mcp.WithString("project", mcp.Description("Project scope")),
+				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
+			),
+			handleGraphContext(s),
+		)
+	}
+}
+
+func registerCoreTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 
 	if shouldRegister("mem_save", allowlist) {
 		srv.AddTool(
@@ -415,30 +554,6 @@ Examples:
 		)
 	}
 
-	if shouldRegister("mem_suggest_topic_key", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_suggest_topic_key",
-				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before mem_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Suggest Topic Key"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("type",
-					mcp.Description("Observation type/category, e.g. architecture, decision, bugfix"),
-				),
-				mcp.WithString("title",
-					mcp.Description("Observation title (preferred input for stable keys)"),
-				),
-				mcp.WithString("content",
-					mcp.Description("Observation content used as fallback if title is empty"),
-				),
-			),
-			handleSuggestTopicKey(),
-		)
-	}
-
 	if shouldRegister("mem_delete", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_delete",
@@ -458,6 +573,32 @@ Examples:
 				),
 			),
 			handleDelete(s),
+		)
+	}
+
+	if shouldRegister("mem_forget", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_forget",
+				mcp.WithDescription("Archive a memory with a documented reason; preserves audit trail"),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Forget Memory"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("obs_id",
+					mcp.Required(),
+					mcp.Description("Memory ID to archive"),
+				),
+				mcp.WithString("reason",
+					mcp.Required(),
+					mcp.Description("Reason for forgetting"),
+				),
+				mcp.WithNumber("replacement_obs_id",
+					mcp.Description("ID of the memory that supersedes this one"),
+				),
+			),
+			handleForget(s),
 		)
 	}
 
@@ -485,95 +626,49 @@ Examples:
 		)
 	}
 
-	if shouldRegister("mem_context", allowlist) {
+	if shouldRegister("mem_suggest_topic_key", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_context",
-				mcp.WithDescription("Get recent memory context from previous sessions via a token-budget-aware context pack. Uses the memory_items foundation to assemble global + project memories within a token budget (default: 400 tokens). Shows recent sessions and memories to understand what was done before."),
-				mcp.WithTitleAnnotation("Get Memory Context"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("project",
-					mcp.Description("Filter by project (omit for all projects)"),
-				),
-				mcp.WithString("domain",
-					mcp.Description("Optional domain/subsystem filter"),
-				),
-				mcp.WithString("asof",
-					mcp.Description("Optional as-of timestamp filter (RFC3339)"),
-				),
-				mcp.WithNumber("budget_tokens",
-					mcp.Description("Token budget for the context pack (default: 400, max: 800)"),
-				),
-			),
-			handleContext(s, cfg, activity),
-		)
-	}
-
-	if shouldRegister("mem_stats", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_stats",
-				mcp.WithDescription("Show memory system statistics — total sessions, memories, prompts, and memory items tracked (by kind, scope, and status)."),
+			mcp.NewTool("mem_suggest_topic_key",
+				mcp.WithDescription("Suggest a stable topic_key for memory upserts. Use this before mem_save when you want evolving topics (like architecture decisions) to update a single observation over time."),
 				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Memory Stats"),
+				mcp.WithTitleAnnotation("Suggest Topic Key"),
 				mcp.WithReadOnlyHintAnnotation(true),
 				mcp.WithDestructiveHintAnnotation(false),
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
-			),
-			handleStats(s),
-		)
-	}
-
-	if shouldRegister("mem_pack", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_pack",
-				mcp.WithDescription("Build a token-budget-aware context pack from memory items within a token budget."),
-				mcp.WithTitleAnnotation("Build Memory Pack"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("project_id",
-					mcp.Required(),
-					mcp.Description("Project ID to build context pack for"),
+				mcp.WithString("type",
+					mcp.Description("Observation type/category, e.g. architecture, decision, bugfix"),
 				),
-				mcp.WithString("session_id",
-					mcp.Description("Optional session ID — includes postmortems from that session in the pack"),
+				mcp.WithString("title",
+					mcp.Description("Observation title (preferred input for stable keys)"),
 				),
-				mcp.WithNumber("budget_tokens",
-					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
+				mcp.WithString("content",
+					mcp.Description("Observation content used as fallback if title is empty"),
 				),
 			),
-			handlePack(s),
+			handleSuggestTopicKey(),
 		)
 	}
-
-	if shouldRegister("mem_timeline", allowlist) {
+	// ─── mem_extract_entities (profile: agent, deferred) ─────────────────
+	if shouldRegister("mem_extract_entities", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_timeline",
-				mcp.WithDescription("Show chronological context around a specific memory item. Use after mem_search to drill into the timeline of events surrounding a search result."),
+			mcp.NewTool("mem_extract_entities",
+				mcp.WithDescription("Extract entities from a memory and link them into the optional graph index."),
 				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Memory Timeline"),
-				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithTitleAnnotation("Extract Entities"),
+				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("memory_id",
-					mcp.Required(),
-					mcp.Description("The memory ID to center the timeline on (from mem_search results)"),
-				),
-				mcp.WithNumber("before",
-					mcp.Description("Number of memories to show before the focus (default: 5)"),
-				),
-				mcp.WithNumber("after",
-					mcp.Description("Number of memories to show after the focus (default: 5)"),
-				),
+				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to extract entities from")),
+				mcp.WithString("project", mcp.Description("Project key override (default: memory project)")),
 			),
-			handleTimeline(s),
+			handleExtractEntities(s),
 		)
 	}
+}
+
+func registerSessionTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 
 	if shouldRegister("mem_session_summary", allowlist) {
 		srv.AddTool(
@@ -711,6 +806,49 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleCapturePassive(s, cfg, activity),
 		)
 	}
+}
+
+func registerAdminTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+
+	if shouldRegister("mem_stats", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_stats",
+				mcp.WithDescription("Show memory system statistics — total sessions, memories, prompts, and memory items tracked (by kind, scope, and status)."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Memory Stats"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+			),
+			handleStats(s),
+		)
+	}
+
+	if shouldRegister("mem_timeline", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_timeline",
+				mcp.WithDescription("Show chronological context around a specific memory item. Use after mem_search to drill into the timeline of events surrounding a search result."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Memory Timeline"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("memory_id",
+					mcp.Required(),
+					mcp.Description("The memory ID to center the timeline on (from mem_search results)"),
+				),
+				mcp.WithNumber("before",
+					mcp.Description("Number of memories to show before the focus (default: 5)"),
+				),
+				mcp.WithNumber("after",
+					mcp.Description("Number of memories to show after the focus (default: 5)"),
+				),
+			),
+			handleTimeline(s),
+		)
+	}
 
 	if shouldRegister("mem_merge_projects", allowlist) {
 		srv.AddTool(
@@ -753,42 +891,9 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleListDomains(s),
 		)
 	}
+}
 
-	if shouldRegister("mem_prime", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_prime",
-				mcp.WithDescription("Build a structured prime context pack with Knowledge vs Episode tier separation. Returns memory items organized by Decisions, Patterns, Known Failures, and Procedures sections."),
-				mcp.WithTitleAnnotation("Prime Context"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("project_id",
-					mcp.Required(),
-					mcp.Description("Project ID to build prime context for"),
-				),
-				mcp.WithString("domain",
-					mcp.Description("Filter by domain/namespace"),
-				),
-				mcp.WithNumber("budget_tokens",
-					mcp.Description("Token budget for the prime context (default: 2000)"),
-				),
-				mcp.WithString("kinds",
-					mcp.Description("Filter by memory kinds (comma-separated)"),
-				),
-				mcp.WithString("files",
-					mcp.Description("Comma-separated file/path hints to bias matching applies_to_json"),
-				),
-				mcp.WithString("format",
-					mcp.Description("Output format: md (default), xml, or json"),
-				),
-				mcp.WithBoolean("show_actor",
-					mcp.Description("Include [written_by] actor tags in output entries"),
-				),
-			),
-			handlePrime(s),
-		)
-	}
+func registerOutcomesTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 
 	if shouldRegister("mem_mark_used", allowlist) {
 		srv.AddTool(
@@ -876,32 +981,28 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleResolveConflict(s),
 		)
 	}
-
-	if shouldRegister("mem_forget", allowlist) {
+	// ─── mem_feedback (profile: agent, deferred) ─────────────────────────
+	if shouldRegister("mem_feedback", allowlist) {
 		srv.AddTool(
-			mcp.NewTool("mem_forget",
-				mcp.WithDescription("Archive a memory with a documented reason; preserves audit trail"),
+			mcp.NewTool("mem_feedback",
+				mcp.WithDescription("Record explicit utility feedback for a memory and adjust utility_weight."),
 				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Forget Memory"),
+				mcp.WithTitleAnnotation("Memory Feedback"),
 				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(true),
-				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id",
-					mcp.Required(),
-					mcp.Description("Memory ID to archive"),
-				),
-				mcp.WithString("reason",
-					mcp.Required(),
-					mcp.Description("Reason for forgetting"),
-				),
-				mcp.WithNumber("replacement_obs_id",
-					mcp.Description("ID of the memory that supersedes this one"),
-				),
+				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to rate")),
+				mcp.WithNumber("reward", mcp.Required(), mcp.Description("Reward in [-1.0, 1.0]")),
+				mcp.WithString("notes", mcp.Description("Optional feedback notes")),
+				mcp.WithString("actor_id", mcp.Description("Actor recording feedback (default: agent)")),
 			),
-			handleForget(s),
+			handleFeedback(s),
 		)
 	}
+}
+
+func registerRelationsTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 
 	if shouldRegister("mem_link", allowlist) {
 		srv.AddTool(
@@ -956,28 +1057,9 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleUnlink(s),
 		)
 	}
+}
 
-	if shouldRegister("mem_related", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_related",
-				mcp.WithDescription("Traverse relations from a given memory. Returns related memories."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Related Memories"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id",
-					mcp.Required(),
-					mcp.Description("Memory ID to traverse relations from"),
-				),
-				mcp.WithString("relation",
-					mcp.Description("Filter by relation type (optional)"),
-				),
-			),
-			handleRelated(s),
-		)
-	}
+func registerConsolidationTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
 
 	if shouldRegister("mem_consolidate_candidates", allowlist) {
 		srv.AddTool(
@@ -999,7 +1081,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 			handleConsolidationCandidates(s),
 		)
 	}
-
 	// ─── mem_mark_consolidated (profile: agent, deferred) ──────────────────
 	if shouldRegister("mem_mark_consolidated", allowlist) {
 		srv.AddTool(
@@ -1021,63 +1102,6 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				),
 			),
 			handleMarkConsolidated(s),
-		)
-	}
-
-	// ─── mem_feedback (profile: agent, deferred) ─────────────────────────
-	if shouldRegister("mem_feedback", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_feedback",
-				mcp.WithDescription("Record explicit utility feedback for a memory and adjust utility_weight."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Memory Feedback"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(false),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to rate")),
-				mcp.WithNumber("reward", mcp.Required(), mcp.Description("Reward in [-1.0, 1.0]")),
-				mcp.WithString("notes", mcp.Description("Optional feedback notes")),
-				mcp.WithString("actor_id", mcp.Description("Actor recording feedback (default: agent)")),
-			),
-			handleFeedback(s),
-		)
-	}
-
-	// ─── mem_extract_entities (profile: agent, deferred) ─────────────────
-	if shouldRegister("mem_extract_entities", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_extract_entities",
-				mcp.WithDescription("Extract entities from a memory and link them into the optional graph index."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Extract Entities"),
-				mcp.WithReadOnlyHintAnnotation(false),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(false),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to extract entities from")),
-				mcp.WithString("project", mcp.Description("Project key override (default: memory project)")),
-			),
-			handleExtractEntities(s),
-		)
-	}
-
-	// ─── mem_graph_context (profile: agent, deferred) ────────────────────
-	if shouldRegister("mem_graph_context", allowlist) {
-		srv.AddTool(
-			mcp.NewTool("mem_graph_context",
-				mcp.WithDescription("Entity-centric graph context retrieval from entities -> linked memories."),
-				mcp.WithDeferLoading(true),
-				mcp.WithTitleAnnotation("Graph Context"),
-				mcp.WithReadOnlyHintAnnotation(true),
-				mcp.WithDestructiveHintAnnotation(false),
-				mcp.WithIdempotentHintAnnotation(true),
-				mcp.WithOpenWorldHintAnnotation(false),
-				mcp.WithString("entity", mcp.Required(), mcp.Description("Entity name to pivot graph retrieval on")),
-				mcp.WithString("project", mcp.Description("Project scope")),
-				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
-			),
-			handleGraphContext(s),
 		)
 	}
 }
