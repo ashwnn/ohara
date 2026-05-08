@@ -1086,12 +1086,12 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 
 func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query, _ := req.GetArguments()["query"].(string)
-		typ, _ := req.GetArguments()["type"].(string)
-		project, _ := req.GetArguments()["project"].(string)
-		scope, _ := req.GetArguments()["scope"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
-		writtenBy, _ := req.GetArguments()["written_by"].(string)
+		query := stringArg(req, "query")
+		typ := stringArg(req, "type")
+		project := stringArg(req, "project")
+		scope := stringArg(req, "scope")
+		domain := stringArg(req, "domain")
+		writtenBy := stringArg(req, "written_by")
 		limit := intArg(req, "limit", 10)
 		minConfidence := floatArg(req, "min_confidence", 0.0)
 
@@ -1196,15 +1196,15 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 
 func handleSearchRerank(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query, _ := req.GetArguments()["query"].(string)
+		query := stringArg(req, "query")
 		if strings.TrimSpace(query) == "" {
 			return mcp.NewToolResultError("query is required"), nil
 		}
-		project, _ := req.GetArguments()["project"].(string)
-		scope, _ := req.GetArguments()["scope"].(string)
-		typ, _ := req.GetArguments()["type"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
-		writtenBy, _ := req.GetArguments()["written_by"].(string)
+		project := stringArg(req, "project")
+		scope := stringArg(req, "scope")
+		typ := stringArg(req, "type")
+		domain := stringArg(req, "domain")
+		writtenBy := stringArg(req, "written_by")
 		limit := intArg(req, "limit", 20)
 		topN := intArg(req, "top_n", 8)
 
@@ -1261,21 +1261,21 @@ func normalizeKindForSave(kind string) string {
 
 func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		title, _ := req.GetArguments()["title"].(string)
-		content, _ := req.GetArguments()["content"].(string)
-		typ, _ := req.GetArguments()["type"].(string)
-		sessionID, _ := req.GetArguments()["session_id"].(string)
-		project, _ := req.GetArguments()["project"].(string)
-		scope, _ := req.GetArguments()["scope"].(string)
-		topicKey, _ := req.GetArguments()["topic_key"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
-		classification, _ := req.GetArguments()["classification"].(string)
-		writtenBy, _ := req.GetArguments()["written_by"].(string)
-		expiresAt, _ := req.GetArguments()["expires_at"].(string)
-		trigger, _ := req.GetArguments()["trigger"].(string)
-		evidence, _ := req.GetArguments()["evidence"].(string)
-		appliesTo, _ := req.GetArguments()["applies_to"].(string)
-		related, _ := req.GetArguments()["related"].(string)
+		title := stringArg(req, "title")
+		content := stringArg(req, "content")
+		typ := stringArg(req, "type")
+		sessionID := stringArg(req, "session_id")
+		project := stringArg(req, "project")
+		scope := stringArg(req, "scope")
+		topicKey := stringArg(req, "topic_key")
+		domain := stringArg(req, "domain")
+		classification := stringArg(req, "classification")
+		writtenBy := stringArg(req, "written_by")
+		expiresAt := stringArg(req, "expires_at")
+		trigger := stringArg(req, "trigger")
+		evidence := stringArg(req, "evidence")
+		appliesTo := stringArg(req, "applies_to")
+		related := stringArg(req, "related")
 		force := boolArg(req, "force", false)
 
 		// Apply default project when LLM sends empty
@@ -1398,9 +1398,9 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 
 func handleSuggestTopicKey() server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		typ, _ := req.GetArguments()["type"].(string)
-		title, _ := req.GetArguments()["title"].(string)
-		content, _ := req.GetArguments()["content"].(string)
+		typ := stringArg(req, "type")
+		title := stringArg(req, "title")
+		content := stringArg(req, "content")
 
 		if strings.TrimSpace(title) == "" && strings.TrimSpace(content) == "" {
 			return mcp.NewToolResultError("provide title or content to suggest a topic_key"), nil
@@ -1466,9 +1466,9 @@ func handleDelete(s *store.Store) server.ToolHandlerFunc {
 
 func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		content, _ := req.GetArguments()["content"].(string)
-		sessionID, _ := req.GetArguments()["session_id"].(string)
-		project, _ := req.GetArguments()["project"].(string)
+		content := stringArg(req, "content")
+		sessionID := stringArg(req, "session_id")
+		project := stringArg(req, "project")
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -1499,9 +1499,9 @@ func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 
 func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		project, _ := req.GetArguments()["project"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
-		asof, _ := req.GetArguments()["asof"].(string)
+		project := stringArg(req, "project")
+		domain := stringArg(req, "domain")
+		asof := stringArg(req, "asof")
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -1636,12 +1636,12 @@ func handleStats(s *store.Store) server.ToolHandlerFunc {
 
 func handlePack(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		projectID, _ := req.GetArguments()["project_id"].(string)
+		projectID := stringArg(req, "project_id")
 		if projectID == "" {
 			return mcp.NewToolResultError("project_id is required"), nil
 		}
 
-		sessionID, _ := req.GetArguments()["session_id"].(string)
+		sessionID := stringArg(req, "session_id")
 		budgetTokens := intArg(req, "budget_tokens", 400)
 
 		result, err := s.BuildPack(store.PackParams{
@@ -1700,9 +1700,9 @@ func handleTimeline(s *store.Store) server.ToolHandlerFunc {
 
 func handleSessionSummary(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		content, _ := req.GetArguments()["content"].(string)
-		sessionID, _ := req.GetArguments()["session_id"].(string)
-		project, _ := req.GetArguments()["project"].(string)
+		content := stringArg(req, "content")
+		sessionID := stringArg(req, "session_id")
+		project := stringArg(req, "project")
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -1741,9 +1741,9 @@ func handleSessionSummary(s *store.Store, cfg MCPConfig, activity *SessionActivi
 
 func handleSessionStart(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id, _ := req.GetArguments()["id"].(string)
-		project, _ := req.GetArguments()["project"].(string)
-		directory, _ := req.GetArguments()["directory"].(string)
+		id := stringArg(req, "id")
+		project := stringArg(req, "project")
+		directory := stringArg(req, "directory")
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -1771,8 +1771,8 @@ func handleSessionStart(s *store.Store, cfg MCPConfig, activity *SessionActivity
 
 func handleSessionEnd(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id, _ := req.GetArguments()["id"].(string)
-		summary, _ := req.GetArguments()["summary"].(string)
+		id := stringArg(req, "id")
+		summary := stringArg(req, "summary")
 
 		if err := s.EndSession(id, summary); err != nil {
 			return mcp.NewToolResultError("Failed to end session: " + err.Error()), nil
@@ -1780,7 +1780,7 @@ func handleSessionEnd(s *store.Store, cfg MCPConfig, activity *SessionActivity) 
 
 		// Determine the project for this session to clean up activity tracking
 		project := cfg.DefaultProject
-		if p, _ := req.GetArguments()["project"].(string); p != "" {
+		if p := stringArg(req, "project"); p != "" {
 			project = p
 		}
 		project, _ = store.NormalizeProject(project)
@@ -1792,10 +1792,10 @@ func handleSessionEnd(s *store.Store, cfg MCPConfig, activity *SessionActivity) 
 
 func handleCapturePassive(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		content, _ := req.GetArguments()["content"].(string)
-		sessionID, _ := req.GetArguments()["session_id"].(string)
-		project, _ := req.GetArguments()["project"].(string)
-		source, _ := req.GetArguments()["source"].(string)
+		content := stringArg(req, "content")
+		sessionID := stringArg(req, "session_id")
+		project := stringArg(req, "project")
+		source := stringArg(req, "source")
 
 		// Apply default project when LLM sends empty
 		if project == "" {
@@ -1837,8 +1837,8 @@ func handleCapturePassive(s *store.Store, cfg MCPConfig, activity *SessionActivi
 
 func handleMergeProjects(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		fromStr, _ := req.GetArguments()["from"].(string)
-		to, _ := req.GetArguments()["to"].(string)
+		fromStr := stringArg(req, "from")
+		to := stringArg(req, "to")
 
 		if fromStr == "" || to == "" {
 			return mcp.NewToolResultError("both 'from' and 'to' are required"), nil
@@ -1873,7 +1873,7 @@ func handleMergeProjects(s *store.Store) server.ToolHandlerFunc {
 // handleListDomains returns all distinct domains for a project.
 func handleListDomains(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		projectID, _ := req.GetArguments()["project_id"].(string)
+		projectID := stringArg(req, "project_id")
 
 		rows, err := s.Query(
 			`SELECT DISTINCT domain FROM memory_items
@@ -1907,12 +1907,12 @@ func handleListDomains(s *store.Store) server.ToolHandlerFunc {
 // handlePrime builds a structured prime context pack with Knowledge vs Episode tier separation.
 func handlePrime(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		projectID, _ := req.GetArguments()["project_id"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
+		projectID := stringArg(req, "project_id")
+		domain := stringArg(req, "domain")
 		budgetTokens := intArg(req, "budget_tokens", 2000)
-		kindsStr, _ := req.GetArguments()["kinds"].(string)
-		filesStr, _ := req.GetArguments()["files"].(string)
-		format, _ := req.GetArguments()["format"].(string)
+		kindsStr := stringArg(req, "kinds")
+		filesStr := stringArg(req, "files")
+		format := stringArg(req, "format")
 		if format == "" {
 			format = "md"
 		}
@@ -2096,8 +2096,8 @@ func handlePrime(s *store.Store) server.ToolHandlerFunc {
 func handleMarkUsed(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		memoryID, _ := req.GetArguments()["memory_id"]
-		event, _ := req.GetArguments()["event"].(string)
-		sessionID, _ := req.GetArguments()["session_id"].(string)
+		event := stringArg(req, "event")
+		sessionID := stringArg(req, "session_id")
 
 		if event == "" {
 			event = "retrieved"
@@ -2158,9 +2158,9 @@ func handleMarkUsed(s *store.Store) server.ToolHandlerFunc {
 func handleAppendOutcome(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		memoryID := int64(intArg(req, "memory_id", 0))
-		status, _ := req.GetArguments()["status"].(string)
-		notes, _ := req.GetArguments()["notes"].(string)
-		actorID, _ := req.GetArguments()["actor_id"].(string)
+		status := stringArg(req, "status")
+		notes := stringArg(req, "notes")
+		actorID := stringArg(req, "actor_id")
 
 		if memoryID == 0 {
 			return mcp.NewToolResultError("memory_id is required"), nil
@@ -2189,9 +2189,9 @@ func handleResolveConflict(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		idA := int64(intArg(req, "obs_id_a", 0))
 		idB := int64(intArg(req, "obs_id_b", 0))
-		action, _ := req.GetArguments()["action"].(string)
-		mergedContent, _ := req.GetArguments()["merged_content"].(string)
-		relationType, _ := req.GetArguments()["relation_type"].(string)
+		action := stringArg(req, "action")
+		mergedContent := stringArg(req, "merged_content")
+		relationType := stringArg(req, "relation_type")
 
 		if idA == 0 || idB == 0 {
 			return mcp.NewToolResultError("obs_id_a and obs_id_b are required"), nil
@@ -2340,7 +2340,7 @@ func handleLink(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		fromID := int64(intArg(req, "from_obs_id", 0))
 		toID := int64(intArg(req, "to_obs_id", 0))
-		relation, _ := req.GetArguments()["relation"].(string)
+		relation := stringArg(req, "relation")
 
 		if fromID == 0 || toID == 0 {
 			return mcp.NewToolResultError("from_obs_id and to_obs_id are required"), nil
@@ -2362,7 +2362,7 @@ func handleUnlink(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		fromID := int64(intArg(req, "from_obs_id", 0))
 		toID := int64(intArg(req, "to_obs_id", 0))
-		relation, _ := req.GetArguments()["relation"].(string)
+		relation := stringArg(req, "relation")
 
 		if fromID == 0 || toID == 0 {
 			return mcp.NewToolResultError("from_obs_id and to_obs_id are required"), nil
@@ -2382,7 +2382,7 @@ func handleUnlink(s *store.Store) server.ToolHandlerFunc {
 func handleRelated(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		obsID := int64(intArg(req, "obs_id", 0))
-		relation, _ := req.GetArguments()["relation"].(string)
+		relation := stringArg(req, "relation")
 
 		if obsID == 0 {
 			return mcp.NewToolResultError("obs_id is required"), nil
@@ -2412,8 +2412,8 @@ func handleRelated(s *store.Store) server.ToolHandlerFunc {
 
 func handleConsolidationCandidates(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		project, _ := req.GetArguments()["project"].(string)
-		domain, _ := req.GetArguments()["domain"].(string)
+		project := stringArg(req, "project")
+		domain := stringArg(req, "domain")
 
 		groups, err := s.GetConsolidationCandidates(project, domain)
 		if err != nil {
@@ -2469,8 +2469,8 @@ func handleFeedback(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		obsID := int64(intArg(req, "obs_id", 0))
 		reward := floatArg(req, "reward", 0)
-		notes, _ := req.GetArguments()["notes"].(string)
-		actorID, _ := req.GetArguments()["actor_id"].(string)
+		notes := stringArg(req, "notes")
+		actorID := stringArg(req, "actor_id")
 		if obsID == 0 {
 			return mcp.NewToolResultError("obs_id is required"), nil
 		}
@@ -2484,7 +2484,7 @@ func handleFeedback(s *store.Store) server.ToolHandlerFunc {
 func handleExtractEntities(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		obsID := int64(intArg(req, "obs_id", 0))
-		projectOverride, _ := req.GetArguments()["project"].(string)
+		projectOverride := stringArg(req, "project")
 		if obsID == 0 {
 			return mcp.NewToolResultError("obs_id is required"), nil
 		}
@@ -2510,8 +2510,8 @@ func handleExtractEntities(s *store.Store) server.ToolHandlerFunc {
 
 func handleGraphContext(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		entity, _ := req.GetArguments()["entity"].(string)
-		project, _ := req.GetArguments()["project"].(string)
+		entity := stringArg(req, "entity")
+		project := stringArg(req, "project")
 		limit := intArg(req, "limit", 10)
 		if strings.TrimSpace(entity) == "" {
 			return mcp.NewToolResultError("entity is required"), nil
@@ -2572,4 +2572,11 @@ func boolArg(req mcp.CallToolRequest, key string, defaultVal bool) bool {
 // estimateTokens returns the estimated token count for a string.
 func estimateTokens(text string) int {
 	return token.Count(text)
+}
+
+func stringArg(req mcp.CallToolRequest, key string) string {
+	if v, ok := req.GetArguments()[key].(string); ok {
+		return v
+	}
+	return ""
 }
