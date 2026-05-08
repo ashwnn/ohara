@@ -1174,13 +1174,15 @@ func realCmdDoctor(cfg store.Config) {
 	// Check 5: memories with no domain set (flag only)
 	{
 		var count int
-		projectCond := ""
-		if project != "" {
-			projectCond = fmt.Sprintf(" AND project_id = '%s'", project)
-		}
-		row := s.QueryRow(`
+		query := `
 			SELECT COUNT(*) FROM memory_items
-			WHERE status = 'active' AND domain = ''` + projectCond)
+			WHERE status = 'active' AND domain = ''`
+		var args []any
+		if project != "" {
+			query += ` AND project_id = ?`
+			args = append(args, project)
+		}
+		row := s.QueryRow(query, args...)
 		row.Scan(&count)
 		if count > 0 {
 			fmt.Printf("[INFO] %d active memories have no domain set (consider adding one).\n", count)
