@@ -19,7 +19,7 @@ Ohara is battle-tested in local single-user contexts. Multi-agent concurrent wri
 - No migration rollback tested in production (only unit tests)
 - No backup/restore under pressure validated
 - Regex redaction is best-effort, not security guarantee
-- No auth layer — any local process can access all data
+- Auth layer: bearer token with static-token admin support; disabled by default for backward compat
 
 ## Testing Performed
 
@@ -32,10 +32,119 @@ Ohara is battle-tested in local single-user contexts. Multi-agent concurrent wri
 
 ## Security Properties
 
-- **Local-first only**: server binds to loopback (127.0.0.1), not exposed externally
-- **No auth layer**: trusted local caller model — any process on the machine can call the MCP server
+- **Local-first by default**: server binds to loopback (127.0.0.1); optional socket mode for single-user setups
+- **Auth layer (opt-in)**: bearer token authentication via `OHARA_AUTH_ENABLED=true` + `OHARA_AUTH_TOKEN=<token>`. Static token grants admin role. Disabled by default for backward compat
+- **MCP HTTP (opt-in, auth-protected)**: remote MCP at `/mcp` enabled via `OHARA_MCP_HTTP=true`. Protected by auth when enabled. ChatGPT-compatible Streamable HTTP transport
+- **Low-trust filtering**: read-only principals receive filtered/redacted memory responses; nil-claims (stdio) pass unrestricted
+- **Project scoping**: bearer claims can restrict project access via `AllowedProjects` allowlist
 - **Regex redaction is best-effort**: plugin layer strips `<private>` tags before persistence, but redaction is not a security control
 - **Secrets via `<private>` tags stripped at plugin layer before persistence**: prevents accidental logging, not a hard security boundary
+
+## Remote MCP Hardening
+
+Remote MCP access exposes Ohara's memory engine beyond localhost. Use these settings,
+trust model, and validation matrix to configure safely.
+
+### Auth Modes
+
+| Mode | Config | Trust Level | Use Case |
+|------|--------|-------------|----------|
+| **Legacy (disabled)** | default — no auth, no remote MCP | full access | Local stdio only |
+| **Remote unprotected** | `OHARA_MCP_HTTP=true` | full access to any caller | LAN dev/testing (no security boundary) |
+| **Remote protected** | `OHARA_AUTH_ENABLED=true` + `OHARA_MCP_HTTP=true` + `OHARA_AUTH_TOKEN=<token>` | admin token | Production remote access |
+| **Scoped (future)** | JWT with project allowlist | per-claim role + project filter | Multi-tenant / CI |
+
+### Setup Flow
+
+```bash
+# 1. Set a strong bearer token
+export OHARA_AUTH_TOKEN=$(openssl rand -hex 32)
+export OHARA_AUTH_ENABLED=true
+
+# 2. Enable remote MCP endpoint (mounted at /mcp)
+export OHARA_MCP_HTTP=true
+
+# 3. Start the server
+ohara serve
+
+# 4. Client connects to http://<host>:7331/mcp
+#    with header: Authorization: Bearer <token>
+```
+
+Or via config file (`~/.ohara/config.json`):
+
+```jsonc
+{
+  "auth_enabled": true,
+  "auth_token": "your-64-char-hex-token",
+  "mcp_http_enabled": true
+}
+```
+
+Environment variables take precedence over config file.
+
+### Trust Model
+
+| Principal | Source | Role | Low-Trust? | Access |
+|-----------|--------|------|------------|--------|
+| Nil claims (no auth) | stdio MCP, auth disabled | unrestricted | No | Full read/write |
+| Static token admin | HTTP MCP with valid Bearer token | RoleAdmin | No | Full access |
+| Read-only token (future) | JWT with RoleRead only | RoleRead | **Yes** | Filtered/redacted responses, project-scoped |
+
+**Low-trust filtering** (active when `Claims.IsLowTrust()` is true):
+- Memory responses have `trust_level` field filtered — only `system` and `agent` level items visible
+- Memory bodies are redacted via `MemoryItem.Redacted()` (body set to `"[redacted]"`)
+- Pack/timeline results filtered identically
+- Project-scope enforcement prevents cross-project access when `AllowedProjects` is set
+
+**Backward compatibility**: Stdio MCP transport (local agent pipes) carries nil claims.
+Nil claims are NOT low-trust and pass unrestricted. Enabling auth does NOT break
+existing local agents — they continue via stdio with full access.
+
+### Rollout Guidance
+
+1. **Local first**: Keep default settings (no auth, no remote MCP) for single-user
+   stdio-only setups. No configuration change needed.
+2. **LAN access**: Enable `MCP_HTTP=true` first, test the remote MCP endpoint at
+   `http://<host>:7331/mcp`. No auth yet — use only on trusted networks.
+3. **Add auth**: Set `AUTH_ENABLED=true` and `AUTH_TOKEN=<strong-token>`. The `/mcp`
+   endpoint becomes bearer-protected. Existing stdio agents keep working unchanged.
+4. **Validate**: Run the validation matrix below before production use.
+5. **Restrict network**: Bind to a specific interface (not `0.0.0.0`). Use firewall
+   rules or reverse proxy for additional access control.
+
+### Validation Matrix
+
+Test each config combination against a running `ohara serve`:
+
+| `AUTH_ENABLED` | `MCP_HTTP` | Auth Header | Stdio Agent | HTTP /mcp | Expected Result |
+|:---:|:---:|---|---|---|
+| false | false | n/a | works | no route | Local stdio only — safe default |
+| false | true | none | works | works, full access | Remote MCP, no auth — LAN only |
+| true | false | valid token | works | no route | API protected, MCP stdio only |
+| true | true | missing | works | **401** Unauthorized | Remote MCP blocked — correct |
+| true | true | malformed | works | **401** Unauthorized | Invalid token rejected |
+| true | true | valid token | works | works, admin | Remote MCP with auth — production config |
+| true | true | valid token, low-trust | works | works, filtered | Read-only principal gets redacted responses |
+
+**Key validations to run**:
+
+```bash
+# Health check is always open (even with auth)
+curl http://127.0.0.1:7331/health
+
+# Without auth header → 401
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7331/mcp
+
+# With valid auth header → 200 (MCP JSON-RPC response)
+curl -s -H "Authorization: Bearer $OHARA_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://127.0.0.1:7331/mcp
+
+# Stdio MCP still works alongside HTTP
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ohara mcp
+```
 
 ## What Has NOT Been Tested in Production
 

@@ -107,6 +107,26 @@ systemctl --user start ohara-maintain.service
 - Use `<private>...</private>` for content that must never be persisted.
 - Treat regex redaction as best effort, not a secret-management system.
 
+### Remote MCP Access
+
+Remote MCP exposes memory tools over HTTP at `/mcp`. Enable only when needed:
+
+```bash
+# Generate a strong token
+OHARA_AUTH_TOKEN=$(openssl rand -hex 32)
+
+# Enable auth + remote MCP
+export OHARA_AUTH_ENABLED=true
+export OHARA_AUTH_TOKEN=$OHARA_AUTH_TOKEN
+export OHARA_MCP_HTTP=true
+ohara serve
+```
+
+The `/mcp` endpoint uses Streamable HTTP transport (ChatGPT-compatible).
+Stdio MCP continues working without auth — enabling remote access does not
+break existing local agents. See PRODUCTION_NOTES.md for the full trust model
+and validation matrix.
+
 ## Debugging Plugin Writes
 
 For OpenCode plugin diagnostics:
