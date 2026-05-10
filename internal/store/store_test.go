@@ -4564,10 +4564,10 @@ func TestMigrationFromPre023LegacySchema(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Verify schema version reached 24
+	// Verify schema version reached 25
 	v := s.SchemaVersion()
-	if v != 24 {
-		t.Fatalf("expected schema version 24 after migration, got %d", v)
+	if v != 25 {
+		t.Fatalf("expected schema version 25 after migration, got %d", v)
 	}
 
 	// Verify observations were backfilled into memory_items (migration 023)

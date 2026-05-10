@@ -968,7 +968,7 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		return nil, fmt.Errorf("timeline: memory #%d not found: %w", memoryID, err)
 	}
 
-	// Get memories before the anchor (same project, older by updated_at)
+	// Get memories before the anchor (same project, older by updated_at, using id as tiebreaker)
 	beforeRows, err := s.queryItHook(s.db, `
 		SELECT id, created_at, updated_at, project_id, actor_id, kind, scope, title, body, tags,
 		       source, status, superseded_by, expires_at,
@@ -978,10 +978,10 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		       trigger_condition, utility_weight, consolidated_from,
 		       0 AS relevance_score
 		FROM memory_items
-		WHERE project_id = ? AND updated_at < ? AND status = 'active'
+		WHERE project_id = ? AND (updated_at < ? OR (updated_at = ? AND id < ?)) AND status = 'active'
 		ORDER BY updated_at DESC, id DESC
 		LIMIT ?`,
-		anchor.ProjectID, anchor.UpdatedAt, count,
+		anchor.ProjectID, anchor.UpdatedAt, anchor.UpdatedAt, anchor.ID, count,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("timeline: before query: %w", err)
@@ -1004,7 +1004,7 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		before[i], before[j] = before[j], before[i]
 	}
 
-	// Get memories after the anchor (same project, newer by updated_at)
+	// Get memories after the anchor (same project, newer by updated_at, using id as tiebreaker)
 	afterRows, err := s.queryItHook(s.db, `
 		SELECT id, created_at, updated_at, project_id, actor_id, kind, scope, title, body, tags,
 		       source, status, superseded_by, expires_at,
@@ -1014,10 +1014,10 @@ func (s *Store) MemoryTimeline(memoryID int64, count int) (*MemoryTimelineResult
 		       trigger_condition, utility_weight, consolidated_from,
 		       0 AS relevance_score
 		FROM memory_items
-		WHERE project_id = ? AND updated_at > ? AND status = 'active'
+		WHERE project_id = ? AND (updated_at > ? OR (updated_at = ? AND id > ?)) AND status = 'active'
 		ORDER BY updated_at ASC, id ASC
 		LIMIT ?`,
-		anchor.ProjectID, anchor.UpdatedAt, count,
+		anchor.ProjectID, anchor.UpdatedAt, anchor.UpdatedAt, anchor.ID, count,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("timeline: after query: %w", err)

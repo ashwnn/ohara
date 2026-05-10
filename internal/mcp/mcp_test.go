@@ -2716,7 +2716,7 @@ func TestMCPTrustFilter_ReadOnlyClaims_FiltersHighTrustFromSearch(t *testing.T) 
 		Roles:   []auth.Role{auth.RoleRead},
 	})
 
-	handler := handleSearch(s, MCPConfig{}, nil)
+	handler := handleSearch(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	req := mcppkg.CallToolRequest{
 		Params: mcppkg.CallToolParams{Arguments: map[string]any{
 			"query":   "body",
@@ -2758,7 +2758,7 @@ func TestMCPTrustFilter_AdminClaims_SeesAllInSearch(t *testing.T) {
 		Roles:   []auth.Role{auth.RoleAdmin},
 	})
 
-	handler := handleSearch(s, MCPConfig{}, nil)
+	handler := handleSearch(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	req := mcppkg.CallToolRequest{
 		Params: mcppkg.CallToolParams{Arguments: map[string]any{
 			"query":   "content",
@@ -2794,7 +2794,7 @@ func TestMCPTrustFilter_NilClaims_SeesAllInSearch(t *testing.T) {
 	}
 
 	// No claims in context (simulates stdio transport).
-	handler := handleSearch(s, MCPConfig{}, nil)
+	handler := handleSearch(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 	req := mcppkg.CallToolRequest{
 		Params: mcppkg.CallToolParams{Arguments: map[string]any{
 			"query":   "content",
