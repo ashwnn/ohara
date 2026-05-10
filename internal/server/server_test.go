@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/auth"
 	"github.com/ashwnn/ohara/internal/store"
 )
 
@@ -1571,5 +1572,756 @@ func TestHandleDeleteMemory_PATCHStillWorks(t *testing.T) {
 	h.ServeHTTP(delRec, delReq)
 	if delRec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("DELETE after archive: expected 405, got %d", delRec.Code)
+	}
+}
+
+// ─── Auth Middleware Tests ──────────────────────────────────────────────────────
+
+func TestAuthDisabled_Passthrough(t *testing.T) {
+	// Auth disabled (default) — all requests pass through without token.
+	srv := New(newServerTestStore(t), 0)
+	h := srv.Handler()
+
+	// A protected route should work without any auth header.
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatal("auth disabled: expected non-401 for stats, got 401")
+	}
+}
+
+func TestAuthEnabled_ValidToken_Success(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthConfig(true, "test-token-123")
+	h := srv.Handler()
+
+	// Request with valid bearer token on a protected route.
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer test-token-123")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatal("valid token: expected non-401 for stats, got 401")
+	}
+}
+
+func TestAuthEnabled_InvalidToken_Unauthorized(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthConfig(true, "real-token")
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid token: expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAuthEnabled_MissingHeader_Unauthorized(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthConfig(true, "some-token")
+	h := srv.Handler()
+
+	// No Authorization header at all.
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing header: expected 401, got %d", rec.Code)
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Fatal("expected error message in 401 response")
+	}
+}
+
+func TestAuthEnabled_BadHeaderFormat_Unauthorized(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthConfig(true, "my-token")
+	h := srv.Handler()
+
+	// Authorization header without "Bearer " prefix.
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Token my-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad header format: expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAuthEnabled_HealthBypass(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthConfig(true, "secret")
+	h := srv.Handler()
+
+	// Health endpoint must be reachable without any auth header.
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health bypass: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ─── Role-Based Authorization Tests ────────────────────────────────────────────
+
+// stubRoleAuth is a test authenticator that always accepts and returns fixed roles.
+type stubRoleAuth struct {
+	roles           []auth.Role
+	allowedProjects []string
+}
+
+func (a *stubRoleAuth) Authenticate(token string) (*auth.Claims, error) {
+	return &auth.Claims{
+		Subject:         "test",
+		Roles:           a.roles,
+		Token:           token,
+		AllowedProjects: a.allowedProjects,
+	}, nil
+}
+
+func TestRouteRole_ReadToken_ReadRouteOK(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req.Header.Set("Authorization", "Bearer any-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	// read-only user should be able to GET /stats
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("read token on GET /stats: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRouteRole_ReadToken_WriteRouteForbidden(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	// Create a session first (for the PATCH endpoint).
+	createReq := httptest.NewRequest(http.MethodPost, "/sessions",
+		strings.NewReader(`{"id":"s-role","project":"ohara"}`))
+	createReq.Header.Set("Authorization", "Bearer any-token")
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+
+	// POST /sessions requires RoleWrite → read token gets 403.
+	if createRec.Code != http.StatusForbidden {
+		t.Fatalf("read token on POST /sessions: expected 403, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+}
+
+func TestRouteRole_WriteToken_WriteRouteOK(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleWrite}})
+	h := srv.Handler()
+
+	// POST /memories requires RoleWrite.
+	body := `{"project_id":"ohara","kind":"decision","title":"test","body":"content"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer any-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	// write token should succeed (201 or 400 for bad data, but not 401/403)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("write token on POST /memories: unexpected 401/403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRouteRole_AdminToken_AdminRouteOK(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleAdmin}})
+	h := srv.Handler()
+
+	// GET /export requires RoleAdmin.
+	req := httptest.NewRequest(http.MethodGet, "/export", nil)
+	req.Header.Set("Authorization", "Bearer any-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	// admin token should not get 403 on export
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("admin token on GET /export: unexpected 403, got %d", rec.Code)
+	}
+}
+
+func TestRouteRole_ReadToken_ImportForbidden(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	// POST /import requires RoleAdmin → read token gets 403.
+	req := httptest.NewRequest(http.MethodPost, "/import", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer any-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("read token on POST /import: expected 403, got %d", rec.Code)
+	}
+}
+
+func TestRouteRole_ReadToken_HealthBypass(t *testing.T) {
+	srv := New(newServerTestStore(t), 0)
+	// Use SetAuthConfig → admin token, but the health bypass should work for
+	// any auth state since the check is before authentication.
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health should always be open, got %d", rec.Code)
+	}
+}
+
+// ─── Project Scope Tests ──────────────────────────────────────────────────────
+
+func TestProjectScope_GetMemories_AllowedProject(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleRead},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=ohara", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("expected allowed project not to be 403, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_GetMemories_DisallowedProject(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleRead},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=other", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed project, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_AddMemory_DisallowedProject(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	body := `{"project_id":"evil","kind":"decision","title":"x","body":"x"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for disallowed project on write, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_AddMemory_AllowedProject(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	body := `{"project_id":"ohara","kind":"decision","title":"scope test","body":"data"}`
+	req := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("expected allowed project write not to be 403, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_UnrestrictedClaims_PassesAll(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: nil, // unrestricted
+	})
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=any-project", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("unrestricted claims should not get 403, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_NoProjectParam_NotRestricted(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleRead},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	// No project parameter — checkProjectScope returns nil (project=="").
+	req := httptest.NewRequest(http.MethodGet, "/memories", nil)
+	req.Header.Set("Authorization", "Bearer t")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("no project param should not get 403, got %d", rec.Code)
+	}
+}
+
+// ─── By-ID Project Scope Tests ─────────────────────────────────────────────────
+
+func TestProjectScope_GetMemoryByID_Disallowed(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: []string{"allowed"},
+	})
+	h := srv.Handler()
+
+	// Create a memory in a disallowed project first.
+	createBody := `{"project_id":"other","kind":"decision","title":"x","body":"x"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer t")
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusForbidden {
+		t.Fatalf("create in other project: expected 403, got %d", createRec.Code)
+	}
+}
+
+func TestProjectScope_GetMemoryByID_Allowed(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite, auth.RoleRead},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	// Create a memory in allowed project to get a real ID.
+	createBody := `{"project_id":"ohara","kind":"decision","title":"scope-test","body":"data"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/memories", strings.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer t")
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code == http.StatusForbidden {
+		t.Fatalf("create in allowed project: unexpected 403")
+	}
+	// Verify we can read the memory by ID without getting 403.
+	var created map[string]any
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err == nil {
+		if id, ok := created["id"]; ok {
+			getReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/memories/%v", id), nil)
+			getReq.Header.Set("Authorization", "Bearer t")
+			getRec := httptest.NewRecorder()
+			h.ServeHTTP(getRec, getReq)
+			if getRec.Code == http.StatusForbidden {
+				t.Fatalf("GET /memories/{id} in allowed project: unexpected 403")
+			}
+		}
+	}
+}
+
+func TestProjectScope_EndSession_Disallowed(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: []string{"allowed"},
+	})
+	h := srv.Handler()
+
+	// Create a session in a disallowed project.
+	body := `{"id":"s-scope-test","project":"other"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("create session in other project: expected 403, got %d", rec.Code)
+	}
+}
+
+func TestProjectScope_EndSession_Allowed(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{
+		roles:           []auth.Role{auth.RoleWrite},
+		allowedProjects: []string{"ohara"},
+	})
+	h := srv.Handler()
+
+	// Create a session in allowed project.
+	body := `{"id":"s-end-allowed","project":"ohara"}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("create in allowed project: unexpected 403")
+	}
+
+	// End the session — should not be 403.
+	endReq := httptest.NewRequest(http.MethodPost, "/sessions/s-end-allowed/end",
+		strings.NewReader(`{"summary":"done"}`))
+	endReq.Header.Set("Authorization", "Bearer t")
+	endReq.Header.Set("Content-Type", "application/json")
+	endRec := httptest.NewRecorder()
+	h.ServeHTTP(endRec, endReq)
+	if endRec.Code == http.StatusForbidden {
+		t.Fatalf("end session in allowed project: unexpected 403")
+	}
+}
+
+// ─── Trust-Level Filtering Tests ─────────────────────────────────────────────
+
+// addTestMemory adds a memory with the given trust level and returns its ID.
+func addTestMemory(t *testing.T, st *store.Store, project, trustLevel string) int64 {
+	t.Helper()
+	id, err := st.AddMemory(store.AddMemoryParams{
+		ProjectID:  project,
+		Kind:       store.MemoryKindDecision,
+		Title:      "test-" + trustLevel,
+		Body:       "body content with enough data " + trustLevel,
+		TrustLevel: trustLevel,
+		Source:     "test",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory(%s): %v", trustLevel, err)
+	}
+	return id
+}
+
+func TestTrustFilter_ReadToken_SeesOnlyLowTrustMemories(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	// Add memories with different trust levels.
+	_ = addTestMemory(t, st, "trust-test", "system")
+	_ = addTestMemory(t, st, "trust-test", "tool")
+	_ = addTestMemory(t, st, "trust-test", "untrusted")
+
+	// GET /memories should only return tool+untrusted.
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=trust-test", nil)
+	req.Header.Set("Authorization", "Bearer any")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []store.MemoryItem
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, it := range items {
+		if it.TrustLevel == "system" || it.TrustLevel == "user" {
+			t.Fatalf("RoleRead should not see %s-trust memory: %q", it.TrustLevel, it.Title)
+		}
+		if it.EvidenceJSON != "" {
+			t.Fatal("RoleRead should see redacted evidence")
+		}
+	}
+}
+
+func TestTrustFilter_AdminToken_SeesAllMemories(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleAdmin}})
+	h := srv.Handler()
+
+	_ = addTestMemory(t, st, "trust-test", "system")
+	_ = addTestMemory(t, st, "trust-test", "user")
+	_ = addTestMemory(t, st, "trust-test", "tool")
+
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=trust-test", nil)
+	req.Header.Set("Authorization", "Bearer any")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []store.MemoryItem
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("admin should see all 3 memories, got %d", len(items))
+	}
+}
+
+func TestTrustFilter_NoAuth_SeesAllMemories(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0) // no authenticator
+	h := srv.Handler()
+
+	_ = addTestMemory(t, st, "trust-test", "system")
+	_ = addTestMemory(t, st, "trust-test", "tool")
+
+	req := httptest.NewRequest(http.MethodGet, "/memories?project_id=trust-test", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []store.MemoryItem
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("no-auth should see all 2 memories, got %d", len(items))
+	}
+}
+
+func TestTrustFilter_ReadToken_GetMemoryByID_HighTrustReturns404(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	h := srv.Handler()
+
+	sysID := addTestMemory(t, st, "trust-test", "system")
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/memories/%d", sysID), nil)
+	req.Header.Set("Authorization", "Bearer any")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for high-trust memory from low-trust user, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTrustFilter_WriteToken_SearchReturnsAll(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleWrite}})
+	h := srv.Handler()
+
+	_ = addTestMemory(t, st, "trust-test", "system")
+	_ = addTestMemory(t, st, "trust-test", "tool")
+
+	req := httptest.NewRequest(http.MethodGet, "/memories/search?q=test&project_id=trust-test", nil)
+	req.Header.Set("Authorization", "Bearer any")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []store.MemoryItem `json:"results"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("write token should see all 2 memories in search, got %d", len(resp.Results))
+	}
+}
+
+// ─── MCP Endpoint Auth Integration Tests ──────────────────────────────────────
+
+func TestMCPEndpoint_AuthDisabled_ReachesHandler(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify we reach the handler with no auth claims (nil claims).
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+			t.Error("expected nil claims when auth is disabled")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth disabled: expected 200, got %d", rec.Code)
+	}
+}
+
+func TestMCPEndpoint_ValidToken_ReachesHandler(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "mcp-token")
+
+	var gotClaimsSubj string
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+			gotClaimsSubj = claims.Subject
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer mcp-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("valid token: unexpected 401/403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotClaimsSubj != "static-token" {
+		t.Fatalf("expected claims subject 'static-token', got %q", gotClaimsSubj)
+	}
+}
+
+func TestMCPEndpoint_InvalidToken_Returns401(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "real-token")
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be reached with invalid token")
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid token: expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_NoToken_Returns401(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "some-token")
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be reached without auth header")
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_GET_WithValidToken_Succeeds(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "mcp-token")
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GET to /mcp should have claims and reach here.
+		if claims := auth.ClaimsFromContext(r.Context()); claims == nil {
+			t.Error("expected non-nil claims")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer mcp-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("GET /mcp with valid token: unexpected 401/403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_ReadToken_POST_Forbidden(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be reached with insufficient role")
+	}))
+	h := srv.Handler()
+
+	// POST /mcp requires RoleWrite → read-only token gets 403.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer any-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("read-only token on POST /mcp: expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_ReadToken_GET_Succeeds(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	h := srv.Handler()
+
+	// GET /mcp requires RoleRead → read-only token is fine.
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer any-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("read-only token on GET /mcp: unexpected 401/403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_HealthBypass_NoAuthOnHealth(t *testing.T) {
+	// Health check must be open even when auth is enabled and MCP is registered.
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "mcp-token")
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health bypass: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

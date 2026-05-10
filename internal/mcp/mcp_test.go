@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/auth"
 	"github.com/ashwnn/ohara/internal/store"
 	"github.com/ashwnn/ohara/internal/util"
 	mcppkg "github.com/mark3labs/mcp-go/mcp"
@@ -2145,5 +2146,716 @@ func TestConsolidateCandidatesReturnsSourceEpisodes(t *testing.T) {
 	}
 	if !strings.Contains(text, "Save a semantic memory with mem_save using source='consolidation'") {
 		t.Fatalf("expected consolidation workflow guidance, got: %s", text)
+	}
+}
+
+// ─── MCP Tool Role Authorization Tests ─────────────────────────────────────────
+
+func TestRequireMCPRole_NoClaimsPasses(t *testing.T) {
+	// When no claims are in context (e.g. stdio transport), the wrapper passes through.
+	called := false
+	wrapped := requireMCPRole(auth.RoleAdmin, func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		called = true
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(context.Background(), mcppkg.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected handler to be called")
+	}
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestRequireMCPRole_AdminRole_AdminToolPasses(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "test",
+		Roles:   []auth.Role{auth.RoleAdmin},
+	})
+
+	called := false
+	wrapped := requireMCPRole(auth.RoleAdmin, func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		called = true
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected handler to be called")
+	}
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestRequireMCPRole_ReadRole_AdminToolRejected(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "readonly",
+		Roles:   []auth.Role{auth.RoleRead},
+	})
+
+	called := false
+	wrapped := requireMCPRole(auth.RoleAdmin, func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		called = true
+		return mcppkg.NewToolResultText("should not reach"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("expected handler to NOT be called for insufficient role")
+	}
+	if !res.IsError {
+		t.Fatal("expected error result for insufficient role")
+	}
+	msg := callResultText(t, res)
+	if !strings.Contains(msg, "insufficient permissions") {
+		t.Fatalf("expected 'insufficient permissions' message, got: %s", msg)
+	}
+}
+
+func TestRequireMCPRole_WriteRole_ReadToolPasses(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "writer",
+		Roles:   []auth.Role{auth.RoleWrite},
+	})
+
+	called := false
+	wrapped := requireMCPRole(auth.RoleRead, func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		called = true
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected handler to be called — write satisfies read requirement")
+	}
+	if res.IsError {
+		t.Fatalf("expected success, got error: %s", callResultText(t, res))
+	}
+}
+
+// ─── MCP Tool Project Scope Tests ─────────────────────────────────────────────
+
+func TestMCPProjectScope_NilClaimsUnrestricted(t *testing.T) {
+	// When no claims in context (e.g. stdio), project scope passes through.
+	wrapped := requireMCPProjectScope("project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(context.Background(), mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "anything"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("nil claims should not be restricted, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPProjectScope_UnrestrictedClaimsAllowsAny(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "test",
+		Roles:   []auth.Role{auth.RoleAdmin},
+		// AllowedProjects nil = unrestricted
+	})
+
+	wrapped := requireMCPProjectScope("project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "anything"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unrestricted claims should allow any project, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPProjectScope_AllowedProjectPasses(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleRead},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPProjectScope("project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "ohara"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("allowed project should succeed, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPProjectScope_DisallowedProjectRejected(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleRead},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPProjectScope("project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("should not reach"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "evil"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected error for disallowed project")
+	}
+	msg := callResultText(t, res)
+	if !strings.Contains(msg, "project not allowed") {
+		t.Fatalf("expected 'project not allowed', got: %s", msg)
+	}
+}
+
+func TestMCPProjectScope_DisallowedMultipleKeys(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleRead},
+		AllowedProjects: []string{"good"},
+	})
+
+	wrapped := requireMCPProjectScope("project_id", "project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	// First key matches allowed project.
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project_id": "good"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("allowed project_id should pass, got error: %s", callResultText(t, res))
+	}
+
+	// Second key is disallowed.
+	res2, err2 := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"project": "evil"}},
+	})
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if !res2.IsError {
+		t.Fatal("expected error for disallowed project via second key")
+	}
+}
+
+func TestMCPProjectScope_NoArgPasses(t *testing.T) {
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleRead},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPProjectScope("project")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("no project arg should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+// ─── MCP Memory Scope (Single-ID) Tests ──────────────────────────────────────
+
+func TestMCPMemoryScope_NilClaimsPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	wrapped := requireMCPMemoryScope(s, "memory_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+	// No claims in context — passes through.
+	res, err := wrapped(context.Background(), mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"memory_id": float64(1)}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("nil claims should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMemoryScope_UnrestrictedPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	// Create a memory first so the lookup succeeds.
+	memID := int64(createTestMemory(t, s))
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: nil, // unrestricted
+	})
+
+	wrapped := requireMCPMemoryScope(s, "obs_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"obs_id": float64(memID)}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unrestricted claims should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMemoryScope_AllowedProjectPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	// Create a memory in the allowed project.
+	memID := int64(createTestMemoryWithProject(t, s, "ohara"))
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMemoryScope(s, "id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"id": float64(memID)}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("allowed project should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMemoryScope_DisallowedProjectRejected(t *testing.T) {
+	s := newMCPTestStore(t)
+	// Create a memory in a forbidden project.
+	memID := int64(createTestMemoryWithProject(t, s, "evil"))
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMemoryScope(s, "id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("should not reach"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"id": float64(memID)}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected error for disallowed project")
+	}
+	msg := callResultText(t, res)
+	if !strings.Contains(msg, "project not allowed") {
+		t.Fatalf("expected 'project not allowed', got: %s", msg)
+	}
+}
+
+func TestMCPMemoryScope_ZeroIDPasses(t *testing.T) {
+	// When ID is 0 (missing), the wrapper should pass through to let
+	// the handler return its own validation error.
+	s := newMCPTestStore(t)
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMemoryScope(s, "memory_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("zero ID should pass through, got error: %s", callResultText(t, res))
+	}
+}
+
+// createTestMemory is a helper to create a memory and return its ID.
+func createTestMemory(t *testing.T, s *store.Store) int64 {
+	t.Helper()
+	return createTestMemoryWithProject(t, s, "test-project")
+}
+
+// createTestMemoryWithProject creates a memory in the given project and returns its ID.
+func createTestMemoryWithProject(t *testing.T, s *store.Store, projectID string) int64 {
+	t.Helper()
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID: projectID,
+		Kind:      "discovery",
+		Title:     "test memory",
+		Body:      "test body",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	return id
+}
+
+// ─── MCP Multi-ID Scope Tests ─────────────────────────────────────────────────
+
+func TestMCPMultiScope_NilClaimsPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	wrapped := requireMCPMultiMemoryScope(s, "obs_id_a", "obs_id_b")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+	// No claims in context — passes through regardless of IDs.
+	res, err := wrapped(context.Background(), mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{"obs_id_a": float64(1), "obs_id_b": float64(99)}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("nil claims should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMultiScope_UnrestrictedPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	idA := createTestMemory(t, s)
+	idB := createTestMemoryWithProject(t, s, "other-project")
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: nil, // unrestricted
+	})
+
+	wrapped := requireMCPMultiMemoryScope(s, "from_obs_id", "to_obs_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{
+			Arguments: map[string]any{"from_obs_id": float64(idA), "to_obs_id": float64(idB)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unrestricted claims should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMultiScope_AllAllowedPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	idA := createTestMemoryWithProject(t, s, "ohara")
+	idB := createTestMemoryWithProject(t, s, "ohara")
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMultiMemoryScope(s, "obs_id_a", "obs_id_b")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{
+			Arguments: map[string]any{"obs_id_a": float64(idA), "obs_id_b": float64(idB)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("all allowed should pass, got error: %s", callResultText(t, res))
+	}
+}
+
+func TestMCPMultiScope_OneDisallowedRejected(t *testing.T) {
+	s := newMCPTestStore(t)
+	idA := createTestMemoryWithProject(t, s, "ohara")
+	idB := createTestMemoryWithProject(t, s, "evil")
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMultiMemoryScope(s, "from_obs_id", "to_obs_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("should not reach"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{
+			Arguments: map[string]any{"from_obs_id": float64(idA), "to_obs_id": float64(idB)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected error when one ID has disallowed project")
+	}
+	msg := callResultText(t, res)
+	if !strings.Contains(msg, "project not allowed") {
+		t.Fatalf("expected 'project not allowed', got: %s", msg)
+	}
+}
+
+func TestMCPMultiScope_AllDisallowedRejected(t *testing.T) {
+	s := newMCPTestStore(t)
+	idA := createTestMemoryWithProject(t, s, "alpha")
+	idB := createTestMemoryWithProject(t, s, "beta")
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMultiMemoryScope(s, "id", "consolidated_memory_id")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("should not reach"), nil
+	})
+
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{
+			Arguments: map[string]any{"id": float64(idA), "consolidated_memory_id": float64(idB)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("expected error when all IDs have disallowed projects")
+	}
+}
+
+func TestMCPMultiScope_ZeroIDsPasses(t *testing.T) {
+	s := newMCPTestStore(t)
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:         "test",
+		Roles:           []auth.Role{auth.RoleWrite},
+		AllowedProjects: []string{"ohara"},
+	})
+
+	wrapped := requireMCPMultiMemoryScope(s, "obs_id_a", "obs_id_b")(func(ctx context.Context, req mcppkg.CallToolRequest) (*mcppkg.CallToolResult, error) {
+		return mcppkg.NewToolResultText("ok"), nil
+	})
+
+	// No IDs provided — zero values skip the check.
+	res, err := wrapped(ctx, mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("zero IDs should pass through, got error: %s", callResultText(t, res))
+	}
+}
+
+// ─── MCP Trust-Level Filtering Tests ─────────────────────────────────────────
+
+func TestMCPTrustFilter_ReadOnlyClaims_FiltersHighTrustFromSearch(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	// Add memories with different trust levels.
+	for _, tl := range []string{"system", "tool", "untrusted"} {
+		_, err := s.AddMemory(store.AddMemoryParams{
+			ProjectID:  "trust-mcp",
+			Kind:       store.MemoryKindDecision,
+			Title:      "mcp-" + tl,
+			Body:       "body for " + tl,
+			TrustLevel: tl,
+			Source:     "test",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory(%s): %v", tl, err)
+		}
+	}
+
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "read-only",
+		Roles:   []auth.Role{auth.RoleRead},
+	})
+
+	handler := handleSearch(s, MCPConfig{}, nil)
+	req := mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"query":   "body",
+			"project": "trust-mcp",
+		}},
+	}
+	res, err := handler(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := callResultText(t, res)
+	if strings.Contains(text, "mcp-system") {
+		t.Fatal("low-trust MCP search should not include system-trust memories")
+	}
+	if !strings.Contains(text, "mcp-tool") {
+		t.Fatal("low-trust MCP search should include tool-trust memories")
+	}
+}
+
+func TestMCPTrustFilter_AdminClaims_SeesAllInSearch(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	for _, tl := range []string{"system", "tool"} {
+		_, err := s.AddMemory(store.AddMemoryParams{
+			ProjectID:  "trust-mcp",
+			Kind:       store.MemoryKindDecision,
+			Title:      "adm-" + tl,
+			Body:       "content " + tl,
+			TrustLevel: tl,
+			Source:     "test",
+		})
+		if err != nil {
+			t.Fatalf("AddMemory(%s): %v", tl, err)
+		}
+	}
+
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "admin",
+		Roles:   []auth.Role{auth.RoleAdmin},
+	})
+
+	handler := handleSearch(s, MCPConfig{}, nil)
+	req := mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"query":   "content",
+			"project": "trust-mcp",
+		}},
+	}
+	res, err := handler(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := callResultText(t, res)
+	if !strings.Contains(text, "adm-system") {
+		t.Fatal("admin MCP search should include system-trust memories")
+	}
+	if !strings.Contains(text, "adm-tool") {
+		t.Fatal("admin MCP search should include tool-trust memories")
+	}
+}
+
+func TestMCPTrustFilter_NilClaims_SeesAllInSearch(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "trust-mcp",
+		Kind:       store.MemoryKindDecision,
+		Title:      "nil-system",
+		Body:       "content system",
+		TrustLevel: "system",
+		Source:     "test",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// No claims in context (simulates stdio transport).
+	handler := handleSearch(s, MCPConfig{}, nil)
+	req := mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"query":   "content",
+			"project": "trust-mcp",
+		}},
+	}
+	res, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := callResultText(t, res)
+	if !strings.Contains(text, "nil-system") {
+		t.Fatal("nil claims (stdio) should see all memories including system-trust")
+	}
+}
+
+func TestMCPTrustFilter_WriteClaims_SeesAllInRelated(t *testing.T) {
+	s := newMCPTestStore(t)
+
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "trust-mcp",
+		Kind:       store.MemoryKindDecision,
+		Title:      "anchor",
+		Body:       "anchor body",
+		TrustLevel: "system",
+		Source:     "test",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory anchor: %v", err)
+	}
+	// Add a related memory (high-trust)
+	relatedID, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "trust-mcp",
+		Kind:       store.MemoryKindDecision,
+		Title:      "related-sys",
+		Body:       "related system",
+		TrustLevel: "system",
+		Source:     "test",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory related: %v", err)
+	}
+	_ = s.AddRelation(id, relatedID, "related_to")
+
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "write-user",
+		Roles:   []auth.Role{auth.RoleWrite},
+	})
+
+	handler := handleRelated(s)
+	req := mcppkg.CallToolRequest{
+		Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"obs_id": float64(id),
+		}},
+	}
+	res, err := handler(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := callResultText(t, res)
+	if !strings.Contains(text, "related-sys") {
+		t.Fatal("write claims should see related high-trust memories")
 	}
 }

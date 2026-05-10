@@ -4644,3 +4644,192 @@ func TestMigrationFromPre023LegacySchema(t *testing.T) {
 		}
 	}
 }
+
+// TestLogAuditActionValues verifies that all audit action values used by HTTP
+// and MCP handlers satisfy the audit_log.action CHECK constraint at the DB level.
+// Any new action added to a LogAudit or mcpAudit call site must also be listed
+// in the allowed set or the action must be mapped to an allowed value.
+//
+// Allowed set: create, update, delete, archive
+func TestLogAuditActionValues(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test_audit.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Create the audit_log table with the same CHECK constraint as production.
+	if _, err := db.Exec(`
+		CREATE TABLE audit_log (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			obs_id     TEXT NOT NULL,
+			action     TEXT NOT NULL CHECK(action IN ('create', 'update', 'delete', 'archive')),
+			actor_id   TEXT,
+			session_id TEXT,
+			trust_level TEXT,
+			ts         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+			snapshot   TEXT
+		)`); err != nil {
+		t.Fatalf("create audit_log table: %v", err)
+	}
+
+	s := &Store{db: db}
+
+	// All four allowed action values must insert successfully.
+	t.Run("allowed_create", func(t *testing.T) {
+		if err := s.LogAudit("mem-1", "create", "actor1", "sess1", "proj"); err != nil {
+			t.Fatalf("LogAudit with action 'create' failed: %v", err)
+		}
+	})
+	t.Run("allowed_update", func(t *testing.T) {
+		if err := s.LogAudit("mem-1", "update", "actor1", "sess1", "proj"); err != nil {
+			t.Fatalf("LogAudit with action 'update' failed: %v", err)
+		}
+	})
+	t.Run("allowed_delete", func(t *testing.T) {
+		if err := s.LogAudit("mem-1", "delete", "actor1", "sess1", "proj"); err != nil {
+			t.Fatalf("LogAudit with action 'delete' failed: %v", err)
+		}
+	})
+	t.Run("allowed_archive", func(t *testing.T) {
+		if err := s.LogAudit("mem-1", "archive", "actor1", "sess1", "proj"); err != nil {
+			t.Fatalf("LogAudit with action 'archive' failed: %v", err)
+		}
+	})
+
+	// Actions that were previously used but are NOT in the CHECK constraint
+	// must be rejected. This test documents disallowed values and catches
+	// regressions if someone adds a new call site without checking the schema.
+	t.Run("reject_end", func(t *testing.T) {
+		if err := s.LogAudit("session-test", "end", "", "", ""); err == nil {
+			t.Fatal("expected CHECK constraint violation for action 'end', but got nil")
+		}
+	})
+	t.Run("reject_import", func(t *testing.T) {
+		if err := s.LogAudit("system", "import", "", "", ""); err == nil {
+			t.Fatal("expected CHECK constraint violation for action 'import', but got nil")
+		}
+	})
+	t.Run("reject_migrate", func(t *testing.T) {
+		if err := s.LogAudit("project-x", "migrate", "", "", ""); err == nil {
+			t.Fatal("expected CHECK constraint violation for action 'migrate', but got nil")
+		}
+	})
+	t.Run("reject_pasive_typo", func(t *testing.T) {
+		if err := s.LogAudit("session-test", "pasive-capture", "", "", ""); err == nil {
+			t.Fatal("expected CHECK constraint violation for action 'pasive-capture', but got nil")
+		}
+	})
+}
+
+// ─── Trust-level filtering tests ─────────────────────────────────────────────
+
+func TestMemoryRedacted_TruncatesBody(t *testing.T) {
+	longBody := string(make([]byte, 500))
+	m := MemoryItem{
+		Title:         "test",
+		Body:          longBody,
+		EvidenceJSON:  `{"commit":"abc"}`,
+		RelatedJSON:   `{"relates_to":[1]}`,
+		AppliesToJSON: `{"files":["src/main.go"]}`,
+	}
+	r := m.Redacted()
+	if len(r.Body) > 200+3 { // 200 chars + "..." suffix
+		t.Fatalf("expected body truncated to ~200 chars, got %d", len(r.Body))
+	}
+	if r.EvidenceJSON != "" {
+		t.Fatal("evidence should be cleared on redacted memory")
+	}
+	if r.RelatedJSON != "" {
+		t.Fatal("related_json should be cleared on redacted memory")
+	}
+	if r.AppliesToJSON != "" {
+		t.Fatal("applies_to_json should be cleared on redacted memory")
+	}
+	if r.Title != m.Title {
+		t.Fatal("title should be preserved on redacted memory")
+	}
+}
+
+func TestMemoryRedacted_ShortBodyUnchanged(t *testing.T) {
+	m := MemoryItem{Body: "short", EvidenceJSON: "{}"}
+	r := m.Redacted()
+	if r.Body != "short" {
+		t.Fatalf("short body should not be truncated, got %q", r.Body)
+	}
+}
+
+func TestFilterByTrustLevel_NilLowTrust(t *testing.T) {
+	items := []MemoryItem{
+		{Title: "sys", TrustLevel: "system"},
+		{Title: "usr", TrustLevel: "user"},
+		{Title: "tl", TrustLevel: "tool"},
+		{Title: "untr", TrustLevel: "untrusted"},
+	}
+	filtered := FilterByTrustLevel(items, true)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 items (tool+untrusted), got %d", len(filtered))
+	}
+	if filtered[0].Title != "tl" || filtered[1].Title != "untr" {
+		t.Fatalf("expected tool and untrusted items, got %q and %q", filtered[0].Title, filtered[1].Title)
+	}
+}
+
+func TestFilterByTrustLevel_AdminSeesAll(t *testing.T) {
+	items := []MemoryItem{
+		{Title: "sys", TrustLevel: "system"},
+		{Title: "usr", TrustLevel: "user"},
+		{Title: "tl", TrustLevel: "tool"},
+	}
+	filtered := FilterByTrustLevel(items, false)
+	if len(filtered) != 3 {
+		t.Fatalf("expected all 3 items unfiltered, got %d", len(filtered))
+	}
+	if filtered[0].Title != "sys" {
+		t.Fatalf("first item should be unchanged, got %q", filtered[0].Title)
+	}
+}
+
+func TestFilterByTrustLevel_EmptyInput(t *testing.T) {
+	if res := FilterByTrustLevel(nil, true); len(res) != 0 {
+		t.Fatalf("nil input should return empty, got %d", len(res))
+	}
+	if res := FilterByTrustLevel([]MemoryItem{}, true); len(res) != 0 {
+		t.Fatalf("empty input should return empty, got %d", len(res))
+	}
+}
+
+func TestFilterByTrustLevel_NoVisibleReturnsEmpty(t *testing.T) {
+	items := []MemoryItem{
+		{Title: "sys", TrustLevel: "system"},
+		{Title: "usr", TrustLevel: "user"},
+	}
+	filtered := FilterByTrustLevel(items, true)
+	if len(filtered) != 0 {
+		t.Fatalf("expected 0 visible items for low-trust, got %d", len(filtered))
+	}
+}
+
+func TestFilterByTrustLevelPack_NilPassthrough(t *testing.T) {
+	if res := FilterByTrustLevelPack(nil, true); res != nil {
+		t.Fatal("nil pack should pass through")
+	}
+}
+
+func TestFilterByTrustLevelPack_LowTrustFilters(t *testing.T) {
+	pr := &PackResult{
+		MemoryItems: []MemoryItem{
+			{Title: "sys", TrustLevel: "system"},
+			{Title: "tl", TrustLevel: "tool"},
+		},
+	}
+	res := FilterByTrustLevelPack(pr, true)
+	if len(res.MemoryItems) != 1 {
+		t.Fatalf("expected 1 item after filtering, got %d", len(res.MemoryItems))
+	}
+	if res.MemoryItems[0].Title != "tl" {
+		t.Fatalf("expected 'tl' item, got %q", res.MemoryItems[0].Title)
+	}
+}
