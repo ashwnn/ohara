@@ -246,6 +246,59 @@ type MemoryItem struct {
 	RelevanceScore float64 `json:"relevance_score,omitempty"` // FTS composite score (0 for non-search queries)
 }
 
+// VisibleTrustLevelsForLowTrust defines which trust levels are visible to
+// low-trust principals (RoleRead-only). Higher-trust memories ("user", "system")
+// are filtered out so that low-trust remote clients cannot read sensitive data
+// created by users or the system itself.
+var VisibleTrustLevelsForLowTrust = map[string]bool{
+	"tool":      true,
+	"untrusted": true,
+}
+
+// Redacted returns a copy of the memory item with sensitive or internal
+// metadata fields removed. This is used when serving responses to low-trust
+// principals (RoleRead-only) so they cannot access evidence URLs, related
+// memory IDs, or full body content.
+func (m MemoryItem) Redacted() MemoryItem {
+	if len(m.Body) > 200 {
+		m.Body = m.Body[:200] + "..."
+	}
+	m.EvidenceJSON = ""
+	m.RelatedJSON = ""
+	m.AppliesToJSON = ""
+	return m
+}
+
+// FilterByTrustLevel filters and redacts memory items based on the caller's
+// trust level. When isLowTrust is true, only memories with trust levels in
+// VisibleTrustLevelsForLowTrust are returned, and each is redacted.
+// When isLowTrust is false, all items are returned unchanged.
+func FilterByTrustLevel(items []MemoryItem, isLowTrust bool) []MemoryItem {
+	if !isLowTrust || len(items) == 0 {
+		return items
+	}
+	result := make([]MemoryItem, 0, len(items))
+	for _, m := range items {
+		if VisibleTrustLevelsForLowTrust[m.TrustLevel] {
+			result = append(result, m.Redacted())
+		}
+	}
+	if result == nil {
+		result = []MemoryItem{}
+	}
+	return result
+}
+
+// FilterByTrustLevelPack applies FilterByTrustLevel to the MemoryItems inside
+// a PackResult, returning a copy with filtered/redacted items.
+func FilterByTrustLevelPack(pr *PackResult, isLowTrust bool) *PackResult {
+	if pr == nil || !isLowTrust {
+		return pr
+	}
+	pr.MemoryItems = FilterByTrustLevel(pr.MemoryItems, isLowTrust)
+	return pr
+}
+
 // MemoryRelation represents a typed, directional link between two memory items.
 // This implements the relation graph from Ohara v2 spec P2 (Section 6.3).
 type MemoryRelation struct {
@@ -717,7 +770,7 @@ func (s *Store) Close() error {
 }
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 24
+const currentSchemaVersion = 25
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -1124,7 +1177,7 @@ func (s *Store) applyMigration(version int) error {
 			CREATE TABLE IF NOT EXISTS audit_log (
 				id         INTEGER PRIMARY KEY AUTOINCREMENT,
 				obs_id     TEXT NOT NULL,
-				action     TEXT NOT NULL CHECK(action IN ('create', 'update', 'delete', 'archive')),
+				action     TEXT NOT NULL,
 				actor_id   TEXT,
 				session_id TEXT,
 				trust_level TEXT,
@@ -1333,6 +1386,11 @@ func (s *Store) applyMigration(version int) error {
 		if _, err := s.execHook(s.db, `DROP TABLE IF EXISTS observations`); err != nil {
 			return fmt.Errorf("migration 024 drop observations: %w", err)
 		}
+
+	case 25:
+		// Migration 025: Phase 2.5 — no schema changes.
+		// Reserved for MCP Streamable HTTP auth/transport compatibility.
+		// All required auth and role infrastructure is app-level (no DB schema needed).
 
 	default:
 		return fmt.Errorf("unknown migration version %d (current: %d)", version, currentSchemaVersion)
@@ -1573,6 +1631,18 @@ func (s *Store) AllSessions(project string, limit int) ([]SessionSummary, error)
 		results = append(results, ss)
 	}
 	return results, rows.Err()
+}
+
+// GetPrompt retrieves a single prompt by ID.
+func (s *Store) GetPrompt(id int64) (*Prompt, error) {
+	row := s.db.QueryRow(
+		`SELECT id, sync_id, session_id, content, project, created_at FROM user_prompts WHERE id = ?`, id,
+	)
+	var p Prompt
+	if err := row.Scan(&p.ID, &p.SyncID, &p.SessionID, &p.Content, &p.Project, &p.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 func (s *Store) AddPrompt(p AddPromptParams) (int64, error) {

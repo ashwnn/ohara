@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,6 +61,10 @@ var newMCPServerWithTools = func(s *store.Store, allowlist map[string]bool) *mcp
 
 var newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
 	return mcp.NewServerWithConfig(s, mcpCfg, allowlist)
+}
+
+var newMCPHTTPHandler = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) http.Handler {
+	return mcp.NewStreamableHTTPHandler(s, mcpCfg, allowlist)
 }
 
 var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) error {
@@ -452,6 +457,14 @@ func realCmdServe(cfg store.Config) {
 		conflictCfg.Enabled = server.ConflictEnabledOn
 	}
 	srv := newHTTPServer(s, port, socketPath, packCfg, conflictCfg)
+	if cfg2.AuthEnabled {
+		srv.SetAuthConfig(cfg2.AuthEnabled, cfg2.AuthToken)
+	}
+	if cfg2.MCPHTTPEnabled {
+		mcpCfg := mcp.MCPConfig{DefaultProject: ""}
+		mcpHandler := newMCPHTTPHandler(s, mcpCfg, nil)
+		srv.SetMCPHandler(mcpHandler)
+	}
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())
 	}

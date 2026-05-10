@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/auth"
 	"github.com/ashwnn/ohara/internal/store"
 )
 
@@ -105,6 +106,15 @@ func WithConflictConfig(cfg ConflictConfig) ServerOption {
 	return func(s *Server) { s.conflictConfig = cfg }
 }
 
+// adminOnlyPaths are HTTP routes that require the admin role regardless of method.
+// DELETE methods always require admin via method check; only non-DELETE overrides
+// (like GET /export, POST /import) need to be listed here.
+var adminOnlyPaths = map[string]bool{
+	"GET /export":            true,
+	"POST /import":           true,
+	"POST /projects/migrate": true,
+}
+
 type Server struct {
 	store          *store.Store
 	mux            *http.ServeMux
@@ -116,6 +126,9 @@ type Server struct {
 	syncStatus     SyncStatusProvider
 	packConfig     PackConfig
 	conflictConfig ConflictConfig
+	authenticator  auth.Authenticator
+	mcpHandler     http.Handler
+	mcpRegistered  bool
 }
 
 func New(s *store.Store, port int, opts ...ServerOption) *Server {
@@ -132,6 +145,149 @@ func New(s *store.Store, port int, opts ...ServerOption) *Server {
 // This is used to notify autosync.Manager via NotifyDirty().
 func (s *Server) SetOnWrite(fn func()) {
 	s.onWrite = fn
+}
+
+// SetAuthConfig configures bearer token authentication for HTTP requests.
+// When enabled, all requests (except health check) require an Authorization:
+// Bearer <token> header using a static pre-shared token.
+// Disabled by default for local-only operation.
+//
+// This is a convenience wrapper that creates a StaticTokenAuthenticator.
+// For programmatic configuration, use SetAuthenticator directly.
+func (s *Server) SetAuthConfig(enabled bool, token string) {
+	if enabled {
+		s.authenticator = auth.NewStaticTokenAuthenticator(token)
+	} else {
+		s.authenticator = nil
+	}
+}
+
+// SetAuthenticator sets the authenticator used for bearer token validation.
+// When nil, authentication is disabled and all requests pass through.
+func (s *Server) SetAuthenticator(authr auth.Authenticator) {
+	s.authenticator = authr
+}
+
+// requiredRole returns the minimum role required for the given request.
+// Health is excluded (checked earlier in authMiddleware).
+// Method-based defaults: DELETE→admin, POST/PATCH/PUT→write, GET/others→read.
+// Fixed-path overrides in adminOnlyPaths elevate GET/POST routes to admin.
+func (s *Server) requiredRole(r *http.Request) auth.Role {
+	key := r.Method + " " + r.URL.Path
+	if adminOnlyPaths[key] {
+		return auth.RoleAdmin
+	}
+	switch r.Method {
+	case http.MethodDelete:
+		return auth.RoleAdmin
+	case http.MethodPost, http.MethodPatch, http.MethodPut:
+		return auth.RoleWrite
+	default:
+		return auth.RoleRead
+	}
+}
+
+// checkProjectScope verifies that the authenticated principal (from request
+// context) is allowed to access the given project. Returns nil when auth is
+// disabled, claims are absent, or AllowedProjects is unrestricted.
+func (s *Server) checkProjectScope(r *http.Request, project string) error {
+	if s.authenticator == nil || project == "" {
+		return nil
+	}
+	return auth.RequireProject(auth.ClaimsFromContext(r.Context()), project)
+}
+
+// needsRedaction reports whether the request came from a low-trust principal
+// whose responses should have sensitive memory fields filtered and redacted.
+func (s *Server) needsRedaction(r *http.Request) bool {
+	claims := auth.ClaimsFromContext(r.Context())
+	return claims.IsLowTrust()
+}
+
+// redactMemories filters and redacts memory items based on the request's
+// auth context. Passes through unchanged for admin/write/nil-claims callers.
+func (s *Server) redactMemories(r *http.Request, items []store.MemoryItem) []store.MemoryItem {
+	return store.FilterByTrustLevel(items, s.needsRedaction(r))
+}
+
+// redactMemory filters and redacts a single memory item.
+func (s *Server) redactMemory(r *http.Request, item *store.MemoryItem) *store.MemoryItem {
+	if item == nil || !s.needsRedaction(r) {
+		return item
+	}
+	if !store.VisibleTrustLevelsForLowTrust[item.TrustLevel] {
+		return nil
+	}
+	redacted := item.Redacted()
+	return &redacted
+}
+
+// redactTimelineResult applies trust-level filtering to a timeline result.
+func (s *Server) redactTimelineResult(r *http.Request, tr *store.MemoryTimelineResult) *store.MemoryTimelineResult {
+	if tr == nil || !s.needsRedaction(r) {
+		return tr
+	}
+	// Redact the anchor
+	if !store.VisibleTrustLevelsForLowTrust[tr.Anchor.TrustLevel] {
+		// Anchor is blocked; return empty result
+		return &store.MemoryTimelineResult{}
+	}
+	tr.Anchor = tr.Anchor.Redacted()
+	tr.Before = store.FilterByTrustLevel(tr.Before, true)
+	tr.After = store.FilterByTrustLevel(tr.After, true)
+	return tr
+}
+
+// logAudit records a handler-level audit entry for a successful mutation.
+// Extracts actor from request context claims if available.
+func (s *Server) logAudit(r *http.Request, obsID, action, project string) {
+	actor := "unknown"
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+		actor = claims.Subject
+	}
+	s.store.LogAudit(obsID, action, actor, "", project)
+}
+
+// SetMCPHandler registers a Streamable HTTP MCP handler to be served at /mcp.
+// Must be called before the first request (before Start or Handler).
+func (s *Server) SetMCPHandler(h http.Handler) {
+	s.mcpHandler = h
+}
+
+// authMiddleware returns an http.Handler that enforces bearer token authentication
+// when s.authenticator is set. The health endpoint is always open.
+// When authentication succeeds, the validated Claims are attached to the request
+// context and can be retrieved via auth.ClaimsFromContext.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authenticator == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Health check is always open even when auth is enabled.
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		header := r.Header.Get("Authorization")
+		if !strings.HasPrefix(header, "Bearer ") {
+			jsonError(w, http.StatusUnauthorized, "missing or malformed authorization header")
+			return
+		}
+		token := strings.TrimPrefix(header, "Bearer ")
+		claims, err := s.authenticator.Authenticate(token)
+		if err != nil {
+			jsonError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		// Enforce route-level role requirement.
+		if err := auth.RequireRole(claims, s.requiredRole(r)); err != nil {
+			jsonError(w, http.StatusForbidden, "insufficient permissions")
+			return
+		}
+		ctx := auth.ContextWithClaims(r.Context(), claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // SetSyncStatus configures the sync status provider for the /sync/status endpoint.
@@ -164,7 +320,7 @@ func (s *Server) Start() error {
 		ln, err = s.listenUnixWithStaleCleanup(listenFn)
 		if err == nil {
 			log.Printf("[ohara] HTTP server listening on unix socket %s", s.socketPath)
-			return serveFn(ln, s.mux)
+			return serveFn(ln, s.Handler())
 		}
 		// Socket failed; log and fall through to TCP.
 		log.Printf("[ohara] unix socket %s: %v — falling back to TCP", s.socketPath, err)
@@ -177,7 +333,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("ohara server: listen %s: %w", addr, err)
 	}
 	log.Printf("[ohara] HTTP server listening on %s", addr)
-	return serveFn(ln, s.mux)
+	return serveFn(ln, s.Handler())
 }
 
 func (s *Server) listenUnixWithStaleCleanup(listenFn func(network, address string) (net.Listener, error)) (net.Listener, error) {
@@ -205,6 +361,13 @@ func (s *Server) listenUnixWithStaleCleanup(listenFn func(network, address strin
 }
 
 func (s *Server) Handler() http.Handler {
+	if s.mcpHandler != nil && !s.mcpRegistered {
+		s.mux.Handle("/mcp", s.mcpHandler)
+		s.mcpRegistered = true
+	}
+	if s.authenticator != nil {
+		return s.authMiddleware(s.mux)
+	}
 	return s.mux
 }
 
@@ -306,6 +469,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	// Check if session already exists to return correct "created" flag.
 	_, err := s.store.GetSession(body.ID)
 	alreadyExists := err == nil // nil error means session exists
@@ -314,6 +482,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.logAudit(r, "session-"+body.ID, "create", project)
 
 	s.notifyWrite()
 	// Spec response: { "id": "...", "created": bool }
@@ -332,10 +501,22 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 
+	// Look up session to check project scope before mutating.
+	sess, err := s.store.GetSession(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err := s.checkProjectScope(r, sess.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	if err := s.store.EndSession(id, body.Summary); err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.logAudit(r, "session-"+id, "update", sess.Project)
 
 	s.notifyWrite()
 	jsonResponse(w, http.StatusOK, map[string]string{"id": id, "status": "completed"})
@@ -344,6 +525,11 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRecentSessions(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	limit := queryInt(r, "limit", 5)
+
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
 
 	sessions, err := s.store.RecentSessions(project, limit)
 	if err != nil {
@@ -368,6 +554,11 @@ func (s *Server) handleGetSessionContext(w http.ResponseWriter, r *http.Request)
 	session, err := s.store.GetSession(id)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	if err := s.checkProjectScope(r, session.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
 	}
 
@@ -416,11 +607,17 @@ func (s *Server) handleAddPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.checkProjectScope(r, body.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	id, err := s.store.AddPrompt(body)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.logAudit(r, fmt.Sprintf("prompt-%d", id), "create", body.Project)
 
 	s.notifyWrite()
 	jsonResponse(w, http.StatusCreated, map[string]any{"id": id, "status": "saved"})
@@ -429,6 +626,11 @@ func (s *Server) handleAddPrompt(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRecentPrompts(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	limit := queryInt(r, "limit", 20)
+
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
 
 	prompts, err := s.store.RecentPrompts(project, limit)
 	if err != nil {
@@ -446,9 +648,15 @@ func (s *Server) handleSearchPrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	project := r.URL.Query().Get("project")
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	prompts, err := s.store.SearchPrompts(
 		query,
-		r.URL.Query().Get("project"),
+		project,
 		queryInt(r, "limit", 10),
 	)
 	if err != nil {
@@ -470,6 +678,11 @@ func (s *Server) handlePassiveCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.checkProjectScope(r, body.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	result, err := s.store.PassiveCapture(body)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -478,6 +691,8 @@ func (s *Server) handlePassiveCapture(w http.ResponseWriter, r *http.Request) {
 	if result.Saved > 0 {
 		s.notifyWrite()
 	}
+	s.logAudit(r, "session-"+body.SessionID, "create", body.Project)
+
 	jsonResponse(w, http.StatusOK, result)
 }
 
@@ -485,6 +700,17 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		jsonError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+
+	// Look up session to check project scope before deleting.
+	sess, err := s.store.GetSession(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err := s.checkProjectScope(r, sess.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
 	}
 
@@ -499,6 +725,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.logAudit(r, "session-"+id, "delete", sess.Project)
 
 	// local-only delete: do not notify autosync to avoid triggering a pull
 	// that could recreate the deleted rows from a remote store.
@@ -513,6 +740,17 @@ func (s *Server) handleDeletePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look up prompt to check project scope before deleting.
+	prompt, err := s.store.GetPrompt(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "prompt not found")
+		return
+	}
+	if err := s.checkProjectScope(r, prompt.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	if err := s.store.DeletePrompt(id); err != nil {
 		if errors.Is(err, store.ErrPromptNotFound) {
 			jsonError(w, http.StatusNotFound, err.Error())
@@ -521,6 +759,7 @@ func (s *Server) handleDeletePrompt(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.logAudit(r, fmt.Sprintf("prompt-%d", id), "delete", prompt.Project)
 
 	jsonResponse(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
 }
@@ -560,12 +799,18 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.notifyWrite()
+	s.logAudit(r, "system", "create", "")
 	jsonResponse(w, http.StatusOK, result)
 }
 
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	scope := r.URL.Query().Get("scope")
+
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
 
 	context, err := s.store.FormatContext(project, scope)
 	if err != nil {
@@ -625,6 +870,16 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Both source and target projects must be in the principal's allowlist.
+	if err := s.checkProjectScope(r, body.OldProject); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+	if err := s.checkProjectScope(r, body.NewProject); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	result, err := s.store.MigrateProject(body.OldProject, body.NewProject)
 	if err != nil {
 		log.Printf("[ohara] project migration failed: %v", err)
@@ -632,79 +887,20 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.logAudit(r, "project-"+body.OldProject, "update", body.NewProject)
+
 	if !result.Migrated {
-		jsonResponse(w, http.StatusOK, map[string]any{"status": "skipped", "reason": "no records found"})
-		return
-	}
-
-	log.Printf("[ohara] migrated project %q → %q (sessions: %d, prompts: %d)",
-		body.OldProject, body.NewProject,
-		result.SessionsUpdated, result.PromptsUpdated)
-
-	jsonResponse(w, http.StatusOK, map[string]any{
-		"status":      "migrated",
-		"old_project": body.OldProject,
-		"new_project": body.NewProject,
-		"sessions":    result.SessionsUpdated,
-		"prompts":     result.PromptsUpdated,
-	})
-}
-
-func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
-	var body store.AddMemoryParams
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return
-	}
-	if body.ProjectID == "" || body.Kind == "" || body.Title == "" || body.Body == "" {
-		jsonError(w, http.StatusBadRequest, "project_id, kind, title, and body are required")
-		return
-	}
-	if !store.ValidMemoryKinds[body.Kind] {
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid kind: must be one of identity, user_preference, glossary, decision, pattern, bugfix, discovery, procedure, config, postmortem"))
-		return
-	}
-
-	// Contradiction detection for decision/pattern/config kinds — returns conflict info
-	// without blocking the save. The caller can decide whether to supersede/archive the
-	// older memory based on the warning in the response.
-	// The zero value (ConflictEnabledDefault=0) means disabled; pass Enabled=ConflictEnabledOn
-	// to explicitly enable with configurable threshold.
-	var conflictWarning *store.ConflictInfo
-	if s.conflictConfig.Enabled == ConflictEnabledOn {
-		if conflict, err := s.store.DetectConflict(body); err != nil {
-			jsonError(w, http.StatusInternalServerError, "conflict detection failed: "+err.Error())
-			return
-		} else if conflict != nil {
-			// Apply configurable threshold. If threshold is unset (0.0), use 0.6 default.
-			threshold := s.conflictConfig.Threshold
-			if threshold <= 0.0 {
-				threshold = 0.6
-			}
-			if conflict.OverlapScore >= threshold {
-				conflictWarning = conflict
-			}
-		}
-	}
-
-	id, err := s.store.AddMemory(body)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+		jsonResponse(w, http.StatusOK, map[string]any{"status": "skipped", "reason": "nothing to migrate"})
 		return
 	}
 
 	s.notifyWrite()
 
-	resp := map[string]any{"id": id}
-	if conflictWarning != nil {
-		resp["conflict"] = map[string]any{
-			"existing_id":    conflictWarning.ExistingMemory.ID,
-			"existing_title": conflictWarning.ExistingMemory.Title,
-			"similarity":     conflictWarning.OverlapScore,
-			"message":        conflictWarning.Message,
-		}
-	}
-	jsonResponse(w, http.StatusCreated, resp)
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"status":            "migrated",
+		"sessions_updated":  result.SessionsUpdated,
+		"prompts_updated":   result.PromptsUpdated,
+	})
 }
 
 func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {
@@ -713,6 +909,11 @@ func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
 	status := r.URL.Query().Get("status")
 	limit := queryInt(r, "limit", 20)
+
+	if err := s.checkProjectScope(r, projectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
 
 	items, err := s.store.GetMemories(projectID, scope, kind, status, limit)
 	if err != nil {
@@ -723,7 +924,7 @@ func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []store.MemoryItem{}
 	}
-	jsonResponse(w, http.StatusOK, items)
+	jsonResponse(w, http.StatusOK, s.redactMemories(r, items))
 }
 
 func (s *Server) handleSearchMemories(w http.ResponseWriter, r *http.Request) {
@@ -739,6 +940,11 @@ func (s *Server) handleSearchMemories(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	limit := queryInt(r, "limit", 10)
 
+	if err := s.checkProjectScope(r, projectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	items, err := s.store.SearchMemories(query, projectID, scope, kind, "", status, limit, "")
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -749,7 +955,7 @@ func (s *Server) handleSearchMemories(w http.ResponseWriter, r *http.Request) {
 		items = []store.MemoryItem{}
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"results": items,
+		"results": s.redactMemories(r, items),
 		"method":  "fts5",
 	})
 }
@@ -768,7 +974,16 @@ func (s *Server) handleGetMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, item)
+	if err := s.checkProjectScope(r, item.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	if redacted := s.redactMemory(r, item); redacted != nil {
+		jsonResponse(w, http.StatusOK, redacted)
+	} else {
+		jsonError(w, http.StatusNotFound, "memory not found")
+	}
 }
 
 func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
@@ -800,12 +1015,24 @@ func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check project scope before mutating.
+	item, err := s.store.GetMemory(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err := s.checkProjectScope(r, item.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	updated, err := s.store.UpdateMemory(id, body)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
+	s.logAudit(r, fmt.Sprintf("mem-%d", id), "update", item.ProjectID)
 	s.notifyWrite()
 
 	var revisionID int64
@@ -827,13 +1054,24 @@ func (s *Server) handleMemoryTimeline(w http.ResponseWriter, r *http.Request) {
 
 	count := queryInt(r, "count", 3)
 
+	// Check project scope before serving.
+	item, err := s.store.GetMemory(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err := s.checkProjectScope(r, item.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	result, err := s.store.MemoryTimeline(id, count)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, result)
+	jsonResponse(w, http.StatusOK, s.redactTimelineResult(r, result))
 }
 
 func (s *Server) handleMemoryRevisions(w http.ResponseWriter, r *http.Request) {
@@ -844,10 +1082,14 @@ func (s *Server) handleMemoryRevisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// First check the memory exists
-	_, err = s.store.GetMemory(id)
+	// Check project scope before serving.
+	item, err := s.store.GetMemory(id)
 	if err != nil {
 		jsonError(w, http.StatusNotFound, "memory not found")
+		return
+	}
+	if err := s.checkProjectScope(r, item.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
 	}
 
@@ -882,6 +1124,12 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "project_id is required")
 		return
 	}
+
+	if err := s.checkProjectScope(r, body.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
 	// Use config-driven defaults when budget is not specified by the caller.
 	defaultBudget := s.packConfig.DefaultBudgetTokens
 	if defaultBudget <= 0 {
@@ -904,7 +1152,107 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, result)
+	jsonResponse(w, http.StatusOK, store.FilterByTrustLevelPack(result, s.needsRedaction(r)))
+}
+
+// handleAddMemory implements POST /memories per the Ohara v2 spec.
+// It creates a memory item, runs conflict detection for decision/pattern/config kinds,
+// and returns the new memory ID along with optional conflict metadata.
+func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID        string   `json:"project_id"`
+		Kind             string   `json:"kind"`
+		Scope            string   `json:"scope"`
+		Title            string   `json:"title"`
+		Body             string   `json:"body"`
+		Tags             []string `json:"tags"`
+		Source           string   `json:"source"`
+		ActorID          string   `json:"actor_id"`
+		Domain           string   `json:"domain"`
+		EvidenceJSON     string   `json:"evidence_json"`
+		AppliesToJSON    string   `json:"applies_to_json"`
+		RelatedJSON      string   `json:"related_json"`
+		SessionID        string   `json:"session_id"`
+		TrustLevel       string   `json:"trust_level"`
+		Classification   string   `json:"classification"`
+		WrittenBy        string   `json:"written_by"`
+		ExpiresAt        string   `json:"expires_at"`
+		TriggerCondition string   `json:"trigger_condition"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.ProjectID == "" || body.Kind == "" || body.Title == "" {
+		jsonError(w, http.StatusBadRequest, "project_id, kind, and title are required")
+		return
+	}
+
+	if err := s.checkProjectScope(r, body.ProjectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	// Conflict detection for decision/pattern/config kinds (non-blocking).
+	var conflictInfo *store.ConflictInfo
+	detectKinds := map[string]bool{"decision": true, "pattern": true, "config": true}
+	if detectKinds[body.Kind] && s.conflictConfig.Enabled != ConflictEnabledOff {
+		ci, err := s.store.DetectConflict(store.AddMemoryParams{
+			ProjectID: body.ProjectID,
+			Kind:      body.Kind,
+			Title:     body.Title,
+			Body:      body.Body,
+		})
+		if err == nil && ci != nil {
+			// Apply server-level threshold: suppress if below configured minimum.
+			threshold := s.conflictConfig.Threshold
+			if threshold <= 0 {
+				threshold = 0.6 // default matching DetectConflict's internal threshold
+			}
+			if ci.OverlapScore >= threshold {
+				conflictInfo = ci
+			}
+		}
+	}
+
+	memID, err := s.store.AddMemory(store.AddMemoryParams{
+		ProjectID:        body.ProjectID,
+		Kind:             body.Kind,
+		Scope:            body.Scope,
+		Title:            body.Title,
+		Body:             body.Body,
+		Tags:             body.Tags,
+		Source:           body.Source,
+		ActorID:          body.ActorID,
+		Domain:           body.Domain,
+		EvidenceJSON:     body.EvidenceJSON,
+		AppliesToJSON:    body.AppliesToJSON,
+		RelatedJSON:      body.RelatedJSON,
+		SessionID:        body.SessionID,
+		TrustLevel:       body.TrustLevel,
+		Classification:   body.Classification,
+		WrittenBy:        body.WrittenBy,
+		ExpiresAt:        body.ExpiresAt,
+		TriggerCondition: body.TriggerCondition,
+	})
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logAudit(r, fmt.Sprintf("mem-%d", memID), "create", body.ProjectID)
+	s.notifyWrite()
+
+	resp := map[string]any{"id": memID}
+	if conflictInfo != nil && conflictInfo.ExistingMemory != nil {
+		resp["conflict"] = map[string]any{
+			"existing_id":    conflictInfo.ExistingMemory.ID,
+			"existing_title": conflictInfo.ExistingMemory.Title,
+			"similarity":     conflictInfo.OverlapScore,
+			"message":        conflictInfo.Message,
+		}
+	}
+	jsonResponse(w, http.StatusCreated, resp)
 }
 
 func jsonResponse(w http.ResponseWriter, status int, data any) {

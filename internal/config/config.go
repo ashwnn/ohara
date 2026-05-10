@@ -64,6 +64,16 @@ type RuntimeConfig struct {
 	HybridAlpha float64
 	// OllamaURL is the Ollama API endpoint (default: "http://localhost:11434").
 	OllamaURL string
+	// AuthEnabled controls whether HTTP requests require bearer token authentication.
+	// When false (default), the server runs in open local mode.
+	AuthEnabled bool
+	// AuthToken is the bearer token required for authenticated HTTP requests.
+	// Only used when AuthEnabled is true.
+	AuthToken string
+	// MCPHTTPEnabled controls whether the MCP server is exposed via HTTP,
+	// mounted at /mcp on the existing HTTP server. Disabled by default.
+	// When enabled, the endpoint is protected by auth if AuthEnabled is true.
+	MCPHTTPEnabled bool
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
@@ -84,6 +94,9 @@ type fileConfig struct {
 	EmbeddingDim        int      `json:"embedding_dim"`
 	HybridAlpha         *float64 `json:"hybrid_alpha"`
 	OllamaURL           string   `json:"ollama_url"`
+	AuthEnabled         *bool    `json:"auth_enabled"`
+	AuthToken           string   `json:"auth_token"`
+	MCPHTTPEnabled      *bool    `json:"mcp_http_enabled"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -111,6 +124,9 @@ func Default() RuntimeConfig {
 		EmbeddingDim:        768,
 		HybridAlpha:         0.6,
 		OllamaURL:           "http://localhost:11434",
+		AuthEnabled:         false,
+		AuthToken:           "",
+		MCPHTTPEnabled:      false,
 	}
 }
 
@@ -190,6 +206,15 @@ func Load(path string) (RuntimeConfig, error) {
 		if fc.OllamaURL != "" {
 			cfg.OllamaURL = fc.OllamaURL
 		}
+		if fc.AuthEnabled != nil {
+			cfg.AuthEnabled = *fc.AuthEnabled
+		}
+		if fc.AuthToken != "" {
+			cfg.AuthToken = fc.AuthToken
+		}
+		if fc.MCPHTTPEnabled != nil {
+			cfg.MCPHTTPEnabled = *fc.MCPHTTPEnabled
+		}
 	}
 
 	applyEnvOverrides(&cfg)
@@ -232,6 +257,19 @@ func applyEnvOverrides(cfg *RuntimeConfig) {
 	}
 	if v := os.Getenv("OHARA_OLLAMA_URL"); v != "" {
 		cfg.OllamaURL = v
+	}
+	if v := os.Getenv("OHARA_AUTH_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.AuthEnabled = b
+		}
+	}
+	if v := os.Getenv("OHARA_AUTH_TOKEN"); v != "" {
+		cfg.AuthToken = v
+	}
+	if v := os.Getenv("OHARA_MCP_HTTP"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MCPHTTPEnabled = b
+		}
 	}
 }
 

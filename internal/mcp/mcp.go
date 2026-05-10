@@ -17,11 +17,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/auth"
 	projectpkg "github.com/ashwnn/ohara/internal/project"
 	"github.com/ashwnn/ohara/internal/store"
 	"github.com/ashwnn/ohara/internal/token"
@@ -29,6 +31,170 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// mcpAudit records an audit log entry for an MCP tool mutation.
+// Extracts actor from request context claims if available.
+func mcpAudit(ctx context.Context, s *store.Store, obsID, action, project string) {
+	actor := "unknown"
+	if claims := auth.ClaimsFromContext(ctx); claims != nil {
+		actor = claims.Subject
+	}
+	s.LogAudit(obsID, action, actor, "", project)
+}
+
+// requireMCPRole wraps a tool handler with role-based authorization.
+// When the request context carries auth claims (HTTP transport with auth enabled),
+// the required role is enforced. When claims are absent (stdio transport, or auth
+// disabled), the handler is allowed through without restriction.
+//
+// This provides handler-level enforcement independent of profile-based tool
+// registration (which is advisory only).
+func requireMCPRole(role auth.Role, next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		claims := auth.ClaimsFromContext(ctx)
+		if claims != nil && !claims.HasRole(role) {
+			return mcp.NewToolResultError("insufficient permissions"), nil
+		}
+		return next(ctx, req)
+	}
+}
+
+// requireMCPProjectScope wraps a tool handler with project-scope enforcement.
+// For each named argKey, the argument value is checked against the principal's
+// AllowedProjects allowlist from the request context. When claims are absent
+// (stdio transport, or auth disabled), the handler passes through unrestricted.
+//
+// Usage: wrap handlers whose tools accept explicit project arguments:
+//
+//	requireMCPProjectScope("project")(handler)
+//	requireMCPProjectScope("old_project", "new_project")(handler)
+func requireMCPProjectScope(argKeys ...string) func(server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			claims := auth.ClaimsFromContext(ctx)
+			if claims == nil || claims.AllProjectsAllowed() {
+				return next(ctx, req)
+			}
+			for _, key := range argKeys {
+				if val, ok := req.GetArguments()[key].(string); ok && val != "" {
+					if !claims.IsProjectAllowed(val) {
+						return mcp.NewToolResultError("project not allowed"), nil
+					}
+				}
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
+// requireMCPMemoryScope wraps a tool handler with project-scope enforcement
+// for tools that operate on a single resource ID. It looks up the memory by
+// the given argKey (e.g. "id", "memory_id", "obs_id") to determine the owning
+// project, then checks it against the principal's AllowedProjects allowlist.
+// When claims are absent (stdio) or unrestricted, the check is skipped.
+func requireMCPMemoryScope(s *store.Store, argKey string) func(server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			claims := auth.ClaimsFromContext(ctx)
+			if claims == nil || claims.AllProjectsAllowed() {
+				return next(ctx, req)
+			}
+			id := int64(intArg(req, argKey, 0))
+			if id == 0 {
+				// Let the handler validate the missing ID.
+				return next(ctx, req)
+			}
+			mem, err := s.GetMemory(id)
+			if err != nil {
+				return mcp.NewToolResultError("memory not found"), nil
+			}
+			if !claims.IsProjectAllowed(mem.ProjectID) {
+				return mcp.NewToolResultError("project not allowed"), nil
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
+// requireMCPMultiMemoryScope wraps a tool handler with project-scope enforcement
+// for tools that reference multiple resource IDs (e.g. resolve_conflict, link).
+// All referenced resources must be in the principal's AllowedProjects.
+// When claims are absent (stdio) or unrestricted, the check is skipped.
+func requireMCPMultiMemoryScope(s *store.Store, argKeys ...string) func(server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			claims := auth.ClaimsFromContext(ctx)
+			if claims == nil || claims.AllProjectsAllowed() {
+				return next(ctx, req)
+			}
+			for _, argKey := range argKeys {
+				id := int64(intArg(req, argKey, 0))
+				if id == 0 {
+					continue // let handler validate missing IDs
+				}
+				mem, err := s.GetMemory(id)
+				if err != nil {
+					return mcp.NewToolResultError("memory not found"), nil
+				}
+				if !claims.IsProjectAllowed(mem.ProjectID) {
+					return mcp.NewToolResultError("project not allowed"), nil
+				}
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
+// toolRoles maps every registered MCP tool to its minimum required role.
+// This is the authoritative classification for handler-level enforcement,
+// independent of profile-based registration filtering (which is advisory).
+var toolRoles = map[string]auth.Role{
+	// Read-only tools
+	"mem_search":                auth.RoleRead,
+	"mem_search_rerank":         auth.RoleRead,
+	"mem_context":               auth.RoleRead,
+	"mem_pack":                  auth.RoleRead,
+	"mem_prime":                 auth.RoleRead,
+	"mem_stats":                 auth.RoleRead,
+	"mem_list_domains":          auth.RoleRead,
+	"mem_timeline":              auth.RoleRead,
+	"mem_related":               auth.RoleRead,
+	"mem_graph_context":         auth.RoleRead,
+	"mem_suggest_topic_key":     auth.RoleRead,
+	"mem_consolidate_candidates": auth.RoleRead,
+	"mem_mark_consolidated":     auth.RoleRead,
+
+	// Mutating (write) tools
+	"mem_save":                  auth.RoleWrite,
+	"mem_update":                auth.RoleWrite,
+	"mem_save_prompt":           auth.RoleWrite,
+	"mem_session_summary":       auth.RoleWrite,
+	"mem_session_start":         auth.RoleWrite,
+	"mem_session_end":           auth.RoleWrite,
+	"mem_capture_passive":       auth.RoleWrite,
+	"mem_mark_used":             auth.RoleWrite,
+	"mem_append_outcome":        auth.RoleWrite,
+	"mem_resolve_conflict":      auth.RoleWrite,
+	"mem_forget":                auth.RoleWrite,
+	"mem_link":                  auth.RoleWrite,
+	"mem_unlink":                auth.RoleWrite,
+	"mem_feedback":              auth.RoleWrite,
+	"mem_extract_entities":      auth.RoleWrite,
+
+	// Destructive / administrative tools
+	"mem_delete":                auth.RoleAdmin,
+	"mem_merge_projects":        auth.RoleAdmin,
+}
+
+// wrapToolHandler looks up the tool name in toolRoles and wraps the handler
+// with requireMCPRole if a role is configured. Tools not in the map are
+// passed through unwrapped.
+func wrapToolHandler(name string, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	if role, ok := toolRoles[name]; ok {
+		return requireMCPRole(role, handler)
+	}
+	return handler
+}
 
 // MCPConfig holds configuration for the MCP server.
 type MCPConfig struct {
@@ -188,6 +354,14 @@ func NewServerWithConfig(s *store.Store, cfg MCPConfig, allowlist map[string]boo
 	return newServerWithActivity(s, cfg, allowlist, NewSessionActivity(10*time.Minute))
 }
 
+// NewStreamableHTTPHandler creates an MCP server wrapped in a Streamable HTTP handler.
+// The returned handler can be mounted on any http.ServeMux (e.g. at /mcp).
+// It is auth-protected automatically when the parent server has auth enabled.
+func NewStreamableHTTPHandler(s *store.Store, cfg MCPConfig, allowlist map[string]bool) http.Handler {
+	mcpServer := NewServerWithConfig(s, cfg, allowlist)
+	return server.NewStreamableHTTPServer(mcpServer)
+}
+
 func newServerWithActivity(s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) *server.MCPServer {
 	srv := server.NewMCPServer(
 		"ohara",
@@ -245,7 +419,7 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 					mcp.Description("Optional confidence threshold; abstains when top score is below this value"),
 				),
 			),
-			handleSearch(s, cfg, activity),
+			wrapToolHandler("mem_search", requireMCPProjectScope("project")(handleSearch(s, cfg, activity))),
 		)
 	}
 
@@ -285,7 +459,7 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 					mcp.Description("Number of top items to rerank (default: 8)"),
 				),
 			),
-			handleSearchRerank(s, cfg, activity),
+			wrapToolHandler("mem_search_rerank", requireMCPProjectScope("project")(handleSearchRerank(s, cfg, activity))),
 		)
 	}
 
@@ -374,7 +548,7 @@ Examples:
 					mcp.Description("Bypass governance checks (e.g. missing evidence for decision/procedure)"),
 				),
 			),
-			handleSave(s, cfg, activity),
+			wrapToolHandler("mem_save", requireMCPProjectScope("project")(handleSave(s, cfg, activity))),
 		)
 	}
 
@@ -411,7 +585,7 @@ Examples:
 					mcp.Description("New topic key (normalized internally)"),
 				),
 			),
-			handleUpdate(s),
+			wrapToolHandler("mem_update", requireMCPMemoryScope(s, "id")(handleUpdate(s))),
 		)
 	}
 
@@ -435,7 +609,7 @@ Examples:
 					mcp.Description("Observation content used as fallback if title is empty"),
 				),
 			),
-			handleSuggestTopicKey(),
+			wrapToolHandler("mem_suggest_topic_key", handleSuggestTopicKey()),
 		)
 	}
 
@@ -457,7 +631,7 @@ Examples:
 					mcp.Description("If true, permanently deletes the observation"),
 				),
 			),
-			handleDelete(s),
+			requireMCPRole(auth.RoleAdmin, requireMCPMemoryScope(s, "id")(handleDelete(s))),
 		)
 	}
 
@@ -481,7 +655,7 @@ Examples:
 					mcp.Description("Project name"),
 				),
 			),
-			handleSavePrompt(s, cfg),
+			wrapToolHandler("mem_save_prompt", requireMCPProjectScope("project")(handleSavePrompt(s, cfg))),
 		)
 	}
 
@@ -507,7 +681,7 @@ Examples:
 					mcp.Description("Token budget for the context pack (default: 400, max: 800)"),
 				),
 			),
-			handleContext(s, cfg, activity),
+			wrapToolHandler("mem_context", requireMCPProjectScope("project")(handleContext(s, cfg, activity))),
 		)
 	}
 
@@ -522,7 +696,7 @@ Examples:
 				mcp.WithIdempotentHintAnnotation(true),
 				mcp.WithOpenWorldHintAnnotation(false),
 			),
-			handleStats(s),
+			wrapToolHandler("mem_stats", handleStats(s)),
 		)
 	}
 
@@ -546,7 +720,7 @@ Examples:
 					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
 				),
 			),
-			handlePack(s),
+			wrapToolHandler("mem_pack", requireMCPProjectScope("project_id")(handlePack(s))),
 		)
 	}
 
@@ -571,7 +745,7 @@ Examples:
 					mcp.Description("Number of memories to show after the focus (default: 5)"),
 				),
 			),
-			handleTimeline(s),
+			wrapToolHandler("mem_timeline", requireMCPMemoryScope(s, "memory_id")(handleTimeline(s))),
 		)
 	}
 
@@ -625,7 +799,7 @@ GUIDELINES:
 					mcp.Description("Project name"),
 				),
 			),
-			handleSessionSummary(s, cfg, activity),
+			wrapToolHandler("mem_session_summary", requireMCPProjectScope("project")(handleSessionSummary(s, cfg, activity))),
 		)
 	}
 
@@ -651,7 +825,7 @@ GUIDELINES:
 					mcp.Description("Working directory"),
 				),
 			),
-			handleSessionStart(s, cfg, activity),
+			wrapToolHandler("mem_session_start", requireMCPProjectScope("project")(handleSessionStart(s, cfg, activity))),
 		)
 	}
 
@@ -676,7 +850,7 @@ GUIDELINES:
 					mcp.Description("Project name (used to clear activity tracking)"),
 				),
 			),
-			handleSessionEnd(s, cfg, activity),
+			wrapToolHandler("mem_session_end", requireMCPProjectScope("project")(handleSessionEnd(s, cfg, activity))),
 		)
 	}
 
@@ -708,7 +882,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Source identifier (e.g. 'subagent-stop', 'session-end')"),
 				),
 			),
-			handleCapturePassive(s, cfg, activity),
+			wrapToolHandler("mem_capture_passive", requireMCPProjectScope("project")(handleCapturePassive(s, cfg, activity))),
 		)
 	}
 
@@ -731,7 +905,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("The canonical project name to merge INTO (e.g. 'ohara')"),
 				),
 			),
-			handleMergeProjects(s),
+			requireMCPRole(auth.RoleAdmin, handleMergeProjects(s)),
 		)
 	}
 
@@ -750,7 +924,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Project ID to list domains for"),
 				),
 			),
-			handleListDomains(s),
+			wrapToolHandler("mem_list_domains", requireMCPProjectScope("project_id")(handleListDomains(s))),
 		)
 	}
 
@@ -786,7 +960,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Include [written_by] actor tags in output entries"),
 				),
 			),
-			handlePrime(s),
+			wrapToolHandler("mem_prime", requireMCPProjectScope("project")(handlePrime(s))),
 		)
 	}
 
@@ -811,7 +985,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Session ID associated with this usage"),
 				),
 			),
-			handleMarkUsed(s),
+			wrapToolHandler("mem_mark_used", requireMCPMemoryScope(s, "memory_id")(handleMarkUsed(s))),
 		)
 	}
 
@@ -840,7 +1014,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Actor who recorded the outcome (default: agent)"),
 				),
 			),
-			handleAppendOutcome(s),
+			wrapToolHandler("mem_append_outcome", requireMCPMemoryScope(s, "memory_id")(handleAppendOutcome(s))),
 		)
 	}
 
@@ -873,7 +1047,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Required for 'relate' action: type of relation (e.g., 'supersedes', 'contradicts', 'refines')"),
 				),
 			),
-			handleResolveConflict(s),
+			wrapToolHandler("mem_resolve_conflict", requireMCPMultiMemoryScope(s, "obs_id_a", "obs_id_b")(handleResolveConflict(s))),
 		)
 	}
 
@@ -885,21 +1059,20 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithTitleAnnotation("Forget Memory"),
 				mcp.WithReadOnlyHintAnnotation(false),
 				mcp.WithDestructiveHintAnnotation(true),
-				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(false),
 				mcp.WithOpenWorldHintAnnotation(false),
 				mcp.WithNumber("obs_id",
 					mcp.Required(),
 					mcp.Description("Memory ID to archive"),
 				),
 				mcp.WithString("reason",
-					mcp.Required(),
 					mcp.Description("Reason for forgetting"),
 				),
 				mcp.WithNumber("replacement_obs_id",
 					mcp.Description("ID of the memory that supersedes this one"),
 				),
 			),
-			handleForget(s),
+			wrapToolHandler("mem_forget", requireMCPMemoryScope(s, "obs_id")(handleForget(s))),
 		)
 	}
 
@@ -926,7 +1099,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Relation type: caused, resolves, supersedes, related_to, implements, contradicts"),
 				),
 			),
-			handleLink(s),
+			wrapToolHandler("mem_link", requireMCPMultiMemoryScope(s, "from_obs_id", "to_obs_id")(handleLink(s))),
 		)
 	}
 
@@ -953,7 +1126,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Relation type to remove"),
 				),
 			),
-			handleUnlink(s),
+			wrapToolHandler("mem_unlink", requireMCPMultiMemoryScope(s, "from_obs_id", "to_obs_id")(handleUnlink(s))),
 		)
 	}
 
@@ -975,7 +1148,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Filter by relation type (optional)"),
 				),
 			),
-			handleRelated(s),
+			wrapToolHandler("mem_related", requireMCPMemoryScope(s, "obs_id")(handleRelated(s))),
 		)
 	}
 
@@ -996,11 +1169,10 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("Filter by domain"),
 				),
 			),
-			handleConsolidationCandidates(s),
+			wrapToolHandler("mem_consolidate_candidates", requireMCPProjectScope("project")(handleConsolidationCandidates(s))),
 		)
 	}
 
-	// ─── mem_mark_consolidated (profile: agent, deferred) ──────────────────
 	if shouldRegister("mem_mark_consolidated", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_mark_consolidated",
@@ -1020,11 +1192,10 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 					mcp.Description("ID of the semantic memory already saved with source='consolidation'"),
 				),
 			),
-			handleMarkConsolidated(s),
+			wrapToolHandler("mem_mark_consolidated", requireMCPMultiMemoryScope(s, "id", "consolidated_memory_id")(handleMarkConsolidated(s))),
 		)
 	}
 
-	// ─── mem_feedback (profile: agent, deferred) ─────────────────────────
 	if shouldRegister("mem_feedback", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_feedback",
@@ -1040,7 +1211,7 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithString("notes", mcp.Description("Optional feedback notes")),
 				mcp.WithString("actor_id", mcp.Description("Actor recording feedback (default: agent)")),
 			),
-			handleFeedback(s),
+			wrapToolHandler("mem_feedback", requireMCPMemoryScope(s, "obs_id")(handleFeedback(s))),
 		)
 	}
 
@@ -1058,11 +1229,10 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to extract entities from")),
 				mcp.WithString("project", mcp.Description("Project key override (default: memory project)")),
 			),
-			handleExtractEntities(s),
+			wrapToolHandler("mem_extract_entities", requireMCPProjectScope("project")(requireMCPMemoryScope(s, "obs_id")(handleExtractEntities(s)))),
 		)
 	}
 
-	// ─── mem_graph_context (profile: agent, deferred) ────────────────────
 	if shouldRegister("mem_graph_context", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_graph_context",
@@ -1077,9 +1247,16 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithString("project", mcp.Description("Project scope")),
 				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
 			),
-			handleGraphContext(s),
+			wrapToolHandler("mem_graph_context", requireMCPProjectScope("project")(handleGraphContext(s))),
 		)
 	}
+}
+
+// isLowTrustCtx reports whether the request context carries claims for a
+// low-trust principal (RoleRead-only with no write/admin access).
+// Nil claims (stdio / auth-disabled) are NOT low-trust.
+func isLowTrustCtx(ctx context.Context) bool {
+	return auth.ClaimsFromContext(ctx).IsLowTrust()
 }
 
 // ─── Tool Handlers ───────────────────────────────────────────────────────────
@@ -1109,6 +1286,9 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Search error: %s. Try simpler keywords.", err)), nil
 		}
+
+		// Apply trust-level filtering for low-trust principals.
+		memItems = store.FilterByTrustLevel(memItems, isLowTrustCtx(ctx))
 
 		hasMem := len(memItems) > 0
 
@@ -1219,6 +1399,7 @@ func handleSearchRerank(s *store.Store, cfg MCPConfig, activity *SessionActivity
 		if err != nil {
 			return mcp.NewToolResultError("Failed to search memories: " + err.Error()), nil
 		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
 		if len(items) == 0 {
 			return mcp.NewToolResultText(fmt.Sprintf("No memories found for: %q", query)), nil
 		}
@@ -1368,6 +1549,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		}
 
 		activity.RecordSave(defaultSessionID(project))
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", memID), "create", project)
 
 		msg := fmt.Sprintf("Memory saved: %q (%s)", title, typ)
 
@@ -1445,6 +1627,7 @@ func handleUpdate(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Failed to update memory: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", id), "update", mem.ProjectID)
 		return mcp.NewToolResultText(fmt.Sprintf("Memory updated: #%d %q (%s)", mem.ID, mem.Title, mem.Kind)), nil
 	}
 }
@@ -1460,6 +1643,7 @@ func handleDelete(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Failed to delete memory: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", id), "delete", "")
 		return mcp.NewToolResultText(fmt.Sprintf("Memory #%d deleted", id)), nil
 	}
 }
@@ -1483,7 +1667,7 @@ func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 		// Ensure the session exists
 		s.CreateSession(sessionID, project, "")
 
-		_, err := s.AddPrompt(store.AddPromptParams{
+		promptID, err := s.AddPrompt(store.AddPromptParams{
 			SessionID: sessionID,
 			Content:   content,
 			Project:   project,
@@ -1491,6 +1675,7 @@ func handleSavePrompt(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("Failed to save prompt: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, fmt.Sprintf("prompt-%d", promptID), "create", project)
 
 		guidance := "Guidance: include domain when known; set classification for strong signals; add evidence for decision/procedure; set expires_at for temporary facts; set trigger for procedure memories."
 		return mcp.NewToolResultText(fmt.Sprintf("Prompt saved: %q\n%s", util.Truncate(content, 80), guidance)), nil
@@ -1527,6 +1712,7 @@ func handleContext(s *store.Store, cfg MCPConfig, activity *SessionActivity) ser
 		if err != nil {
 			return mcp.NewToolResultError("Failed to get context: " + err.Error()), nil
 		}
+		packResult = store.FilterByTrustLevelPack(packResult, isLowTrustCtx(ctx))
 
 		packText := store.FormatPackText(packResult)
 		if packText == "" || packText == "No memory context available." {
@@ -1674,6 +1860,16 @@ func handleTimeline(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(fmt.Sprintf("Timeline error: %s", err)), nil
 		}
 
+		// Apply trust-level filtering for low-trust principals.
+		if isLowTrustCtx(ctx) {
+			if !store.VisibleTrustLevelsForLowTrust[result.Anchor.TrustLevel] {
+				return mcp.NewToolResultText("Memory not available for this principal."), nil
+			}
+			result.Anchor = result.Anchor.Redacted()
+			result.Before = store.FilterByTrustLevel(result.Before, true)
+			result.After = store.FilterByTrustLevel(result.After, true)
+		}
+
 		var b strings.Builder
 
 		fmt.Fprintf(&b, "Memory #%d (%s): %s\n\n", result.Anchor.ID, result.Anchor.Kind, result.Anchor.Title)
@@ -1731,6 +1927,7 @@ func handleSessionSummary(s *store.Store, cfg MCPConfig, activity *SessionActivi
 			return mcp.NewToolResultError("Failed to save session summary: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, "session-summary", "create", project)
 		msg := fmt.Sprintf("Session summary saved for project %q", project)
 		if score := activity.ActivityScore(defaultSessionID(project)); score != "" {
 			msg += "\n" + score
@@ -1756,6 +1953,7 @@ func handleSessionStart(s *store.Store, cfg MCPConfig, activity *SessionActivity
 		if err := s.CreateSession(id, project, directory); err != nil {
 			return mcp.NewToolResultError("Failed to start session: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, "session-"+id, "create", project)
 
 		msg := fmt.Sprintf("Session %q started for project %q", id, project)
 
@@ -1777,6 +1975,7 @@ func handleSessionEnd(s *store.Store, cfg MCPConfig, activity *SessionActivity) 
 		if err := s.EndSession(id, summary); err != nil {
 			return mcp.NewToolResultError("Failed to end session: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, "session-"+id, "update", "")
 
 		// Determine the project for this session to clean up activity tracking
 		project := cfg.DefaultProject
@@ -1828,6 +2027,9 @@ func handleCapturePassive(s *store.Store, cfg MCPConfig, activity *SessionActivi
 			return mcp.NewToolResultError("Passive capture failed: " + err.Error()), nil
 		}
 
+		if result.Saved > 0 {
+			mcpAudit(ctx, s, "session-"+sessionID, "create", project)
+		}
 		return mcp.NewToolResultText(fmt.Sprintf(
 			"Passive capture complete: extracted=%d saved=%d duplicates=%d",
 			result.Extracted, result.Saved, result.Duplicates,
@@ -1856,11 +2058,24 @@ func handleMergeProjects(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("at least one source project name is required in 'from'"), nil
 		}
 
+		// Check project scope for all source projects and the target.
+		if claims := auth.ClaimsFromContext(ctx); claims != nil && !claims.AllProjectsAllowed() {
+			for _, src := range sources {
+				if !claims.IsProjectAllowed(src) {
+					return mcp.NewToolResultError("project not allowed"), nil
+				}
+			}
+			if !claims.IsProjectAllowed(to) {
+				return mcp.NewToolResultError("project not allowed"), nil
+			}
+		}
+
 		result, err := s.MergeProjects(sources, to)
 		if err != nil {
 			return mcp.NewToolResultError("Merge failed: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, "project-merge", "update", result.Canonical)
 		msg := fmt.Sprintf("Merged %d source(s) into %q:\n", len(result.SourcesMerged), result.Canonical)
 		msg += fmt.Sprintf("  Observations moved: %d\n", result.ObservationsUpdated)
 		msg += fmt.Sprintf("  Sessions moved:     %d\n", result.SessionsUpdated)
@@ -1933,6 +2148,9 @@ func handlePrime(s *store.Store) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("Failed to get memories: " + err.Error()), nil
 		}
+
+		// Apply trust-level filtering for low-trust principals.
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
 
 		// Filter by domain if specified
 		if domain != "" {
@@ -2150,6 +2368,9 @@ func handleMarkUsed(s *store.Store) server.ToolHandlerFunc {
 			}
 		}
 
+		if updated > 0 {
+			mcpAudit(ctx, s, fmt.Sprintf("usage-%s", event), "update", "")
+		}
 		return mcp.NewToolResultText(fmt.Sprintf("Recorded %s for %d memory item(s)", event, updated)), nil
 	}
 }
@@ -2180,6 +2401,7 @@ func handleAppendOutcome(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Failed to append outcome: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", memoryID), "update", "")
 		return mcp.NewToolResultText(fmt.Sprintf("Outcome '%s' recorded for memory %d", status, memoryID)), nil
 	}
 }
@@ -2200,6 +2422,7 @@ func handleResolveConflict(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("action must be 'add', 'merge', 'invalidate', 'relate', or 'suppress'"), nil
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("conflict-%d-%d", idA, idB), "update", "")
 		switch action {
 		case "merge":
 			if mergedContent == "" {
@@ -2327,6 +2550,7 @@ func handleForget(s *store.Store) server.ToolHandlerFunc {
 			_ = s.AddRelation(replacementID, id, store.RelationSupersedes)
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", id), "archive", "")
 		msg := fmt.Sprintf("Memory %d archived (reason: %s)", id, reason)
 		if hasReplacement {
 			msg += fmt.Sprintf("; superseded by memory %d", int64(replacementObsID))
@@ -2353,11 +2577,11 @@ func handleLink(s *store.Store) server.ToolHandlerFunc {
 		if err := s.AddRelation(fromID, toID, relation); err != nil {
 			return mcp.NewToolResultError("Failed to create relation: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, fmt.Sprintf("rel-%d-%d", fromID, toID), "create", "")
 		return mcp.NewToolResultText(fmt.Sprintf("Created %s relation: %d → %d", relation, fromID, toID)), nil
 	}
 }
 
-// handleUnlink removes a typed relation between two memories.
 func handleUnlink(s *store.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		fromID := int64(intArg(req, "from_obs_id", 0))
@@ -2374,6 +2598,7 @@ func handleUnlink(s *store.Store) server.ToolHandlerFunc {
 		if err := s.RemoveRelation(fromID, toID, relation); err != nil {
 			return mcp.NewToolResultError("Failed to remove relation: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, fmt.Sprintf("rel-%d-%d", fromID, toID), "delete", "")
 		return mcp.NewToolResultText(fmt.Sprintf("Removed %s relation: %d → %d", relation, fromID, toID)), nil
 	}
 }
@@ -2392,6 +2617,8 @@ func handleRelated(s *store.Store) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("Failed to get related memories: " + err.Error()), nil
 		}
+
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
 
 		if len(items) == 0 {
 			return mcp.NewToolResultText("No related memories found."), nil
@@ -2433,8 +2660,10 @@ func handleConsolidationCandidates(s *store.Store) server.ToolHandlerFunc {
 			fmt.Fprintf(&b, "## %s\n\n", key)
 			fmt.Fprintf(&b, "Candidate ID: %d\n", group.Candidate.ID)
 			fmt.Fprintf(&b, "Candidate title: **%s**\n", group.Candidate.Title)
-			fmt.Fprintf(&b, "Source memories (%d):\n\n", len(group.Sources))
-			for _, source := range group.Sources {
+			lowTrust := isLowTrustCtx(ctx)
+			sources := store.FilterByTrustLevel(group.Sources, lowTrust)
+			fmt.Fprintf(&b, "Source memories (%d):\n\n", len(sources))
+			for _, source := range sources {
 				preview := util.Truncate(source.Body, 220)
 				fmt.Fprintf(&b, "- ID %d — **%s**\n  Kind: %s\n  %s\n", source.ID, source.Title, source.Kind, preview)
 			}
@@ -2460,6 +2689,7 @@ func handleMarkConsolidated(s *store.Store) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("Failed to mark consolidated: " + err.Error()), nil
 		}
 
+		mcpAudit(ctx, s, fmt.Sprintf("candidate-%d", id), "update", "")
 		msg := fmt.Sprintf("Candidate %d archived. Source episodic memories were archived under consolidation memory %d.", id, consolidatedMemoryID)
 		return mcp.NewToolResultText(msg), nil
 	}
@@ -2477,6 +2707,7 @@ func handleFeedback(s *store.Store) server.ToolHandlerFunc {
 		if err := s.AppendFeedback(obsID, reward, notes, actorID); err != nil {
 			return mcp.NewToolResultError("Failed to append feedback: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", obsID), "update", "")
 		return mcp.NewToolResultText(fmt.Sprintf("Feedback recorded for memory %d (reward=%.2f).", obsID, reward)), nil
 	}
 }
@@ -2504,6 +2735,7 @@ func handleExtractEntities(s *store.Store) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("Failed to link entities: " + err.Error()), nil
 		}
+		mcpAudit(ctx, s, fmt.Sprintf("mem-%d", obsID), "update", project)
 		return mcp.NewToolResultText(fmt.Sprintf("Extracted and linked %d entities for memory %d.", count, obsID)), nil
 	}
 }
@@ -2520,6 +2752,7 @@ func handleGraphContext(s *store.Store) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("Failed to build graph context: " + err.Error()), nil
 		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
 		if len(items) == 0 {
 			return mcp.NewToolResultText("No graph-linked memories found for that entity."), nil
 		}

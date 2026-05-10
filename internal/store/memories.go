@@ -44,6 +44,21 @@ func (s *Store) logMemoryAudit(tx *sql.Tx, memoryID int64, action, actorID, sess
 	return err
 }
 
+// LogAudit records a handler-level audit log entry for a non-memory mutation.
+// It is called from HTTP and MCP handlers after successful mutations.
+// The snapshot includes project context for cross-reference.
+func (s *Store) LogAudit(obsID, action, actorID, sessionID, project string) error {
+	snapshot, _ := json.Marshal(map[string]string{
+		"project": project,
+		"action":  action,
+	})
+	_, err := s.execHook(s.db,
+		`INSERT INTO audit_log (obs_id, action, actor_id, session_id, snapshot) VALUES (?, ?, ?, ?, ?)`,
+		obsID, action, nullableString(actorID), nullableString(sessionID), string(snapshot),
+	)
+	return err
+}
+
 // AddMemory creates a new memory item and returns its ID.
 // It enforces body size limits per kind and records the initial revision.
 func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
