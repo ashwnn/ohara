@@ -2,45 +2,48 @@
 
 # Installation
 
-Ohara is **source-build only**. This project does not publish release binaries,
-package-manager formulas, Docker images, or marketplace packages.
+## Quick Install (GitHub Releases)
 
-## Requirements
-
-- Go 1.24+
-- Git
-- SQLite is embedded through [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite), so no CGO or system SQLite package is required.
-
-## Build From Source
+Latest release:
 
 ```bash
-git clone https://github.com/ashwnn/ohara
-cd ohara
-go build -trimpath -o ohara ./cmd/ohara
-./ohara version
+curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
 ```
 
-Optional install into `~/.local/bin`:
+Pinned release:
 
 ```bash
-mkdir -p ~/.local/bin
-go build -trimpath -o ~/.local/bin/ohara ./cmd/ohara
-ohara version
+OHARA_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
 ```
 
-## Verify Build
+The installer places `ohara` in `${OHARA_INSTALL_DIR:-$HOME/.local/bin}` by default.
 
-Before using a new checkout for real data:
+## Optional Source Build Fallback
+
+Use local source build when release artifacts are unavailable:
 
 ```bash
-go test ./...
-go vet ./...
-ohara validate
+OHARA_FROM_SOURCE=1 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
 ```
 
-`ohara validate` checks the local database schema and exits non-zero on
-validation failure. On a first install with no existing database, run `ohara
-serve` or any command that opens the store once before validation.
+Required tools for source fallback:
+
+- `git`
+- `go` (1.24+)
+
+## Manual Install
+
+1. Open <https://github.com/ashwnn/ohara/releases>
+2. Download `ohara-<tag>-<os>-<arch>.tar.gz` and `checksums.txt`
+3. Verify checksum and extract
+4. Copy binary to `~/.local/bin/ohara`
+
+## Verify Install
+
+```bash
+ohara --version
+ohara check
+```
 
 ## Start Server
 
@@ -51,29 +54,8 @@ Ohara listens on loopback (`127.0.0.1`) by default and stores data in
 ohara serve
 ```
 
-The `OHARA_HTTP_ADDR` setting currently supplies the port only; the server binds
-to loopback. Use `OHARA_SOCKET` for local Unix socket mode.
-
-## Agent Setup
+## Uninstall
 
 ```bash
-ohara setup opencode
-ohara setup --check
+rm -f ~/.local/bin/ohara
 ```
-
-Supported setup targets are documented in [Usage](USAGE.md#setup).
-
-## User Service
-
-Systemd user units live in `systemd/`. Install manually if you want Ohara to run
-in the background:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/ohara.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now ohara.service
-systemctl --user status ohara.service
-```
-
-The service expects the binary at `~/.local/bin/ohara`.

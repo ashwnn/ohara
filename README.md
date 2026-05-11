@@ -289,7 +289,7 @@ Each feature was motivated by a specific failure mode identified through compara
 
 Ohara is production-oriented for local, source-built use:
 
-- Source-build only: no release binaries, package-manager formulas, Docker images, or marketplace packages
+- GitHub Releases provide signed-source, checksum-verified binaries for Linux and macOS
 - Local-first by default: HTTP binds to loopback; Unix socket mode is available for single-user setups
 - Operational tooling: `ohara check`, `ohara validate`, `ohara doctor`, `ohara backup`, and `ohara maintain`
 - Recovery path: SQLite snapshots plus import/export and git-sync JSONL mirrors
@@ -301,10 +301,68 @@ Start with [Installation](docs/INSTALLATION.md), then use [Operations](docs/OPER
 This is an open project. Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 - **License**: [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution
-- **Source-build only**: build from source, no release artifacts to trust
+- **Install options**: one-command installer, manual release downloads, or source build fallback
 - **No TUI**: CLI and MCP are the production interface
 - **Battle tested**: see [Production Notes](docs/PRODUCTION_NOTES.md) for testing evidence and known limitations
 
 ## License
 
 [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution. Built on the Engram core memory system (MIT).
+
+
+## Install
+
+One-command install (latest release):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
+```
+
+Install a pinned version:
+
+```bash
+OHARA_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
+```
+
+Build from source via installer fallback:
+
+```bash
+OHARA_FROM_SOURCE=1 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
+```
+
+Verify install:
+
+```bash
+ohara --version
+```
+
+Supported release artifacts:
+
+- Linux x86_64 (`linux-amd64`)
+- Linux arm64 (`linux-arm64`)
+- macOS x86_64 (`darwin-amd64`)
+- macOS arm64 (`darwin-arm64`)
+
+Manual install from GitHub Releases:
+
+1. Open https://github.com/ashwnn/ohara/releases
+2. Download `ohara-<tag>-<os>-<arch>.tar.gz` and `checksums.txt`
+3. Verify checksum (`sha256sum -c checksums.txt` or `shasum -a 256`)
+4. Extract and copy `ohara` into `~/.local/bin`
+
+Uninstall:
+
+```bash
+rm -f ~/.local/bin/ohara
+```
+
+## Maintainer Release Process
+
+Tag and push a semantic version; GitHub Actions handles build and release publication:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow runs tests, builds archives for supported targets, writes `checksums.txt`, and uploads all artifacts to GitHub Releases.
