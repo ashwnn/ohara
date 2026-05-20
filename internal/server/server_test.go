@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ashwnn/ohara/internal/auth"
+	mcpruntime "github.com/ashwnn/ohara/internal/mcp"
 	"github.com/ashwnn/ohara/internal/store"
 )
 
@@ -2269,23 +2271,23 @@ func TestMCPEndpoint_GET_WithValidToken_Succeeds(t *testing.T) {
 	}
 }
 
-func TestMCPEndpoint_ReadToken_POST_Forbidden(t *testing.T) {
+func TestMCPEndpoint_ReadToken_POST_Succeeds(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)
 	srv.SetAuthenticator(&stubRoleAuth{roles: []auth.Role{auth.RoleRead}})
 	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler should not be reached with insufficient role")
+		w.WriteHeader(http.StatusOK)
 	}))
 	h := srv.Handler()
 
-	// POST /mcp requires RoleWrite → read-only token gets 403.
+	// /mcp transport allows read role; tool-level auth controls write mutations.
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer any-token")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("read-only token on POST /mcp: expected 403, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("read-only token on POST /mcp: unexpected 401/403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2323,5 +2325,105 @@ func TestMCPEndpoint_HealthBypass_NoAuthOnHealth(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health bypass: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_ReadyBypass_NoAuthOnReady(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthConfig(true, "mcp-token")
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ready bypass: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPEndpoint_BodyTooLargeRejected(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	h := srv.Handler()
+
+	body := bytes.Repeat([]byte("x"), int(defaultMCPBodyLimitBytes+1))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized mcp body, got %d", rec.Code)
+	}
+}
+
+func TestMCPEndpoint_ReadonlyAllowlist_HidesWriteTools(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(auth.NewStaticClaimsAuthenticator("tok", auth.Claims{
+		Subject:    "remote-readonly",
+		Roles:      []auth.Role{auth.RoleRead},
+		TrustLevel: "low",
+	}))
+	srv.SetMCPHandler(mcpruntime.NewStreamableHTTPHandler(
+		st,
+		mcpruntime.MCPConfig{EnableCompatibilityTools: true},
+		mcpruntime.ResolveRemoteToolAllowlist("readonly"),
+	))
+	h := srv.Handler()
+
+	listReqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	listReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listReqBody))
+	listReq.Header.Set("Authorization", "Bearer tok")
+	listReq.Header.Set("Content-Type", "application/json")
+	listRec := httptest.NewRecorder()
+	h.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("tools/list expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	body := listRec.Body.String()
+	if !strings.Contains(body, `"search"`) {
+		t.Fatalf("expected readonly list to include search tool, got body: %s", body)
+	}
+	if strings.Contains(body, `"mem_save"`) {
+		t.Fatalf("readonly list should not include mem_save, got body: %s", body)
+	}
+}
+
+func TestMCPEndpoint_ReadonlyCallWriteToolRejected(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(auth.NewStaticClaimsAuthenticator("tok", auth.Claims{
+		Subject:    "remote-readonly",
+		Roles:      []auth.Role{auth.RoleRead},
+		TrustLevel: "low",
+	}))
+	srv.SetMCPHandler(mcpruntime.NewStreamableHTTPHandler(
+		st,
+		mcpruntime.MCPConfig{EnableCompatibilityTools: true},
+		mcpruntime.ResolveRemoteToolAllowlist("readonly"),
+	))
+	h := srv.Handler()
+
+	callReqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mem_save","arguments":{"title":"t","content":"c","project":"ohara"}}}`
+	callReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(callReqBody))
+	callReq.Header.Set("Authorization", "Bearer tok")
+	callReq.Header.Set("Content-Type", "application/json")
+	callRec := httptest.NewRecorder()
+	h.ServeHTTP(callRec, callReq)
+	if callRec.Code != http.StatusOK {
+		t.Fatalf("tools/call expected 200 jsonrpc envelope, got %d: %s", callRec.Code, callRec.Body.String())
+	}
+	resp := callRec.Body.String()
+	if !strings.Contains(strings.ToLower(resp), "error") {
+		t.Fatalf("expected write call rejection response, got: %s", resp)
 	}
 }

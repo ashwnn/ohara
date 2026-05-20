@@ -295,3 +295,71 @@ func TestExpandHome(t *testing.T) {
 		t.Errorf("expandHome absolute: got %q, want /absolute/path", result2)
 	}
 }
+
+func TestDefaultRemoteMCPConfig(t *testing.T) {
+	cfg := Default()
+	if cfg.MCPRemoteEnable {
+		t.Fatal("MCPRemoteEnable should default to false")
+	}
+	if cfg.MCPTransport != "streamable-http" {
+		t.Fatalf("unexpected default MCPTransport: %q", cfg.MCPTransport)
+	}
+	if !cfg.MCPRequireAuth {
+		t.Fatal("MCPRequireAuth should default to true")
+	}
+	if cfg.MCPAccessMode != "readonly" {
+		t.Fatalf("unexpected default MCPAccessMode: %q", cfg.MCPAccessMode)
+	}
+	if cfg.MCPTrustLevel != "low" {
+		t.Fatalf("unexpected default MCPTrustLevel: %q", cfg.MCPTrustLevel)
+	}
+}
+
+func TestLoadRemoteMCPEnvOverrides(t *testing.T) {
+	t.Setenv("OHARA_MCP_REMOTE_ENABLE", "1")
+	t.Setenv("OHARA_MCP_TRANSPORT", "sse")
+	t.Setenv("OHARA_MCP_BIND_ADDR", "0.0.0.0:7331")
+	t.Setenv("OHARA_MCP_AUTH_MODE", "bearer")
+	t.Setenv("OHARA_MCP_REQUIRE_AUTH", "1")
+	t.Setenv("OHARA_MCP_ACCESS_MODE", "full")
+	t.Setenv("OHARA_MCP_BEARER_TOKEN", "abc")
+	t.Setenv("OHARA_MCP_ALLOWED_ORIGINS", "https://chatgpt.com, https://example.com")
+	t.Setenv("OHARA_MCP_TRUST_LEVEL", "trusted")
+
+	cfg, err := Load("/nonexistent/config.json")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MCPRemoteEnable {
+		t.Fatal("expected remote enable from env")
+	}
+	if cfg.MCPTransport != "sse" {
+		t.Fatalf("unexpected transport: %q", cfg.MCPTransport)
+	}
+	if cfg.MCPBindAddr != "0.0.0.0:7331" {
+		t.Fatalf("unexpected bind addr: %q", cfg.MCPBindAddr)
+	}
+	if !cfg.MCPRequireAuth {
+		t.Fatal("expected MCPRequireAuth=true from env")
+	}
+	if cfg.MCPAccessMode != "full" {
+		t.Fatalf("unexpected access mode: %q", cfg.MCPAccessMode)
+	}
+	if cfg.MCPBearerToken != "abc" {
+		t.Fatalf("unexpected bearer token override")
+	}
+	if cfg.MCPTrustLevel != "trusted" {
+		t.Fatalf("unexpected trust level: %q", cfg.MCPTrustLevel)
+	}
+}
+
+func TestLegacyMCPHTTPEnablesRemote(t *testing.T) {
+	t.Setenv("OHARA_MCP_HTTP", "true")
+	cfg, err := Load("/nonexistent/config.json")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MCPRemoteEnable {
+		t.Fatal("legacy OHARA_MCP_HTTP should imply MCPRemoteEnable")
+	}
+}

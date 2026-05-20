@@ -48,6 +48,39 @@ func TestStaticTokenAuthenticator_TimingSafe(t *testing.T) {
 	}
 }
 
+func TestStaticClaimsAuthenticator_ValidToken(t *testing.T) {
+	a := NewStaticClaimsAuthenticator("token-1", Claims{
+		Subject:         "remote-client",
+		Roles:           []Role{RoleRead},
+		AllowedProjects: []string{"ohara"},
+		TrustLevel:      "low",
+	})
+	claims, err := a.Authenticate("token-1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if claims.Subject != "remote-client" {
+		t.Fatalf("unexpected subject: %q", claims.Subject)
+	}
+	if len(claims.Roles) != 1 || claims.Roles[0] != RoleRead {
+		t.Fatalf("unexpected roles: %v", claims.Roles)
+	}
+	if !claims.IsLowTrust() {
+		t.Fatal("expected low-trust claims")
+	}
+	if claims.Token != "token-1" {
+		t.Fatalf("expected raw token in claims, got %q", claims.Token)
+	}
+}
+
+func TestStaticClaimsAuthenticator_InvalidToken(t *testing.T) {
+	a := NewStaticClaimsAuthenticator("real", Claims{Roles: []Role{RoleRead}})
+	_, err := a.Authenticate("wrong")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected ErrInvalidToken, got %v", err)
+	}
+}
+
 func TestClaimsContextRoundTrip(t *testing.T) {
 	claims := &Claims{
 		Subject: "test-subject",
@@ -247,5 +280,16 @@ func TestIsLowTrust_MultipleRoles(t *testing.T) {
 	c := &Claims{Roles: []Role{RoleRead, RoleWrite}}
 	if c.IsLowTrust() {
 		t.Fatal("principal with Read+Write should NOT be low-trust")
+	}
+}
+
+func TestIsLowTrust_TrustOverride(t *testing.T) {
+	c1 := &Claims{Roles: []Role{RoleAdmin}, TrustLevel: "low"}
+	if !c1.IsLowTrust() {
+		t.Fatal("low trust override should force low-trust")
+	}
+	c2 := &Claims{Roles: []Role{RoleRead}, TrustLevel: "trusted"}
+	if c2.IsLowTrust() {
+		t.Fatal("trusted override should disable low-trust redaction")
 	}
 }

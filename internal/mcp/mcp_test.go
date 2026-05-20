@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,6 +43,22 @@ func callResultText(t *testing.T, res *mcppkg.CallToolResult) string {
 		t.Fatalf("expected text content")
 	}
 	return text.Text
+}
+
+func callResultStructuredMap(t *testing.T, res *mcppkg.CallToolResult) map[string]any {
+	t.Helper()
+	if res == nil || res.StructuredContent == nil {
+		t.Fatalf("expected structured content")
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal structured content: %v", err)
+	}
+	return out
 }
 
 func TestNewServerRegistersTools(t *testing.T) {
@@ -356,6 +373,113 @@ func TestHandleSearchAndCRUDHandlers(t *testing.T) {
 	}
 	if !strings.Contains(callResultText(t, delRes), "deleted") {
 		t.Fatalf("expected delete message")
+	}
+}
+
+func TestCompatSearchAndFetchStructuredResults(t *testing.T) {
+	s := newMCPTestStore(t)
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "ohara",
+		Kind:       "bugfix",
+		Title:      "Fix auth race",
+		Body:       "Resolved token refresh race in auth middleware.",
+		Scope:      "project",
+		TrustLevel: "tool",
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	searchRes, err := handleCompatSearch(s, MCPConfig{EnableCompatibilityTools: true}, NewSessionActivity(10*time.Minute))(context.Background(),
+		mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"query": "auth race", "project": "ohara"}}},
+	)
+	if err != nil {
+		t.Fatalf("search handler error: %v", err)
+	}
+	if searchRes.IsError {
+		t.Fatalf("compat search returned error: %s", callResultText(t, searchRes))
+	}
+	searchStructured := callResultStructuredMap(t, searchRes)
+	resultsAny, ok := searchStructured["results"].([]any)
+	if !ok || len(resultsAny) == 0 {
+		t.Fatalf("expected non-empty structured results, got %#v", searchStructured["results"])
+	}
+
+	first := resultsAny[0].(map[string]any)
+	id, ok := first["id"].(float64)
+	if !ok || id <= 0 {
+		t.Fatalf("expected numeric id in search result, got %#v", first["id"])
+	}
+
+	fetchRes, err := handleCompatFetch(s, MCPConfig{EnableCompatibilityTools: true})(context.Background(),
+		mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"id": id}}},
+	)
+	if err != nil {
+		t.Fatalf("fetch handler error: %v", err)
+	}
+	if fetchRes.IsError {
+		t.Fatalf("compat fetch returned error: %s", callResultText(t, fetchRes))
+	}
+	fetchStructured := callResultStructuredMap(t, fetchRes)
+	item, ok := fetchStructured["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured item map, got %#v", fetchStructured["item"])
+	}
+	if strings.TrimSpace(fmt.Sprint(item["text"])) == "" {
+		t.Fatalf("expected fetch item text, got %#v", item["text"])
+	}
+}
+
+func TestCompatSearchLowTrustRedaction(t *testing.T) {
+	s := newMCPTestStore(t)
+	_, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "ohara",
+		Kind:       "decision",
+		Title:      "Hidden user decision",
+		Body:       "Do not expose this to low trust.",
+		Scope:      "project",
+		TrustLevel: "user",
+	})
+	if err != nil {
+		t.Fatalf("seed hidden memory: %v", err)
+	}
+	_, err = s.AddMemory(store.AddMemoryParams{
+		ProjectID:  "ohara",
+		Kind:       "bugfix",
+		Title:      "Visible tool memory",
+		Body:       "Visible low-trust memory body",
+		Scope:      "project",
+		TrustLevel: "tool",
+	})
+	if err != nil {
+		t.Fatalf("seed visible memory: %v", err)
+	}
+
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject:    "reader",
+		Roles:      []auth.Role{auth.RoleRead},
+		TrustLevel: "low",
+	})
+	res, err := handleCompatSearch(s, MCPConfig{EnableCompatibilityTools: true}, NewSessionActivity(10*time.Minute))(ctx,
+		mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{"query": "memory", "project": "ohara"}}},
+	)
+	if err != nil {
+		t.Fatalf("search handler error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("compat search returned error: %s", callResultText(t, res))
+	}
+	structured := callResultStructuredMap(t, res)
+	resultsAny, ok := structured["results"].([]any)
+	if !ok {
+		t.Fatalf("expected results list, got %#v", structured["results"])
+	}
+	if len(resultsAny) != 1 {
+		t.Fatalf("expected only low-trust-visible result, got %d", len(resultsAny))
+	}
+	got := resultsAny[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(got["title"]), "Visible tool memory") {
+		t.Fatalf("unexpected low-trust result: %#v", got)
 	}
 }
 
@@ -868,6 +992,27 @@ func TestResolveToolsAll(t *testing.T) {
 	result := ResolveTools("all")
 	if result != nil {
 		t.Fatalf("expected nil for 'all', got %v", result)
+	}
+}
+
+func TestResolveRemoteToolAllowlistReadonly(t *testing.T) {
+	allowlist := ResolveRemoteToolAllowlist("readonly")
+	if allowlist == nil {
+		t.Fatal("expected readonly allowlist")
+	}
+	for _, name := range []string{"search", "fetch", "mem_search", "mem_context"} {
+		if !allowlist[name] {
+			t.Fatalf("missing readonly tool %q", name)
+		}
+	}
+	if allowlist["mem_save"] {
+		t.Fatal("readonly allowlist must not include mem_save")
+	}
+}
+
+func TestResolveRemoteToolAllowlistFull(t *testing.T) {
+	if got := ResolveRemoteToolAllowlist("full"); got != nil {
+		t.Fatalf("expected nil allowlist for full mode, got %v", got)
 	}
 }
 
