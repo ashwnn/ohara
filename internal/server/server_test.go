@@ -2365,6 +2365,35 @@ func TestMCPEndpoint_BodyTooLargeRejected(t *testing.T) {
 	}
 }
 
+func TestMCPEndpoint_MalformedJSON_ReturnsStructuredParseError(t *testing.T) {
+	st := newServerTestStore(t)
+	srv := New(st, 0)
+	srv.SetAuthenticator(auth.NewStaticClaimsAuthenticator("tok", auth.Claims{
+		Subject: "remote-readonly",
+		Roles:   []auth.Role{auth.RoleRead},
+	}))
+	srv.SetMCPHandler(mcpruntime.NewStreamableHTTPHandler(
+		st,
+		mcpruntime.MCPConfig{EnableCompatibilityTools: true},
+		mcpruntime.ResolveRemoteToolAllowlist("readonly"),
+	))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{"))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for malformed JSON body, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"jsonrpc":"2.0"`) || !strings.Contains(body, `"code":-32700`) {
+		t.Fatalf("expected JSON-RPC parse error envelope, got: %s", body)
+	}
+}
+
 func TestMCPEndpoint_ReadonlyAllowlist_HidesWriteTools(t *testing.T) {
 	st := newServerTestStore(t)
 	srv := New(st, 0)

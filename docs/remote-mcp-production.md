@@ -26,6 +26,7 @@
 - Token comparison is constant-time (`crypto/subtle.ConstantTimeCompare`).
 - Missing/invalid token returns `401` with generic error text.
 - `/health` and `/ready` bypass auth intentionally.
+- `off` mode is unsafe for public exposure and should only be used for tightly controlled local/private readonly scenarios.
 
 ### Access-mode safety
 - `readonly` mode default remote allowlist includes only:
@@ -117,6 +118,7 @@ Output:
 ## Security Guidance
 
 - Do not expose `full` mode publicly.
+- Do not expose no-auth mode publicly.
 - Use HTTPS termination (reverse proxy/load balancer).
 - Use long random bearer tokens and rotate regularly.
 - Prefer token file or secrets manager over plain env var.
@@ -221,11 +223,17 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 ## ChatGPT Limitations
 
 - ChatGPT Web requires remote MCP endpoints; it cannot attach directly to local stdio.
+- This pass validated remote MCP protocol behavior locally; ChatGPT Web itself was not directly tested in automation.
 - Developer Mode/custom app behavior is web-side and may require app refresh/republication after tool-surface changes.
 - Read/write tool availability in ChatGPT depends on plan/workspace capabilities.
+- ChatGPT Web secure auth flows commonly expect OAuth-capable integrations.
 
 ## OAuth Status
 
 - `OHARA_MCP_AUTH_MODE=oauth` is intentionally not implemented in this pass.
 - Bearer mode is production-ready for first deployment.
 - OAuth/JWKS support can be added via the current `auth.Authenticator` interface without transport redesign.
+- For secure ChatGPT Web deployments today, use one of:
+  1. OAuth-capable proxy/front-end in front of Ohara.
+  2. Future native OAuth/JWKS support in Ohara.
+  3. Strictly private/protected network with readonly/no-auth only when risk is accepted.

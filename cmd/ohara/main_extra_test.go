@@ -383,6 +383,37 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 	})
 }
 
+func TestCmdServeRemoteFullModeRequiresAuth(t *testing.T) {
+	cfg := testConfig(t)
+	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
+
+	loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+		return config.RuntimeConfig{
+			HTTPAddr:        ":7331",
+			SocketPath:      "",
+			MCPRemoteEnable: true,
+			MCPTransport:    "streamable-http",
+			MCPAccessMode:   "full",
+			MCPAuthMode:     "bearer",
+			MCPRequireAuth:  false,
+		}, nil
+	}
+	startHTTP = func(_ *oharasrv.Server) error {
+		t.Fatal("startHTTP should not be called when remote full mode has no auth")
+		return nil
+	}
+
+	withArgs(t, "ohara", "serve")
+	_, stderr, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+	if _, ok := recovered.(exitCode); !ok {
+		t.Fatalf("expected fatal exit, got %v", recovered)
+	}
+	if !strings.Contains(stderr, "full remote MCP access requires authentication") {
+		t.Fatalf("stderr missing full-mode auth guard message: %q", stderr)
+	}
+}
+
 func TestCmdMCPAndTUIBranches(t *testing.T) {
 	cfg := testConfig(t)
 	stubRuntimeHooks(t)

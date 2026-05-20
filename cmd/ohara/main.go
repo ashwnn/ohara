@@ -572,15 +572,22 @@ func realCmdServe(cfg store.Config) {
 		if transport == "" {
 			transport = "streamable-http"
 		}
+		accessMode := strings.ToLower(strings.TrimSpace(cfg2.MCPAccessMode))
+		if accessMode == "" {
+			accessMode = "readonly"
+		}
 		mcpCfg := mcp.MCPConfig{
 			DefaultProject:           "",
 			EnableCompatibilityTools: true,
 		}
-		allowlist := mcp.ResolveRemoteToolAllowlist(cfg2.MCPAccessMode)
+		allowlist := mcp.ResolveRemoteToolAllowlist(accessMode)
 
 		authr, err := remoteAuthenticator(cfg2)
 		if err != nil {
 			fatal("serve: " + err.Error())
+		}
+		if accessMode == "full" && authr == nil {
+			fatal("serve: full remote MCP access requires authentication")
 		}
 		requireAuth := cfg2.MCPRequireAuth
 		if requireAuth {
