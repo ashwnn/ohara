@@ -390,9 +390,12 @@ func (s *Server) routes() {
 
 	// Passive capture
 	s.mux.HandleFunc("POST /capture/passive", s.handlePassiveCapture)
+	s.mux.HandleFunc("POST /observe", s.handleObserve)
 
 	// Context
 	s.mux.HandleFunc("GET /context", s.handleContext)
+	s.mux.HandleFunc("GET /files/history", s.handleFileHistory)
+	s.mux.HandleFunc("POST /files/context", s.handleFileContext)
 
 	// Export / Import
 	s.mux.HandleFunc("GET /export", s.handleExport)
@@ -696,6 +699,58 @@ func (s *Server) handlePassiveCapture(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, result)
 }
 
+func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID    string `json:"session_id"`
+		Project      string `json:"project"`    // legacy alias
+		ProjectID    string `json:"project_id"` // preferred field
+		EventType    string `json:"event_type"`
+		CaptureLevel string `json:"capture_level"`
+		Source       string `json:"source"`
+		Title        string `json:"title"`
+		Body         string `json:"body"`
+		PayloadJSON  string `json:"payload_json"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	projectID := body.ProjectID
+	if projectID == "" {
+		projectID = body.Project
+	}
+	if body.SessionID == "" || body.EventType == "" || projectID == "" {
+		jsonError(w, http.StatusBadRequest, "session_id, project_id, and event_type are required")
+		return
+	}
+
+	if err := s.checkProjectScope(r, projectID); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	// Idempotent creation; no-op if already present.
+	_ = s.store.CreateSession(body.SessionID, projectID, "")
+
+	id, err := s.store.Observe(store.ObserveParams{
+		SessionID:    body.SessionID,
+		ProjectID:    projectID,
+		EventType:    body.EventType,
+		CaptureLevel: body.CaptureLevel,
+		Source:       body.Source,
+		Title:        body.Title,
+		Body:         body.Body,
+		PayloadJSON:  body.PayloadJSON,
+	})
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logAudit(r, fmt.Sprintf("obs-%d", id), "create", projectID)
+	jsonResponse(w, http.StatusCreated, map[string]any{"id": id, "status": "captured"})
+}
+
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -819,6 +874,66 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{"context": context})
+}
+
+func (s *Server) handleFileHistory(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	project := strings.TrimSpace(r.URL.Query().Get("project"))
+	if path == "" {
+		jsonError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	limit := queryInt(r, "limit", 10)
+	items, err := s.store.FileHistory(path, project, limit)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	items = store.FilterByTrustLevel(items, s.needsRedaction(r))
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"path":  path,
+		"items": items,
+	})
+}
+
+func (s *Server) handleFileContext(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path         string `json:"path"`
+		Project      string `json:"project"`
+		ProjectID    string `json:"project_id"`
+		BudgetTokens int    `json:"budget_tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+
+	project := body.ProjectID
+	if project == "" {
+		project = body.Project
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		jsonError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if err := s.checkProjectScope(r, project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	result, err := s.store.FileContext(body.Path, project, body.BudgetTokens)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	result.MemoryItems = store.FilterByTrustLevel(result.MemoryItems, s.needsRedaction(r))
+	jsonResponse(w, http.StatusOK, result)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

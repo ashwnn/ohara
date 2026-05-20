@@ -1402,3 +1402,59 @@ func TestCmdBackupUsesRuntimeConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestRealCmdJobsRunOnceDrainsOneJob(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.RetrievalMode = "hybrid"
+	cfg.EmbeddingBackend = "ollama"
+	cfg.OllamaURL = "http://127.0.0.1:1"
+
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	memID, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      store.MemoryKindDecision,
+		Title:     "jobs cli drain",
+		Body:      "verify jobs run --once path",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.Exec(`UPDATE memory_jobs SET status = 'pending', attempts = 0, available_at = strftime('%Y-%m-%dT%H:%M:%f','now') WHERE memory_id = ? AND job_type = ?`, memID, store.JobTypeEmbedMemory); err != nil {
+		t.Fatalf("prepare embed job: %v", err)
+	}
+	if _, err := s.Exec(`UPDATE memory_jobs SET status = 'done' WHERE memory_id = ? AND job_type != ?`, memID, store.JobTypeEmbedMemory); err != nil {
+		t.Fatalf("prepare non-embed jobs: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	withArgs(t, "ohara", "jobs", "run", "--once", "--limit=1")
+	stdout, stderr := captureOutput(t, func() { realCmdJobs(cfg) })
+	if stderr != "" {
+		t.Fatalf("expected no stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stdout, "jobs processed: 1") {
+		t.Fatalf("unexpected jobs output: %q", stdout)
+	}
+
+	verify, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("verify store.New: %v", err)
+	}
+	defer verify.Close()
+	var status string
+	var attempts int
+	if err := verify.QueryRow(`SELECT status, attempts FROM memory_jobs WHERE memory_id = ? AND job_type = ?`, memID, store.JobTypeEmbedMemory).Scan(&status, &attempts); err != nil {
+		t.Fatalf("verify job row: %v", err)
+	}
+	if status != "retry" && status != "failed" {
+		t.Fatalf("expected retry/failed status after one drain attempt, got %q", status)
+	}
+	if attempts < 1 {
+		t.Fatalf("expected attempts >= 1, got %d", attempts)
+	}
+}

@@ -191,6 +191,8 @@ var cmdBackup = realCmdBackup
 var cmdCheck = realCmdCheck
 var cmdServe = realCmdServe
 var cmdPrime = realCmdPrime
+var cmdPack = realCmdPack
+var cmdJobs = realCmdJobs
 var cmdValidate = realCmdValidate
 var cmdDoctor = realCmdDoctor
 var cmdConsolidate = realCmdConsolidate
@@ -225,6 +227,8 @@ func printUsage() {
 	fmt.Println("  tools [profile]    List MCP tool names (agent, admin, all)")
 	fmt.Println("  setup [agent]      Set up plugin for an agent")
 	fmt.Println("  prime [project]   Build AI-optimised context pack for injection")
+	fmt.Println("  pack [project]    Build context pack from memory items")
+	fmt.Println("  jobs run --once   Drain durable memory jobs once")
 	fmt.Println("  validate          Validate database schema and data integrity")
 	fmt.Println("  doctor [--fix]   Run health checks with optional auto-fix")
 	fmt.Println("  consolidate       Generate consolidation candidates from observational memories")
@@ -983,6 +987,120 @@ func realCmdPrime(cfg store.Config) {
 	}
 
 	fmt.Print(sb.String())
+}
+
+func realCmdPack(cfg store.Config) {
+	args := os.Args[2:]
+	project := ""
+	sessionID := ""
+	domain := ""
+	asof := ""
+	budget := 400
+	explain := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case strings.HasPrefix(arg, "--project="):
+			project = strings.TrimPrefix(arg, "--project=")
+		case arg == "--project" && i+1 < len(args):
+			project = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--session="):
+			sessionID = strings.TrimPrefix(arg, "--session=")
+		case arg == "--session" && i+1 < len(args):
+			sessionID = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--domain="):
+			domain = strings.TrimPrefix(arg, "--domain=")
+		case arg == "--domain" && i+1 < len(args):
+			domain = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--asof="):
+			asof = strings.TrimPrefix(arg, "--asof=")
+		case arg == "--asof" && i+1 < len(args):
+			asof = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--budget="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--budget=")); err == nil {
+				budget = n
+			}
+		case arg == "--budget" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				budget = n
+			}
+			i++
+		case arg == "--explain":
+			explain = true
+		case !strings.HasPrefix(arg, "--") && project == "":
+			project = arg
+		}
+	}
+
+	if project == "" {
+		project = os.Getenv("OHARA_PROJECT")
+	}
+	if project == "" {
+		fatal("project is required (use --project or OHARA_PROJECT)")
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	result, err := s.BuildPack(store.PackParams{
+		ProjectID:    project,
+		SessionID:    sessionID,
+		BudgetTokens: budget,
+		Domain:       domain,
+		Asof:         asof,
+		Explain:      explain,
+	})
+	if err != nil {
+		fatal("pack: " + err.Error())
+	}
+
+	fmt.Println(store.FormatPackText(result))
+	if explain {
+		fmt.Println()
+		fmt.Println(store.FormatPackExplain(result))
+	}
+}
+
+func realCmdJobs(cfg store.Config) {
+	if len(os.Args) < 3 || os.Args[2] != "run" {
+		fatal("usage: ohara jobs run [--once] [--limit=N]")
+	}
+
+	limit := 200
+	args := os.Args[3:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "--limit=") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit=")); err == nil && n > 0 {
+				limit = n
+			}
+		} else if arg == "--limit" && i+1 < len(args) {
+			if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 {
+				limit = n
+			}
+			i++
+		}
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal("store: " + err.Error())
+	}
+	defer s.Close()
+
+	processed, err := s.RunJobsOnce(limit)
+	if err != nil {
+		fatal("jobs: " + err.Error())
+	}
+	fmt.Printf("jobs processed: %d\n", processed)
 }
 
 // realCmdValidate checks schema and data integrity. Exits non-zero on failures.
@@ -1832,8 +1950,8 @@ func main() {
 		return
 	case "serve", "mcp", "tui", "search", "save", "timeline",
 		"context", "stats", "export", "import", "sync",
-		"setup", "projects",
-		"prime", "validate", "doctor", "consolidate", "tools":
+		"setup", "projects", "jobs",
+		"prime", "pack", "validate", "doctor", "consolidate", "tools":
 		cfg, err := store.DefaultConfig()
 		if err != nil {
 			fatal("config: " + err.Error())
@@ -1869,8 +1987,12 @@ func main() {
 			cmdSetup(cfg)
 		case "projects":
 			cmdProjects(cfg)
+		case "jobs":
+			cmdJobs(cfg)
 		case "prime":
 			cmdPrime(cfg)
+		case "pack":
+			cmdPack(cfg)
 		case "validate":
 			cmdValidate(cfg)
 		case "doctor":

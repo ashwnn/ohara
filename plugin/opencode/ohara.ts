@@ -22,7 +22,6 @@ const OHARA_PORT = parseInt(process.env.OHARA_PORT ?? "7331")
 const OHARA_URL = `http://127.0.0.1:${OHARA_PORT}`
 const OHARA_BIN = process.env.OHARA_BIN ?? "ohara"
 const OHARA_MEMORY_INJECTION = (process.env.OHARA_MEMORY_INJECTION ?? "1") !== "0"
-const OHARA_PASSIVE_CAPTURE = /^(1|true|yes|on)$/i.test(process.env.OHARA_PASSIVE_CAPTURE ?? "")
 const OHARA_DEBUG = /^(1|true|yes|on)$/i.test(process.env.OHARA_DEBUG ?? "")
 const OHARA_MEMORY_AGENTS = new Set(
   (process.env.OHARA_MEMORY_AGENTS ?? "deep,security-auditor,security-recon,researcher,planner")
@@ -30,6 +29,42 @@ const OHARA_MEMORY_AGENTS = new Set(
     .map((value) => value.trim())
     .filter(Boolean)
 )
+
+type PassiveCaptureLevel = "off" | "prompts" | "metadata" | "tools" | "full"
+
+const PASSIVE_CAPTURE_LEVELS: Record<PassiveCaptureLevel, number> = {
+  off: 0,
+  prompts: 1,
+  metadata: 2,
+  tools: 3,
+  full: 4,
+}
+
+const legacyPassiveCapture = /^(1|true|yes|on)$/i.test(process.env.OHARA_PASSIVE_CAPTURE ?? "")
+
+function normalizePassiveCaptureLevel(raw: string | undefined): PassiveCaptureLevel {
+  const value = (raw ?? "").trim().toLowerCase()
+  switch (value) {
+    case "off":
+    case "prompts":
+    case "metadata":
+    case "tools":
+    case "full":
+      return value
+    default:
+      // Backwards compatibility: if legacy toggle is on, default to tools.
+      return legacyPassiveCapture ? "tools" : "prompts"
+  }
+}
+
+const OHARA_PASSIVE_CAPTURE_LEVEL = normalizePassiveCaptureLevel(process.env.OHARA_PASSIVE_CAPTURE_LEVEL)
+
+const PROMPT_CAPTURE_MAX = 2000
+const OBS_TITLE_MAX = 180
+const OBS_BODY_MAX = 2500
+const OBS_PAYLOAD_MAX = 9000
+const OBS_PAYLOAD_MAX_FULL = 16000
+const PASSIVE_TASK_CAPTURE_MIN = 50
 
 // Ohara's own MCP tools — don't count these as "tool calls" for session stats.
 // V3 adds many mem_* tools; prefix check avoids stale hardcoded list drift.
@@ -61,6 +96,10 @@ function debug(message: string, err?: unknown): void {
   if (!OHARA_DEBUG) return
   const suffix = err instanceof Error ? `: ${err.message}` : err ? `: ${String(err)}` : ""
   console.error(`[ohara] ${message}${suffix}`)
+}
+
+function captureAllowed(requiredLevel: PassiveCaptureLevel): boolean {
+  return PASSIVE_CAPTURE_LEVELS[OHARA_PASSIVE_CAPTURE_LEVEL] >= PASSIVE_CAPTURE_LEVELS[requiredLevel]
 }
 
 // ─── Memory Instructions ─────────────────────────────────────────────────────
@@ -227,6 +266,34 @@ function stripPrivateTags(str: string): string {
   return str.replace(/<private>[\s\S]*?<\/private>/gi, "[REDACTED]").trim()
 }
 
+function sanitizeText(str: string, max: number): string {
+  return truncate(stripPrivateTags(str ?? ""), max)
+}
+
+function safeJSONString(value: unknown, max: number): string {
+  try {
+    const json = JSON.stringify(value ?? {})
+    return sanitizeText(json, max)
+  } catch {
+    return "{}"
+  }
+}
+
+function extractSessionID(value: unknown): string {
+  const obj = value as Record<string, any> | undefined
+  const sessionID =
+    obj?.sessionID ??
+    obj?.sessionId ??
+    obj?.session_id ??
+    obj?.id ??
+    obj?.info?.id ??
+    obj?.properties?.session_id ??
+    obj?.properties?.sessionID ??
+    obj?.properties?.info?.id ??
+    ""
+  return typeof sessionID === "string" ? sessionID : ""
+}
+
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
 export const Ohara: Plugin = async (ctx) => {
@@ -245,6 +312,9 @@ export const Ohara: Plugin = async (ctx) => {
   // inflation (e.g. 170 sessions for 1 real conversation, issue #116).
   const subAgentSessions = new Set<string>()
 
+  // Keep recent files touched/read by tools per session.
+  const recentFilesBySession = new Map<string, string[]>()
+
   /**
    * Ensure a session exists in ohara. Idempotent — calls POST /sessions
    * which uses INSERT OR IGNORE. Safe to call multiple times.
@@ -262,6 +332,64 @@ export const Ohara: Plugin = async (ctx) => {
         id: sessionId,
         project,
         directory: ctx.directory,
+      },
+    })
+  }
+
+  function trackRecentFile(sessionId: string, path: string): void {
+    if (!sessionId || !path) return
+    const current = recentFilesBySession.get(sessionId) ?? []
+    const deduped = [path, ...current.filter((p) => p !== path)].slice(0, 20)
+    recentFilesBySession.set(sessionId, deduped)
+  }
+
+  function extractFilePathFromArgs(args: Record<string, any> | undefined): string {
+    if (!args) return ""
+    const candidates = [
+      args.filePath,
+      args.path,
+      args.target,
+      args.file,
+      args.pattern,
+      args.glob,
+    ]
+    for (const value of candidates) {
+      if (typeof value === "string" && value.trim() !== "") {
+        return value.trim()
+      }
+    }
+    return ""
+  }
+
+  async function captureObservation(
+    requiredLevel: PassiveCaptureLevel,
+    input: {
+      sessionId: string
+      eventType: string
+      source?: string
+      title?: string
+      body?: string
+      payload?: unknown
+    }
+  ): Promise<void> {
+    if (!captureAllowed(requiredLevel)) return
+    if (!input.sessionId || subAgentSessions.has(input.sessionId)) return
+
+    await ensureSession(input.sessionId)
+    await oharaFetch("/observe", {
+      method: "POST",
+      body: {
+        session_id: input.sessionId,
+        project,
+        event_type: input.eventType,
+        capture_level: OHARA_PASSIVE_CAPTURE_LEVEL,
+        source: input.source ?? "opencode",
+        title: sanitizeText(input.title ?? "", OBS_TITLE_MAX),
+        body: sanitizeText(input.body ?? "", OBS_BODY_MAX),
+        payload_json: safeJSONString(
+          input.payload ?? {},
+          OHARA_PASSIVE_CAPTURE_LEVEL === "full" ? OBS_PAYLOAD_MAX_FULL : OBS_PAYLOAD_MAX
+        ),
       },
     })
   }
@@ -313,6 +441,10 @@ export const Ohara: Plugin = async (ctx) => {
     // ─── Event Listeners ───────────────────────────────────────────
 
     event: async ({ event }) => {
+      const properties = (event as any)?.properties ?? {}
+      const info = properties?.info ?? properties
+      const sessionId = extractSessionID(properties) || extractSessionID(info)
+
       // --- Session Created ---
       if (event.type === "session.created") {
         // Bug fix (#116): session data is nested under event.properties.info,
@@ -338,6 +470,14 @@ export const Ohara: Plugin = async (ctx) => {
           // to ensureSession() are also suppressed for it.
           subAgentSessions.add(sessionId)
         }
+
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "session.created",
+          source: "opencode-event",
+          title: title || "session created",
+          payload: info,
+        })
       }
 
       // --- Session Deleted ---
@@ -345,13 +485,125 @@ export const Ohara: Plugin = async (ctx) => {
         // Same properties.info path as session.created.
         const info = (event.properties as any)?.info
         const sessionId = info?.id
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "session.deleted",
+          source: "opencode-event",
+          title: "session deleted",
+          payload: info,
+        })
         if (sessionId) {
           toolCounts.delete(sessionId)
           knownSessions.delete(sessionId)
           subAgentSessions.delete(sessionId)
+          recentFilesBySession.delete(sessionId)
         }
       }
 
+      if (event.type === "session.status") {
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "session.status",
+          source: "opencode-event",
+          title: String(properties?.status ?? "session status"),
+          payload: properties,
+        })
+      }
+
+      if (event.type === "session.updated") {
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "session.updated",
+          source: "opencode-event",
+          title: String(info?.title ?? "session updated"),
+          payload: properties,
+        })
+      }
+
+      if (event.type === "session.diff") {
+        await captureObservation("tools", {
+          sessionId,
+          eventType: "session.diff",
+          source: "opencode-event",
+          title: "session diff updated",
+          payload: properties,
+        })
+      }
+
+      if (event.type === "session.error") {
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "session.error",
+          source: "opencode-event",
+          title: "session error",
+          body: sanitizeText(String(properties?.error ?? ""), OBS_BODY_MAX),
+          payload: properties,
+        })
+      }
+
+      if (event.type === "message.updated") {
+        const message = properties?.message ?? properties
+        const role = typeof message?.role === "string" ? message.role : ""
+        if (role === "assistant") {
+          await captureObservation("metadata", {
+            sessionId,
+            eventType: "assistant.message.metadata",
+            source: "opencode-event",
+            title: String(message?.model ?? message?.agent ?? "assistant message"),
+            payload: {
+              role: message?.role,
+              model: message?.model,
+              agent: message?.agent,
+              usage: message?.usage,
+              summary: message?.summary,
+            },
+          })
+        }
+      }
+
+      if (event.type === "todo.updated") {
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: "todo.updated",
+          source: "opencode-event",
+          title: "todo updated",
+          payload: properties,
+        })
+      }
+
+      if (event.type === "command.executed") {
+        await captureObservation("tools", {
+          sessionId,
+          eventType: "command.executed",
+          source: "opencode-event",
+          title: "command executed",
+          payload: properties,
+        })
+      }
+
+      if (event.type === "permission.asked" || event.type === "permission.replied") {
+        await captureObservation("metadata", {
+          sessionId,
+          eventType: event.type,
+          source: "opencode-event",
+          title: event.type,
+          payload: properties,
+        })
+      }
+
+      if (event.type === "file.edited") {
+        const path = properties?.path ?? properties?.filePath ?? properties?.file
+        if (sessionId && typeof path === "string" && path.trim() !== "") {
+          trackRecentFile(sessionId, path.trim())
+        }
+        await captureObservation("tools", {
+          sessionId,
+          eventType: "file.edited",
+          source: "opencode-event",
+          title: typeof path === "string" ? path : "file edited",
+          payload: properties,
+        })
+      }
     },
 
     // ─── User Prompt Capture ──────────────────────────────────────
@@ -361,6 +613,7 @@ export const Ohara: Plugin = async (ctx) => {
     // output.parts contains TextPart[] with the actual message text.
 
     "chat.message": async (input, output) => {
+      if (!captureAllowed("prompts")) return
       // Skip sub-agent sessions — they inflate session counts (issue #116)
       if (subAgentSessions.has(input.sessionID)) return
 
@@ -383,48 +636,119 @@ export const Ohara: Plugin = async (ctx) => {
       // Only capture non-trivial prompts (>10 chars)
       if (finalContent.length > 10) {
         await ensureSession(sessionId)
+        const promptContent = sanitizeText(finalContent, PROMPT_CAPTURE_MAX)
         await oharaFetch("/prompts", {
           method: "POST",
           body: {
             session_id: sessionId,
-            content: stripPrivateTags(truncate(finalContent, 2000)),
+            content: promptContent,
             project,
+          },
+        })
+        await captureObservation("prompts", {
+          sessionId,
+          eventType: "chat.message.user",
+          source: "opencode-hook",
+          title: "user prompt",
+          body: promptContent,
+          payload: {
+            summary: output.message?.summary,
           },
         })
       }
     },
 
-    // ─── Tool Execution Hook ─────────────────────────────────────
-    // Count tool calls per session (for session end stats).
-    // Also ensures the session exists — handles plugin reload / reconnect.
-    // Passive capture: when a Task tool completes, POST its output to
-    // the passive capture endpoint so the server extracts learnings.
+    // ─── Tool Execution Hooks ────────────────────────────────────
+    // Count non-ohara tool calls and persist tool observations.
+
+    "tool.execute.before": async (input, output) => {
+      if (isOharaTool(input.tool)) return
+      if (!captureAllowed("tools")) return
+
+      const sessionId = input.sessionID
+      const args = (output as any)?.args as Record<string, any> | undefined
+      const path = extractFilePathFromArgs(args)
+      const fileTools = new Set(["read", "write", "edit", "patch", "grep", "glob"])
+      if (sessionId && path && fileTools.has(String(input.tool))) {
+        trackRecentFile(sessionId, path)
+      }
+
+      await captureObservation("tools", {
+        sessionId,
+        eventType: "tool.execute.before",
+        source: "opencode-hook",
+        title: `${String(input.tool)} before`,
+        body: path ? `path: ${path}` : "",
+        payload: {
+          tool: input.tool,
+          args,
+        },
+      })
+    },
 
     "tool.execute.after": async (input, output) => {
       if (isOharaTool(input.tool)) return
 
-      // input.sessionID comes from OpenCode — always available
       const sessionId = input.sessionID
       if (sessionId) {
         await ensureSession(sessionId)
         toolCounts.set(sessionId, (toolCounts.get(sessionId) ?? 0) + 1)
       }
 
-      // Passive capture: extract learnings from Task tool output
-      if (OHARA_PASSIVE_CAPTURE && input.tool === "Task" && output && sessionId) {
-        const text = typeof output === "string" ? output : JSON.stringify(output)
-        if (text.length > 50) {
+      if (captureAllowed("tools")) {
+        const outputText = sanitizeText(
+          typeof output === "string" ? output : safeJSONString(output, OBS_PAYLOAD_MAX_FULL),
+          OBS_BODY_MAX
+        )
+        const payload = {
+          tool: input.tool,
+          ok: !(output as any)?.error,
+          error: (output as any)?.error ?? null,
+          result: outputText,
+        }
+        await captureObservation("tools", {
+          sessionId,
+          eventType: "tool.execute.after",
+          source: "opencode-hook",
+          title: `${String(input.tool)} after`,
+          body: outputText,
+          payload,
+        })
+      }
+
+      // Legacy passive extraction path (task output -> discovery extraction).
+      if (captureAllowed("tools") && input.tool === "Task" && output && sessionId) {
+        const text = typeof output === "string" ? output : safeJSONString(output, OBS_PAYLOAD_MAX_FULL)
+        if (text.length > PASSIVE_TASK_CAPTURE_MIN) {
           await oharaFetch("/capture/passive", {
             method: "POST",
             body: {
               session_id: sessionId,
-              content: stripPrivateTags(text),
+              content: sanitizeText(text, OBS_PAYLOAD_MAX_FULL),
               project,
               source: "task-complete",
             },
           })
         }
       }
+    },
+
+    "shell.env": async (input, output) => {
+      if (!captureAllowed("metadata")) return
+      const sessionId = extractSessionID(input)
+      const env = (output as any)?.env as Record<string, string> | undefined
+      const keys = env ? Object.keys(env).slice(0, 100) : []
+      await captureObservation("metadata", {
+        sessionId,
+        eventType: "config.loaded",
+        source: "opencode-hook",
+        title: "shell env configured",
+        payload: {
+          key_count: keys.length,
+          keys,
+          cwd: (input as any)?.cwd,
+        },
+      })
     },
 
     // ─── System Prompt: Selective memory instructions ─────────
@@ -442,6 +766,31 @@ export const Ohara: Plugin = async (ctx) => {
         output.system[output.system.length - 1] += "\n\n" + MEMORY_INSTRUCTIONS
       } else {
         output.system.push(MEMORY_INSTRUCTIONS)
+      }
+
+      const sessionId = extractSessionID(input)
+      if (!sessionId) return
+      const recentFiles = (recentFilesBySession.get(sessionId) ?? []).slice(0, 3)
+      if (recentFiles.length === 0) return
+
+      const snippets: string[] = []
+      for (const path of recentFiles) {
+        const data = await oharaFetch("/files/context", {
+          method: "POST",
+          body: {
+            path,
+            project,
+            budget_tokens: 180,
+          },
+        })
+        if (data?.context) {
+          snippets.push(data.context)
+        }
+      }
+
+      if (snippets.length > 0) {
+        const inject = `\n\n## Recent File Context\n\n${snippets.join("\n\n")}`
+        output.system[output.system.length - 1] += inject
       }
     },
 

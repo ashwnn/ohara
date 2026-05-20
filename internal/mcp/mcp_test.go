@@ -900,8 +900,8 @@ func TestResolveToolsAgentProfile(t *testing.T) {
 		}
 	}
 
-	if len(result) != 25 {
-		t.Errorf("agent profile has %d tools, expected 25", len(result))
+	if len(result) != len(ProfileAgent) {
+		t.Errorf("agent profile has %d tools, expected %d", len(result), len(ProfileAgent))
 	}
 }
 
@@ -1135,8 +1135,8 @@ func TestNewServerWithToolsNilRegistersAll(t *testing.T) {
 		}
 	}
 
-	if len(tools) != 30 {
-		t.Errorf("expected 30 tools with nil allowlist, got %d", len(tools))
+	if len(tools) != len(toolRoles) {
+		t.Errorf("expected %d tools with nil allowlist, got %d", len(toolRoles), len(tools))
 	}
 }
 
@@ -1165,14 +1165,13 @@ func TestNewServerBackwardsCompatible(t *testing.T) {
 	srv := NewServer(s)
 	tools := srv.ListTools()
 
-	// 25 agent + 5 admin = 30 total
-	if len(tools) != 30 {
-		t.Errorf("NewServer should register all 30 tools, got %d", len(tools))
+	if len(tools) != len(toolRoles) {
+		t.Errorf("NewServer should register all %d tools, got %d", len(toolRoles), len(tools))
 	}
 }
 
 func TestProfileConsistency(t *testing.T) {
-	// Verify that agent + admin = all 30 tools
+	// Verify that agent + admin = all tools
 	combined := make(map[string]bool)
 	for tool := range ProfileAgent {
 		combined[tool] = true
@@ -1181,8 +1180,8 @@ func TestProfileConsistency(t *testing.T) {
 		combined[tool] = true
 	}
 
-	if len(combined) != 30 {
-		t.Errorf("agent + admin should cover all 30 tools, got %d", len(combined))
+	if len(combined) != len(toolRoles) {
+		t.Errorf("agent + admin should cover all %d tools, got %d", len(toolRoles), len(combined))
 	}
 
 	// Verify no overlap between profiles
@@ -1480,9 +1479,8 @@ func TestNewServerWithConfig(t *testing.T) {
 		t.Fatal("expected MCP server instance")
 	}
 	tools := srv.ListTools()
-	// Should have all 30 tools
-	if len(tools) != 30 {
-		t.Errorf("NewServerWithConfig should register all 30 tools, got %d", len(tools))
+	if len(tools) != len(toolRoles) {
+		t.Errorf("NewServerWithConfig should register all %d tools, got %d", len(toolRoles), len(tools))
 	}
 }
 

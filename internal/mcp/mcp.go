@@ -150,40 +150,43 @@ func requireMCPMultiMemoryScope(s *store.Store, argKeys ...string) func(server.T
 // independent of profile-based registration filtering (which is advisory).
 var toolRoles = map[string]auth.Role{
 	// Read-only tools
-	"mem_search":                auth.RoleRead,
-	"mem_search_rerank":         auth.RoleRead,
-	"mem_context":               auth.RoleRead,
-	"mem_pack":                  auth.RoleRead,
-	"mem_prime":                 auth.RoleRead,
-	"mem_stats":                 auth.RoleRead,
-	"mem_list_domains":          auth.RoleRead,
-	"mem_timeline":              auth.RoleRead,
-	"mem_related":               auth.RoleRead,
-	"mem_graph_context":         auth.RoleRead,
-	"mem_suggest_topic_key":     auth.RoleRead,
+	"mem_search":                 auth.RoleRead,
+	"mem_search_rerank":          auth.RoleRead,
+	"mem_context":                auth.RoleRead,
+	"mem_pack":                   auth.RoleRead,
+	"mem_pack_explain":           auth.RoleRead,
+	"mem_prime":                  auth.RoleRead,
+	"mem_stats":                  auth.RoleRead,
+	"mem_list_domains":           auth.RoleRead,
+	"mem_timeline":               auth.RoleRead,
+	"mem_related":                auth.RoleRead,
+	"mem_graph_context":          auth.RoleRead,
+	"mem_suggest_topic_key":      auth.RoleRead,
 	"mem_consolidate_candidates": auth.RoleRead,
-	"mem_mark_consolidated":     auth.RoleRead,
+	"mem_mark_consolidated":      auth.RoleRead,
+	"mem_file_history":           auth.RoleRead,
+	"mem_file_context":           auth.RoleRead,
 
 	// Mutating (write) tools
-	"mem_save":                  auth.RoleWrite,
-	"mem_update":                auth.RoleWrite,
-	"mem_save_prompt":           auth.RoleWrite,
-	"mem_session_summary":       auth.RoleWrite,
-	"mem_session_start":         auth.RoleWrite,
-	"mem_session_end":           auth.RoleWrite,
-	"mem_capture_passive":       auth.RoleWrite,
-	"mem_mark_used":             auth.RoleWrite,
-	"mem_append_outcome":        auth.RoleWrite,
-	"mem_resolve_conflict":      auth.RoleWrite,
-	"mem_forget":                auth.RoleWrite,
-	"mem_link":                  auth.RoleWrite,
-	"mem_unlink":                auth.RoleWrite,
-	"mem_feedback":              auth.RoleWrite,
-	"mem_extract_entities":      auth.RoleWrite,
+	"mem_save":             auth.RoleWrite,
+	"mem_update":           auth.RoleWrite,
+	"mem_save_prompt":      auth.RoleWrite,
+	"mem_session_summary":  auth.RoleWrite,
+	"mem_session_start":    auth.RoleWrite,
+	"mem_session_end":      auth.RoleWrite,
+	"mem_capture_passive":  auth.RoleWrite,
+	"mem_mark_used":        auth.RoleWrite,
+	"mem_append_outcome":   auth.RoleWrite,
+	"mem_resolve_conflict": auth.RoleWrite,
+	"mem_forget":           auth.RoleWrite,
+	"mem_link":             auth.RoleWrite,
+	"mem_unlink":           auth.RoleWrite,
+	"mem_feedback":         auth.RoleWrite,
+	"mem_extract_entities": auth.RoleWrite,
 
 	// Destructive / administrative tools
-	"mem_delete":                auth.RoleAdmin,
-	"mem_merge_projects":        auth.RoleAdmin,
+	"mem_delete":         auth.RoleAdmin,
+	"mem_merge_projects": auth.RoleAdmin,
 }
 
 // wrapToolHandler looks up the tool name in toolRoles and wraps the handler
@@ -247,6 +250,7 @@ var ProfileAgent = map[string]bool{
 	"mem_save_prompt":            true, // save user prompts
 	"mem_update":                 true, // update observation by ID — skills say "use mem_update when you have an exact ID to correct"
 	"mem_pack":                   true, // explicit context pack via memory_items — uses new memory foundation
+	"mem_pack_explain":           true, // explicit context pack with score-component explain output
 	"mem_prime":                  true, // prime context pack with Knowledge vs Episode tier separation
 	"mem_mark_used":              true, // record memory item usage — increments access_count
 	"mem_append_outcome":         true, // append outcome record to memory item
@@ -261,6 +265,8 @@ var ProfileAgent = map[string]bool{
 	"mem_feedback":               true, // apply explicit utility feedback for RL-style weighting
 	"mem_graph_context":          true, // entity-centric graph traversal context
 	"mem_extract_entities":       true, // heuristic entity extraction and linking
+	"mem_file_history":           true, // file-specific memory retrieval
+	"mem_file_context":           true, // file-focused context retrieval
 }
 
 // ProfileAdmin contains tools for TUI, dashboards, and manual curation
@@ -330,6 +336,7 @@ CORE TOOLS (always available — use without ToolSearch):
   mem_session_summary — save end-of-session summary (MANDATORY before saying "done")
   mem_save_prompt — save user prompt for context
   mem_pack — build an explicit context pack from memory items (token-budget-aware)
+  mem_pack_explain — show pack scoring decisions and score components
   mem_prime — build structured prime context with Knowledge vs Episode tier separation
 
 DEFERRED TOOLS (use ToolSearch when needed):
@@ -338,7 +345,7 @@ DEFERRED TOOLS (use ToolSearch when needed):
   mem_list_domains, mem_mark_used, mem_append_outcome, mem_resolve_conflict,
   mem_forget, mem_link, mem_unlink, mem_related, mem_consolidate_candidates,
   mem_mark_consolidated, mem_search_rerank, mem_feedback, mem_graph_context,
-  mem_extract_entities
+  mem_extract_entities, mem_file_history, mem_file_context
 
 PROACTIVE SAVE RULE: Call mem_save immediately after ANY decision, bug fix, discovery, or convention — not just when asked.`
 
@@ -719,8 +726,95 @@ Examples:
 				mcp.WithNumber("budget_tokens",
 					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
 				),
+				mcp.WithString("domain",
+					mcp.Description("Optional domain filter"),
+				),
+				mcp.WithString("asof",
+					mcp.Description("Optional as-of timestamp filter (RFC3339)"),
+				),
 			),
 			wrapToolHandler("mem_pack", requireMCPProjectScope("project_id")(handlePack(s))),
+		)
+	}
+
+	if shouldRegister("mem_pack_explain", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_pack_explain",
+				mcp.WithDescription("Build a context pack and return score-component explain output for included/excluded memories."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Explain Memory Pack"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("project_id",
+					mcp.Required(),
+					mcp.Description("Project ID to build context pack for"),
+				),
+				mcp.WithString("session_id",
+					mcp.Description("Optional session ID relevance hint"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for the pack (default: 400, max: 800)"),
+				),
+				mcp.WithString("domain",
+					mcp.Description("Optional domain filter"),
+				),
+				mcp.WithString("asof",
+					mcp.Description("Optional as-of timestamp filter (RFC3339)"),
+				),
+			),
+			wrapToolHandler("mem_pack_explain", requireMCPProjectScope("project_id")(handlePackExplain(s))),
+		)
+	}
+
+	if shouldRegister("mem_file_history", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_file_history",
+				mcp.WithDescription("Get recent memories related to a file path using applies_to metadata and text fallback."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("File History"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("path",
+					mcp.Required(),
+					mcp.Description("File path to look up"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Project scope"),
+				),
+				mcp.WithNumber("limit",
+					mcp.Description("Max results (default: 10)"),
+				),
+			),
+			wrapToolHandler("mem_file_history", requireMCPProjectScope("project")(handleFileHistory(s, cfg))),
+		)
+	}
+
+	if shouldRegister("mem_file_context", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_file_context",
+				mcp.WithDescription("Build a token-budgeted file-focused memory context including prior bugfixes, decisions, gotchas, procedures, and summaries."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("File Context"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("path",
+					mcp.Required(),
+					mcp.Description("File path to build context for"),
+				),
+				mcp.WithString("project",
+					mcp.Description("Project scope"),
+				),
+				mcp.WithNumber("budget_tokens",
+					mcp.Description("Token budget for context (default: 300)"),
+				),
+			),
+			wrapToolHandler("mem_file_context", requireMCPProjectScope("project")(handleFileContext(s, cfg))),
 		)
 	}
 
@@ -1828,12 +1922,16 @@ func handlePack(s *store.Store) server.ToolHandlerFunc {
 		}
 
 		sessionID, _ := req.GetArguments()["session_id"].(string)
+		domain, _ := req.GetArguments()["domain"].(string)
+		asof, _ := req.GetArguments()["asof"].(string)
 		budgetTokens := intArg(req, "budget_tokens", 400)
 
 		result, err := s.BuildPack(store.PackParams{
 			ProjectID:    projectID,
 			SessionID:    sessionID,
 			BudgetTokens: budgetTokens,
+			Domain:       domain,
+			Asof:         asof,
 		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to build pack: " + err.Error()), nil
@@ -1841,6 +1939,95 @@ func handlePack(s *store.Store) server.ToolHandlerFunc {
 
 		text := store.FormatPackText(result)
 		return mcp.NewToolResultText(text), nil
+	}
+}
+
+func handlePackExplain(s *store.Store) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		projectID, _ := req.GetArguments()["project_id"].(string)
+		if projectID == "" {
+			return mcp.NewToolResultError("project_id is required"), nil
+		}
+
+		sessionID, _ := req.GetArguments()["session_id"].(string)
+		domain, _ := req.GetArguments()["domain"].(string)
+		asof, _ := req.GetArguments()["asof"].(string)
+		budgetTokens := intArg(req, "budget_tokens", 400)
+
+		result, err := s.BuildPack(store.PackParams{
+			ProjectID:    projectID,
+			SessionID:    sessionID,
+			BudgetTokens: budgetTokens,
+			Domain:       domain,
+			Asof:         asof,
+			Explain:      true,
+		})
+		if err != nil {
+			return mcp.NewToolResultError("Failed to build explained pack: " + err.Error()), nil
+		}
+
+		text := store.FormatPackText(result) + "\n\n" + store.FormatPackExplain(result)
+		return mcp.NewToolResultText(strings.TrimSpace(text)), nil
+	}
+}
+
+func handleFileHistory(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, _ := req.GetArguments()["path"].(string)
+		project, _ := req.GetArguments()["project"].(string)
+		limit := intArg(req, "limit", 10)
+		if project == "" {
+			project = cfg.DefaultProject
+		}
+		project, _ = store.NormalizeProject(project)
+
+		if strings.TrimSpace(path) == "" {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+
+		items, err := s.FileHistory(path, project, limit)
+		if err != nil {
+			return mcp.NewToolResultError("Failed to load file history: " + err.Error()), nil
+		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
+		if len(items) == 0 {
+			return mcp.NewToolResultText(fmt.Sprintf("No file history found for %q.", path)), nil
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "File history for %s (%d items):\n\n", path, len(items))
+		for i, item := range items {
+			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)\n    %s\n\n",
+				i+1, item.ID, item.Title, item.Kind, item.Classification, util.Truncate(item.Body, 220))
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+}
+
+func handleFileContext(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, _ := req.GetArguments()["path"].(string)
+		project, _ := req.GetArguments()["project"].(string)
+		budget := intArg(req, "budget_tokens", 300)
+		if project == "" {
+			project = cfg.DefaultProject
+		}
+		project, _ = store.NormalizeProject(project)
+
+		if strings.TrimSpace(path) == "" {
+			return mcp.NewToolResultError("path is required"), nil
+		}
+
+		result, err := s.FileContext(path, project, budget)
+		if err != nil {
+			return mcp.NewToolResultError("Failed to build file context: " + err.Error()), nil
+		}
+		result.MemoryItems = store.FilterByTrustLevel(result.MemoryItems, isLowTrustCtx(ctx))
+		if result.Context == "" {
+			return mcp.NewToolResultText(fmt.Sprintf("No file context available for %q.", path)), nil
+		}
+
+		return mcp.NewToolResultText(result.Context), nil
 	}
 }
 
