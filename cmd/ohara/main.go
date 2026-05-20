@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ashwnn/ohara/internal/auth"
 	"github.com/ashwnn/ohara/internal/config"
 	"github.com/ashwnn/ohara/internal/maintain"
 	"github.com/ashwnn/ohara/internal/mcp"
@@ -37,10 +38,16 @@ var checkForUpdates = versionpkg.CheckLatest
 var storeNew = store.New
 
 // socketPath is empty when TCP mode is used.
-var newHTTPServer = func(s *store.Store, port int, socketPath string, packCfg server.PackConfig, conflictCfg server.ConflictConfig) *server.Server {
+var newHTTPServer = func(s *store.Store, port int, bindAddr, socketPath string, allowedOrigins []string, packCfg server.PackConfig, conflictCfg server.ConflictConfig) *server.Server {
 	opts := []server.ServerOption{}
 	if socketPath != "" {
 		opts = append(opts, server.WithSocketPath(socketPath))
+	}
+	if bindAddr != "" {
+		opts = append(opts, server.WithBindAddr(bindAddr))
+	}
+	if len(allowedOrigins) > 0 {
+		opts = append(opts, server.WithAllowedOrigins(allowedOrigins))
 	}
 	if packCfg.DefaultBudgetTokens > 0 || packCfg.MaxBudgetTokens > 0 {
 		opts = append(opts, server.WithPackConfig(packCfg))
@@ -65,6 +72,10 @@ var newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlis
 
 var newMCPHTTPHandler = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) http.Handler {
 	return mcp.NewStreamableHTTPHandler(s, mcpCfg, allowlist)
+}
+
+var newMCPSSEHandler = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) http.Handler {
+	return mcp.NewSSEHandler(s, mcpCfg, allowlist)
 }
 
 var serveMCP = func(srv *mcpserver.MCPServer, opts ...mcpserver.StdioOption) error {
@@ -383,6 +394,81 @@ func realCmdCheck(cfg store.Config) {
 	}
 }
 
+func splitCSV(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func loadBearerToken(cfg config.RuntimeConfig) (string, error) {
+	if path := strings.TrimSpace(cfg.MCPBearerTokenFile); path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read bearer token file: %w", err)
+		}
+		token := strings.TrimSpace(string(b))
+		if token == "" {
+			return "", fmt.Errorf("bearer token file is empty")
+		}
+		return token, nil
+	}
+	if token := strings.TrimSpace(cfg.MCPBearerToken); token != "" {
+		return token, nil
+	}
+	if token := strings.TrimSpace(cfg.AuthToken); token != "" {
+		return token, nil
+	}
+	return "", nil
+}
+
+func remoteAuthenticator(cfg config.RuntimeConfig) (auth.Authenticator, error) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.MCPAuthMode))
+	if mode == "" {
+		mode = "bearer"
+	}
+	switch mode {
+	case "off":
+		return nil, nil
+	case "oauth":
+		return nil, fmt.Errorf("oauth auth mode is not implemented yet")
+	case "bearer":
+		token, err := loadBearerToken(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if token == "" {
+			return nil, nil
+		}
+		claims := auth.Claims{
+			Subject:    "mcp-remote",
+			TrustLevel: strings.ToLower(strings.TrimSpace(cfg.MCPTrustLevel)),
+		}
+		if strings.ToLower(strings.TrimSpace(cfg.MCPAccessMode)) == "full" {
+			claims.Roles = []auth.Role{auth.RoleAdmin}
+			if claims.TrustLevel == "" {
+				claims.TrustLevel = "trusted"
+			}
+		} else {
+			claims.Roles = []auth.Role{auth.RoleRead}
+			if claims.TrustLevel == "" {
+				claims.TrustLevel = "low"
+			}
+		}
+		return auth.NewStaticClaimsAuthenticator(token, claims), nil
+	default:
+		return nil, fmt.Errorf("unsupported MCP auth mode %q", mode)
+	}
+}
+
 func realCmdServe(cfg store.Config) {
 	// Load config from {DataDir}/config.json with env-var overrides.
 	// First load with empty path to get DataDir (which may be overridden by env).
@@ -398,8 +484,18 @@ func realCmdServe(cfg store.Config) {
 	}
 
 	// Extract port from http_addr.
-	_, port := config.HTTPAddrParts(cfg2.HTTPAddr)
+	host, port := config.HTTPAddrParts(cfg2.HTTPAddr)
+	bindAddr := cfg2.HTTPAddr
+	if strings.TrimSpace(bindAddr) == "" {
+		bindAddr = "127.0.0.1:7331"
+	}
 	socketPath := cfg2.SocketPath
+	remoteEnabled := cfg2.MCPRemoteEnable || cfg2.MCPHTTPEnabled
+
+	if remoteEnabled && strings.TrimSpace(cfg2.MCPBindAddr) != "" {
+		bindAddr = cfg2.MCPBindAddr
+		host, port = config.HTTPAddrParts(bindAddr)
+	}
 
 	// Positional port argument overrides config (e.g., "ohara serve 9001").
 	if len(os.Args) >= 3 {
@@ -421,6 +517,10 @@ func realCmdServe(cfg store.Config) {
 			}
 		}
 	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	bindAddr = fmt.Sprintf("%s:%d", host, port)
 
 	// Apply config-file retrieval settings to the store config (env vars
 	// already handled by store.DefaultConfig, config.json values are not).
@@ -460,14 +560,51 @@ func realCmdServe(cfg store.Config) {
 	if cfg2.ConflictEnabled {
 		conflictCfg.Enabled = server.ConflictEnabledOn
 	}
-	srv := newHTTPServer(s, port, socketPath, packCfg, conflictCfg)
-	if cfg2.AuthEnabled {
-		srv.SetAuthConfig(cfg2.AuthEnabled, cfg2.AuthToken)
+	srv := newHTTPServer(s, port, bindAddr, socketPath, splitCSV(cfg2.MCPAllowedOrigins), packCfg, conflictCfg)
+
+	// Legacy HTTP API auth mode (unchanged unless remote MCP mode is explicitly configured).
+	if cfg2.AuthEnabled && !remoteEnabled {
+		srv.SetAuthConfig(true, cfg2.AuthToken)
 	}
-	if cfg2.MCPHTTPEnabled {
-		mcpCfg := mcp.MCPConfig{DefaultProject: ""}
-		mcpHandler := newMCPHTTPHandler(s, mcpCfg, nil)
-		srv.SetMCPHandler(mcpHandler)
+
+	if remoteEnabled {
+		transport := strings.ToLower(strings.TrimSpace(cfg2.MCPTransport))
+		if transport == "" {
+			transport = "streamable-http"
+		}
+		mcpCfg := mcp.MCPConfig{
+			DefaultProject:           "",
+			EnableCompatibilityTools: true,
+		}
+		allowlist := mcp.ResolveRemoteToolAllowlist(cfg2.MCPAccessMode)
+
+		authr, err := remoteAuthenticator(cfg2)
+		if err != nil {
+			fatal("serve: " + err.Error())
+		}
+		requireAuth := cfg2.MCPRequireAuth
+		if requireAuth {
+			if authr == nil {
+				fatal("serve: remote MCP auth required but no bearer token configured")
+			}
+			srv.SetAuthenticator(authr)
+		} else if authr != nil {
+			// Optional auth mode when explicitly allowed.
+			srv.SetAuthenticator(authr)
+		}
+
+		switch transport {
+		case "streamable-http", "http":
+			srv.SetMCPRoute("/mcp", newMCPHTTPHandler(s, mcpCfg, allowlist))
+		case "sse":
+			sse := newMCPSSEHandler(s, mcpCfg, allowlist)
+			srv.SetMCPRoute("/mcp/sse", sse)
+			srv.SetMCPRoute("/mcp/message", sse)
+		case "stdio":
+			// stdio is handled by `ohara mcp`; keep HTTP API running without remote MCP routes.
+		default:
+			fatal("serve: unsupported OHARA_MCP_TRANSPORT value: " + transport)
+		}
 	}
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())

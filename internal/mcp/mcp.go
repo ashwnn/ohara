@@ -201,7 +201,9 @@ func wrapToolHandler(name string, handler server.ToolHandlerFunc) server.ToolHan
 
 // MCPConfig holds configuration for the MCP server.
 type MCPConfig struct {
-	DefaultProject string // Auto-detected project name, used when LLM sends empty project
+	DefaultProject             string // Auto-detected project name, used when LLM sends empty project
+	EnableCompatibilityTools   bool   // Expose ChatGPT-compatible search/fetch tools
+	CompatibilityResultMaxBody int    // Body/snippet size cap for compatibility tools
 }
 
 var suggestTopicKey = store.SuggestTopicKey
@@ -285,6 +287,35 @@ var Profiles = map[string]map[string]bool{
 	"admin": ProfileAdmin,
 }
 
+// RemoteReadOnlyTools defines the default safe MCP surface for low-trust remote
+// clients (e.g. ChatGPT Web app integrations).
+var RemoteReadOnlyTools = map[string]bool{
+	"search":           true,
+	"fetch":            true,
+	"mem_search":       true,
+	"mem_context":      true,
+	"mem_pack":         true,
+	"mem_pack_explain": true,
+	"mem_file_history": true,
+	"mem_file_context": true,
+	"mem_stats":        true,
+}
+
+// ResolveRemoteToolAllowlist returns the default tool allowlist for remote MCP
+// access mode. For full mode, nil means unrestricted tool registration.
+func ResolveRemoteToolAllowlist(accessMode string) map[string]bool {
+	switch strings.ToLower(strings.TrimSpace(accessMode)) {
+	case "readonly":
+		out := make(map[string]bool, len(RemoteReadOnlyTools))
+		for k, v := range RemoteReadOnlyTools {
+			out[k] = v
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // ResolveTools takes a comma-separated string of profile names and/or
 // individual tool names and returns the set of tool names to register.
 // An empty input means "all" — every tool is registered.
@@ -366,7 +397,19 @@ func NewServerWithConfig(s *store.Store, cfg MCPConfig, allowlist map[string]boo
 // It is auth-protected automatically when the parent server has auth enabled.
 func NewStreamableHTTPHandler(s *store.Store, cfg MCPConfig, allowlist map[string]bool) http.Handler {
 	mcpServer := NewServerWithConfig(s, cfg, allowlist)
-	return server.NewStreamableHTTPServer(mcpServer)
+	return server.NewStreamableHTTPServer(mcpServer, server.WithStateLess(true))
+}
+
+// NewSSEHandler creates an MCP SSE transport handler.
+// It serves SSE stream and message endpoints under /mcp/sse and /mcp/message.
+func NewSSEHandler(s *store.Store, cfg MCPConfig, allowlist map[string]bool) http.Handler {
+	mcpServer := NewServerWithConfig(s, cfg, allowlist)
+	return server.NewSSEServer(
+		mcpServer,
+		server.WithSSEEndpoint("/mcp/sse"),
+		server.WithMessageEndpoint("/mcp/message"),
+		server.WithUseFullURLForMessageEndpoint(false),
+	)
 }
 
 func newServerWithActivity(s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) *server.MCPServer {
@@ -391,6 +434,40 @@ func shouldRegister(name string, allowlist map[string]bool) bool {
 }
 
 func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowlist map[string]bool, activity *SessionActivity) {
+	if cfg.EnableCompatibilityTools && shouldRegister("search", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("search",
+				mcp.WithDescription("Use this when you need to search Ohara memory records by keyword, project, or file path and return structured results for downstream tools."),
+				mcp.WithTitleAnnotation("Search Ohara Records"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("query", mcp.Required(), mcp.Description("Search query text")),
+				mcp.WithString("project", mcp.Description("Optional project filter")),
+				mcp.WithNumber("limit", mcp.Description("Optional limit (default: 10, max: 20)")),
+				mcp.WithString("path", mcp.Description("Optional file/path filter")),
+				mcp.WithString("domain", mcp.Description("Optional domain filter")),
+			),
+			requireMCPRole(auth.RoleRead, requireMCPProjectScope("project")(handleCompatSearch(s, cfg, activity))),
+		)
+	}
+
+	if cfg.EnableCompatibilityTools && shouldRegister("fetch", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("fetch",
+				mcp.WithDescription("Use this when you need the full details for one memory record by ID after a prior search result."),
+				mcp.WithTitleAnnotation("Fetch Ohara Record"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("id", mcp.Required(), mcp.Description("Memory item ID from search results")),
+			),
+			requireMCPRole(auth.RoleRead, requireMCPMemoryScope(s, "id")(handleCompatFetch(s, cfg))),
+		)
+	}
+
 	if shouldRegister("mem_search", allowlist) {
 		srv.AddTool(
 			mcp.NewTool("mem_search",
@@ -1353,7 +1430,111 @@ func isLowTrustCtx(ctx context.Context) bool {
 	return auth.ClaimsFromContext(ctx).IsLowTrust()
 }
 
+type compatRecord struct {
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	Text      string `json:"text"`
+	Project   string `json:"project"`
+	Kind      string `json:"kind"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func compatMaxBody(cfg MCPConfig, fallback int) int {
+	if cfg.CompatibilityResultMaxBody > 0 {
+		return cfg.CompatibilityResultMaxBody
+	}
+	return fallback
+}
+
+func toCompatRecord(m store.MemoryItem, textLimit int) compatRecord {
+	text := strings.TrimSpace(m.Body)
+	if textLimit > 0 && len(text) > textLimit {
+		text = text[:textLimit] + "..."
+	}
+	return compatRecord{
+		ID:        m.ID,
+		Title:     m.Title,
+		URL:       fmt.Sprintf("memory://%d", m.ID),
+		Text:      text,
+		Project:   m.ProjectID,
+		Kind:      m.Kind,
+		UpdatedAt: m.UpdatedAt,
+	}
+}
+
 // ─── Tool Handlers ───────────────────────────────────────────────────────────
+
+func handleCompatSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query, _ := req.GetArguments()["query"].(string)
+		if strings.TrimSpace(query) == "" {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+		project, _ := req.GetArguments()["project"].(string)
+		domain, _ := req.GetArguments()["domain"].(string)
+		path, _ := req.GetArguments()["path"].(string)
+		limit := intArg(req, "limit", 10)
+		if limit <= 0 {
+			limit = 10
+		}
+		if limit > 20 {
+			limit = 20
+		}
+
+		if project == "" {
+			project = cfg.DefaultProject
+		}
+		project, _ = store.NormalizeProject(project)
+		sessionID := defaultSessionID(project)
+		activity.RecordToolCall(sessionID)
+
+		searchQuery := strings.TrimSpace(query)
+		if p := strings.TrimSpace(path); p != "" {
+			searchQuery += " file:" + p
+		}
+
+		items, err := s.SearchMemories(searchQuery, project, "", "", domain, store.MemoryStatusActive, limit, "")
+		if err != nil {
+			return mcp.NewToolResultError("search failed"), nil
+		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
+
+		results := make([]compatRecord, 0, len(items))
+		for _, item := range items {
+			results = append(results, toCompatRecord(item, compatMaxBody(cfg, 600)))
+		}
+		payload := map[string]any{
+			"results": results,
+		}
+		return mcp.NewToolResultStructuredOnly(payload), nil
+	}
+}
+
+func handleCompatFetch(s *store.Store, cfg MCPConfig) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := int64(intArg(req, "id", 0))
+		if id <= 0 {
+			return mcp.NewToolResultError("id is required"), nil
+		}
+		item, err := s.GetMemory(id)
+		if err != nil || item == nil {
+			return mcp.NewToolResultError("record not found"), nil
+		}
+		if isLowTrustCtx(ctx) {
+			if !store.VisibleTrustLevelsForLowTrust[item.TrustLevel] {
+				return mcp.NewToolResultError("record not found"), nil
+			}
+			redacted := item.Redacted()
+			item = &redacted
+		}
+
+		payload := map[string]any{
+			"item": toCompatRecord(*item, compatMaxBody(cfg, 2000)),
+		}
+		return mcp.NewToolResultStructuredOnly(payload), nil
+	}
+}
 
 func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

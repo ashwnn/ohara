@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,6 +71,11 @@ func WithSocketPath(path string) ServerOption {
 	return func(s *Server) { s.socketPath = path }
 }
 
+// WithBindAddr sets the TCP bind address for the server.
+func WithBindAddr(addr string) ServerOption {
+	return func(s *Server) { s.bindAddr = addr }
+}
+
 // PackConfig holds the configurable parameters for context pack assembly.
 type PackConfig struct {
 	DefaultBudgetTokens int
@@ -106,6 +112,25 @@ func WithConflictConfig(cfg ConflictConfig) ServerOption {
 	return func(s *Server) { s.conflictConfig = cfg }
 }
 
+// WithAllowedOrigins configures optional CORS policy for HTTP responses.
+// Pass an empty list to disable CORS headers.
+func WithAllowedOrigins(origins []string) ServerOption {
+	return func(s *Server) {
+		if len(origins) == 0 {
+			s.allowedOrigins = nil
+			return
+		}
+		s.allowedOrigins = make(map[string]struct{}, len(origins))
+		for _, origin := range origins {
+			origin = strings.TrimSpace(origin)
+			if origin == "" {
+				continue
+			}
+			s.allowedOrigins[origin] = struct{}{}
+		}
+	}
+}
+
 // adminOnlyPaths are HTTP routes that require the admin role regardless of method.
 // DELETE methods always require admin via method check; only non-DELETE overrides
 // (like GET /export, POST /import) need to be listed here.
@@ -119,6 +144,7 @@ type Server struct {
 	store          *store.Store
 	mux            *http.ServeMux
 	port           int
+	bindAddr       string
 	socketPath     string
 	listen         func(network, address string) (net.Listener, error)
 	serve          func(net.Listener, http.Handler) error
@@ -127,12 +153,23 @@ type Server struct {
 	packConfig     PackConfig
 	conflictConfig ConflictConfig
 	authenticator  auth.Authenticator
-	mcpHandler     http.Handler
-	mcpRegistered  bool
+	mcpRoutes      map[string]http.Handler
+	mcpRegistered  map[string]bool
+	allowedOrigins map[string]struct{}
+	mu             sync.Mutex
 }
 
+const defaultMCPBodyLimitBytes int64 = 1 << 20 // 1 MiB
+
 func New(s *store.Store, port int, opts ...ServerOption) *Server {
-	srv := &Server{store: s, port: port, listen: net.Listen, serve: http.Serve}
+	srv := &Server{
+		store:         s,
+		port:          port,
+		listen:        net.Listen,
+		serve:         http.Serve,
+		mcpRoutes:     make(map[string]http.Handler),
+		mcpRegistered: make(map[string]bool),
+	}
 	for _, o := range opts {
 		o(srv)
 	}
@@ -173,6 +210,9 @@ func (s *Server) SetAuthenticator(authr auth.Authenticator) {
 // Method-based defaults: DELETE→admin, POST/PATCH/PUT→write, GET/others→read.
 // Fixed-path overrides in adminOnlyPaths elevate GET/POST routes to admin.
 func (s *Server) requiredRole(r *http.Request) auth.Role {
+	if strings.HasPrefix(r.URL.Path, "/mcp") {
+		return auth.RoleRead
+	}
 	key := r.Method + " " + r.URL.Path
 	if adminOnlyPaths[key] {
 		return auth.RoleAdmin
@@ -251,7 +291,25 @@ func (s *Server) logAudit(r *http.Request, obsID, action, project string) {
 // SetMCPHandler registers a Streamable HTTP MCP handler to be served at /mcp.
 // Must be called before the first request (before Start or Handler).
 func (s *Server) SetMCPHandler(h http.Handler) {
-	s.mcpHandler = h
+	s.SetMCPRoute("/mcp", h)
+}
+
+// SetMCPRoute registers an MCP transport handler at an explicit path.
+func (s *Server) SetMCPRoute(path string, h http.Handler) {
+	if h == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mcpRoutes[path] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			r.Body = http.MaxBytesReader(w, r.Body, defaultMCPBodyLimitBytes)
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware returns an http.Handler that enforces bearer token authentication
@@ -264,8 +322,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Health check is always open even when auth is enabled.
-		if r.URL.Path == "/health" {
+		// Health and readiness checks are always open even when auth is enabled.
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -287,6 +345,30 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		ctx := auth.ContextWithClaims(r.Context(), claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	if len(s.allowedOrigins) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			if _, ok := s.allowedOrigins["*"]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if _, ok := s.allowedOrigins[origin]; ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+			}
+		}
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, mcp-session-id")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -327,7 +409,10 @@ func (s *Server) Start() error {
 	}
 
 	// TCP fallback.
-	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	addr := s.bindAddr
+	if strings.TrimSpace(addr) == "" {
+		addr = fmt.Sprintf("127.0.0.1:%d", s.port)
+	}
 	ln, err = listenFn("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("ohara server: listen %s: %w", addr, err)
@@ -361,18 +446,25 @@ func (s *Server) listenUnixWithStaleCleanup(listenFn func(network, address strin
 }
 
 func (s *Server) Handler() http.Handler {
-	if s.mcpHandler != nil && !s.mcpRegistered {
-		s.mux.Handle("/mcp", s.mcpHandler)
-		s.mcpRegistered = true
+	s.mu.Lock()
+	for path, handler := range s.mcpRoutes {
+		if handler != nil && !s.mcpRegistered[path] {
+			s.mux.Handle(path, handler)
+			s.mcpRegistered[path] = true
+		}
 	}
+	s.mu.Unlock()
+
+	h := http.Handler(s.mux)
 	if s.authenticator != nil {
-		return s.authMiddleware(s.mux)
+		h = s.authMiddleware(h)
 	}
-	return s.mux
+	return s.corsMiddleware(h)
 }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /ready", s.handleReady)
 
 	// Sessions
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
@@ -422,6 +514,19 @@ func (s *Server) routes() {
 
 	// Pack (context pack assembly)
 	s.mux.HandleFunc("POST /pack", s.handlePack)
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.QueryRow("SELECT 1").Scan(new(int)); err != nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "not_ready",
+			"error":  "database unavailable",
+		})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"status": "ready",
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -1012,9 +1117,9 @@ func (s *Server) handleMigrateProject(w http.ResponseWriter, r *http.Request) {
 	s.notifyWrite()
 
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"status":            "migrated",
-		"sessions_updated":  result.SessionsUpdated,
-		"prompts_updated":   result.PromptsUpdated,
+		"status":           "migrated",
+		"sessions_updated": result.SessionsUpdated,
+		"prompts_updated":  result.PromptsUpdated,
 	})
 }
 

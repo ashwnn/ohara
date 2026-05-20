@@ -49,6 +49,9 @@ type Claims struct {
 	// Nil or empty means unrestricted (all projects allowed).
 	// Non-empty means the principal may only access listed projects.
 	AllowedProjects []string
+	// TrustLevel controls response redaction semantics for this principal.
+	// Supported values: "low", "trusted", or empty (infer from roles).
+	TrustLevel string
 }
 
 // AllProjectsAllowed reports whether this principal has unrestricted
@@ -77,6 +80,12 @@ func (c *Claims) IsProjectAllowed(project string) bool {
 // Nil claims (no authentication) are NOT low-trust (backward compatible).
 func (c *Claims) IsLowTrust() bool {
 	if c == nil {
+		return false
+	}
+	switch c.TrustLevel {
+	case "low":
+		return true
+	case "trusted":
 		return false
 	}
 	return !c.HasRole(RoleWrite)
@@ -146,10 +155,23 @@ type StaticTokenAuthenticator struct {
 	token string
 }
 
+// StaticClaimsAuthenticator implements Authenticator using a single pre-shared
+// token and fixed claims template for successful authentication.
+type StaticClaimsAuthenticator struct {
+	token  string
+	claims Claims
+}
+
 // NewStaticTokenAuthenticator creates an authenticator that accepts exactly
 // the given token value.
 func NewStaticTokenAuthenticator(token string) *StaticTokenAuthenticator {
 	return &StaticTokenAuthenticator{token: token}
+}
+
+// NewStaticClaimsAuthenticator creates an authenticator that accepts exactly
+// one token and returns the provided claims template on success.
+func NewStaticClaimsAuthenticator(token string, claims Claims) *StaticClaimsAuthenticator {
+	return &StaticClaimsAuthenticator{token: token, claims: claims}
 }
 
 // Authenticate validates the raw token using constant-time comparison.
@@ -163,6 +185,23 @@ func (a *StaticTokenAuthenticator) Authenticate(raw string) (*Claims, error) {
 		Roles:   []Role{RoleAdmin},
 		Token:   raw,
 	}, nil
+}
+
+// Authenticate validates the token using constant-time comparison and returns
+// a copy of the configured claims template.
+func (a *StaticClaimsAuthenticator) Authenticate(raw string) (*Claims, error) {
+	if subtle.ConstantTimeCompare([]byte(raw), []byte(a.token)) != 1 {
+		return nil, ErrInvalidToken
+	}
+	out := a.claims
+	if len(a.claims.Roles) > 0 {
+		out.Roles = append([]Role(nil), a.claims.Roles...)
+	}
+	if len(a.claims.AllowedProjects) > 0 {
+		out.AllowedProjects = append([]string(nil), a.claims.AllowedProjects...)
+	}
+	out.Token = raw
+	return &out, nil
 }
 
 // contextKey is an unexported type for context value keys to avoid collisions.

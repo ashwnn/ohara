@@ -74,6 +74,19 @@ type RuntimeConfig struct {
 	// mounted at /mcp on the existing HTTP server. Disabled by default.
 	// When enabled, the endpoint is protected by auth if AuthEnabled is true.
 	MCPHTTPEnabled bool
+
+	// MCP remote runtime options (production-oriented transport/auth split).
+	MCPRemoteEnable    bool
+	MCPTransport       string // stdio | http | sse | streamable-http
+	MCPBindAddr        string
+	MCPPublicURL       string
+	MCPAuthMode        string // off | bearer | oauth
+	MCPRequireAuth     bool
+	MCPAccessMode      string // readonly | full
+	MCPBearerTokenFile string
+	MCPBearerToken     string
+	MCPAllowedOrigins  string
+	MCPTrustLevel      string // low | trusted
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
@@ -97,6 +110,17 @@ type fileConfig struct {
 	AuthEnabled         *bool    `json:"auth_enabled"`
 	AuthToken           string   `json:"auth_token"`
 	MCPHTTPEnabled      *bool    `json:"mcp_http_enabled"`
+	MCPRemoteEnable     *bool    `json:"mcp_remote_enable"`
+	MCPTransport        string   `json:"mcp_transport"`
+	MCPBindAddr         string   `json:"mcp_bind_addr"`
+	MCPPublicURL        string   `json:"mcp_public_url"`
+	MCPAuthMode         string   `json:"mcp_auth_mode"`
+	MCPRequireAuth      *bool    `json:"mcp_require_auth"`
+	MCPAccessMode       string   `json:"mcp_access_mode"`
+	MCPBearerTokenFile  string   `json:"mcp_bearer_token_file"`
+	MCPBearerToken      string   `json:"mcp_bearer_token"`
+	MCPAllowedOrigins   string   `json:"mcp_allowed_origins"`
+	MCPTrustLevel       string   `json:"mcp_trust_level"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -127,6 +151,17 @@ func Default() RuntimeConfig {
 		AuthEnabled:         false,
 		AuthToken:           "",
 		MCPHTTPEnabled:      false,
+		MCPRemoteEnable:     false,
+		MCPTransport:        "streamable-http",
+		MCPBindAddr:         "127.0.0.1:7331",
+		MCPPublicURL:        "",
+		MCPAuthMode:         "bearer",
+		MCPRequireAuth:      true,
+		MCPAccessMode:       "readonly",
+		MCPBearerTokenFile:  "",
+		MCPBearerToken:      "",
+		MCPAllowedOrigins:   "",
+		MCPTrustLevel:       "low",
 	}
 }
 
@@ -215,6 +250,39 @@ func Load(path string) (RuntimeConfig, error) {
 		if fc.MCPHTTPEnabled != nil {
 			cfg.MCPHTTPEnabled = *fc.MCPHTTPEnabled
 		}
+		if fc.MCPRemoteEnable != nil {
+			cfg.MCPRemoteEnable = *fc.MCPRemoteEnable
+		}
+		if fc.MCPTransport != "" {
+			cfg.MCPTransport = strings.ToLower(fc.MCPTransport)
+		}
+		if fc.MCPBindAddr != "" {
+			cfg.MCPBindAddr = fc.MCPBindAddr
+		}
+		if fc.MCPPublicURL != "" {
+			cfg.MCPPublicURL = strings.TrimSpace(fc.MCPPublicURL)
+		}
+		if fc.MCPAuthMode != "" {
+			cfg.MCPAuthMode = strings.ToLower(fc.MCPAuthMode)
+		}
+		if fc.MCPRequireAuth != nil {
+			cfg.MCPRequireAuth = *fc.MCPRequireAuth
+		}
+		if fc.MCPAccessMode != "" {
+			cfg.MCPAccessMode = strings.ToLower(fc.MCPAccessMode)
+		}
+		if fc.MCPBearerTokenFile != "" {
+			cfg.MCPBearerTokenFile = expandHome(strings.TrimSpace(fc.MCPBearerTokenFile))
+		}
+		if fc.MCPBearerToken != "" {
+			cfg.MCPBearerToken = fc.MCPBearerToken
+		}
+		if fc.MCPAllowedOrigins != "" {
+			cfg.MCPAllowedOrigins = strings.TrimSpace(fc.MCPAllowedOrigins)
+		}
+		if fc.MCPTrustLevel != "" {
+			cfg.MCPTrustLevel = strings.ToLower(fc.MCPTrustLevel)
+		}
 	}
 
 	applyEnvOverrides(&cfg)
@@ -270,6 +338,72 @@ func applyEnvOverrides(cfg *RuntimeConfig) {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.MCPHTTPEnabled = b
 		}
+	}
+	if v := os.Getenv("OHARA_MCP_REMOTE_ENABLE"); v != "" {
+		if b, err := parseBool01(v); err == nil {
+			cfg.MCPRemoteEnable = b
+		}
+	}
+	if v := os.Getenv("OHARA_MCP_TRANSPORT"); v != "" {
+		cfg.MCPTransport = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("OHARA_MCP_BIND_ADDR"); v != "" {
+		cfg.MCPBindAddr = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("OHARA_MCP_PUBLIC_URL"); v != "" {
+		cfg.MCPPublicURL = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("OHARA_MCP_AUTH_MODE"); v != "" {
+		cfg.MCPAuthMode = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("OHARA_MCP_REQUIRE_AUTH"); v != "" {
+		if b, err := parseBool01(v); err == nil {
+			cfg.MCPRequireAuth = b
+		}
+	}
+	if v := os.Getenv("OHARA_MCP_ACCESS_MODE"); v != "" {
+		cfg.MCPAccessMode = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("OHARA_MCP_BEARER_TOKEN_FILE"); v != "" {
+		cfg.MCPBearerTokenFile = expandHome(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("OHARA_MCP_BEARER_TOKEN"); v != "" {
+		cfg.MCPBearerToken = v
+	}
+	if v := os.Getenv("OHARA_MCP_ALLOWED_ORIGINS"); v != "" {
+		cfg.MCPAllowedOrigins = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("OHARA_MCP_TRUST_LEVEL"); v != "" {
+		cfg.MCPTrustLevel = strings.ToLower(strings.TrimSpace(v))
+	}
+
+	// Legacy compatibility: `OHARA_MCP_HTTP=true` implies remote MCP exposure.
+	if cfg.MCPHTTPEnabled {
+		cfg.MCPRemoteEnable = true
+		if cfg.MCPTransport == "" {
+			cfg.MCPTransport = "streamable-http"
+		}
+	}
+	// Legacy compatibility: when old auth is enabled but new auth mode is unset,
+	// treat it as bearer auth.
+	if cfg.AuthEnabled {
+		if cfg.MCPAuthMode == "" {
+			cfg.MCPAuthMode = "bearer"
+		}
+		if cfg.MCPBearerToken == "" {
+			cfg.MCPBearerToken = cfg.AuthToken
+		}
+	}
+}
+
+func parseBool01(v string) (bool, error) {
+	switch strings.TrimSpace(strings.ToLower(v)) {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	default:
+		return strconv.ParseBool(v)
 	}
 }
 
