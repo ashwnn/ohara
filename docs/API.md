@@ -118,5 +118,5 @@ timestamp when a sync status provider is configured.
 ## Security Boundary
 
 The API assumes a trusted local caller. Do not expose it directly to a network.
-If remote access is needed, put authentication, TLS, and authorization in a
-separate local-controlled reverse proxy and treat that as custom deployment code.
+For production-like remote MCP exposure, use the dedicated remote MCP mode and
+deployment guidance in [docs/remote-mcp-production.md](./remote-mcp-production.md).
