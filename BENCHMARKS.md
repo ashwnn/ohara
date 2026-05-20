@@ -15,6 +15,14 @@ go test ./bench/forgetting/ -v
 # Precision@k
 go run ./bench/precision/   -k 3
 
+# Retrieval fixture harness (recall/MRR/nDCG + anti-overfit audit)
+go test ./bench/retrieval/ -v
+go run ./bench/run_retrieval.go -k 5
+OHARA_RETRIEVAL_MODE=fts5 go run ./bench/run_retrieval.go -k 5
+OHARA_RETRIEVAL_MODE=hybrid go run ./bench/run_retrieval.go -k 5
+OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=deterministic-test go run ./bench/run_retrieval.go -k 5
+OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=ollama go run ./bench/run_retrieval.go -k 5
+
 # Token counting
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s
 ```
@@ -74,6 +82,29 @@ precision@3 = 0.2222 (22.2%) — 3 queries
 ```
 
 Low precision here reflects FTS5 matching on short fixture titles (minimal text for the matcher to work with). Run with `-k 5` or `-k 10` for a softer metric.
+
+## Retrieval Fixture Harness (`bench/retrieval/`)
+
+Deterministic fixture-driven retrieval checks for:
+
+- Recall@1/3/5, MRR, nDCG@5
+- stale/superseded filtering behavior
+- temporal update ordering
+- file-history/file-context retrieval
+- hybrid-mode fallback to FTS when embeddings are unavailable
+- context pack token-budget envelope
+- abstention false-positive rate
+- fixture-integrity audit (category counts, lexical overlap, weak-distractor detection)
+
+The CLI report includes:
+
+- total/passed/failed case counts
+- case counts by category
+- per-category metrics
+- worst failures with expected vs actual IDs
+- failure flags (`stale`, `wrong_project`, `superseded`)
+- retrieval source hints (`strict_fts`, `or_fallback`, `hybrid_fallback`, `pack_scoring`, etc.)
+- embedding mode labels (`real-ollama`, `deterministic-test`, `fts-fallback`)
 
 ## Token Benchmarks (`internal/token/`)
 
