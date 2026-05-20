@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -172,16 +173,13 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 		if err := s.logMemoryAudit(tx, memoryID, auditActionCreate, p.ActorID, p.SessionID, p.TrustLevel); err != nil {
 			return err
 		}
+		if err := s.enqueueDerivedJobsTx(tx, memoryID); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
 		return 0, err
-	}
-	if s.hybridEnabled() {
-		text := title + "\n" + body
-		go func(id int64, t string) {
-			_ = s.indexMemoryEmbedding(id, t)
-		}(memoryID, text)
 	}
 	return memoryID, nil
 }
@@ -443,16 +441,28 @@ func (s *Store) UpdateMemory(id int64, p UpdateMemoryParams) (*MemoryItem, error
 		}
 
 		updated, err = s.getMemoryTx(tx, id)
+		if err != nil {
+			return err
+		}
+		if reindexEmbedding {
+			if _, qErr := s.execHook(tx,
+				`INSERT INTO memory_jobs (memory_id, job_type, status, attempts, last_error, available_at, updated_at)
+				 VALUES (?, ?, ?, 0, NULL, strftime('%Y-%m-%dT%H:%M:%f','now'), strftime('%Y-%m-%dT%H:%M:%f','now'))
+				 ON CONFLICT(memory_id, job_type) DO UPDATE SET
+				   status=excluded.status,
+				   attempts=0,
+				   last_error=NULL,
+				   available_at=excluded.available_at,
+				   updated_at=excluded.updated_at`,
+				id, JobTypeEmbedMemory, jobStatusPending,
+			); qErr != nil {
+				return qErr
+			}
+		}
 		return err
 	})
 	if err != nil {
 		return nil, err
-	}
-	if s.hybridEnabled() && reindexEmbedding && updated != nil {
-		text := updated.Title + "\n" + updated.Body
-		go func(mid int64, t string) {
-			_ = s.indexMemoryEmbedding(mid, t)
-		}(id, text)
 	}
 	return updated, nil
 }
@@ -603,9 +613,11 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 		projectID, _ = NormalizeProject(projectID)
 	}
 
-	// Parse temporal operators from query string before FTS sanitization
-	ftsQuery, filters := parseTemporalFilters(query)
-	ftsQuery = sanitizeFTS(ftsQuery)
+	// Parse temporal operators from query string before FTS sanitization.
+	rawFTSQuery, filters := parseTemporalFilters(query)
+	ftsQuery := sanitizeFTS(rawFTSQuery)
+	fallbackTerms := buildFallbackTerms(rawFTSQuery)
+	ftsFallbackQuery := sanitizeFTSOR(strings.Join(fallbackTerms, " "))
 
 	// Preserve original status to determine if expires_at filter should apply.
 	// The expires_at filter only applies when status is implicitly or explicitly "active".
@@ -625,7 +637,7 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 	}
 
 	// Composite ranking: FTS relevance * kind_boost * recency_boost
-	// - Kind boost: decision(1.5), pattern(1.4), bugfix(1.3), discovery(1.2), procedure(1.1), others(1.0)
+	// - Kind boost prioritizes durable guidance over scratch notes.
 	// - Recency boost (Ohara v2 spec): 1.15x within 7 days, 1.05x within 30 days, 1.0 beyond 30 days
 	sqlQ := `
 		SELECT mi.id, mi.created_at, mi.updated_at, mi.project_id, mi.actor_id, mi.kind, mi.scope,
@@ -637,10 +649,18 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 		       (1.0 / (1.0 + fts.rank))
 		       * CASE mi.kind
 				WHEN 'decision' THEN 1.5
-				WHEN 'pattern' THEN 1.4
+				WHEN 'procedure' THEN 1.4
 				WHEN 'bugfix' THEN 1.3
-				WHEN 'discovery' THEN 1.2
-				WHEN 'procedure' THEN 1.1
+				WHEN 'pattern' THEN 1.2
+				WHEN 'config' THEN 1.1
+				WHEN 'postmortem' THEN 1.05
+				WHEN 'discovery' THEN 0.85
+				ELSE 1.0
+			 END
+		       * CASE mi.classification
+				WHEN 'foundational' THEN 1.10
+				WHEN 'tactical' THEN 1.03
+				WHEN 'observational' THEN 0.84
 				ELSE 1.0
 			 END
 		       * CASE
@@ -657,12 +677,13 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 		FROM memory_items_fts fts
 		JOIN memory_items mi ON mi.id = fts.rowid
 		WHERE memory_items_fts MATCH ? AND mi.status = ?`
-	args := []any{ftsQuery, status}
+	args := []any{status}
 
 	// Only filter by expires_at when querying active items.
 	// Explicit non-active queries (e.g., archived) should return all matching items.
 	if originalStatus == "" || originalStatus == MemoryStatusActive {
 		sqlQ += " AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))"
+		sqlQ += " AND (mi.superseded_by IS NULL OR mi.superseded_by = 0)"
 	}
 
 	if projectID != "" {
@@ -716,27 +737,150 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 	sqlQ += ` ORDER BY relevance_score DESC LIMIT ?`
 	args = append(args, limit)
 
-	rows, err := s.queryItHook(s.db, sqlQ, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var items []MemoryItem
-	for rows.Next() {
-		item, err := s.scanMemoryRow(rows)
+	runFTS := func(matchQuery string, queryLimit int) ([]MemoryItem, error) {
+		if queryLimit <= 0 {
+			queryLimit = limit
+		}
+		qArgs := make([]any, 0, len(args)+1)
+		qArgs = append(qArgs, matchQuery)
+		qArgs = append(qArgs, args...)
+		qArgs[len(qArgs)-1] = queryLimit
+		rows, err := s.queryItHook(s.db, sqlQ, qArgs...)
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, *item)
+		defer rows.Close()
+
+		var runItems []MemoryItem
+		for rows.Next() {
+			item, err := s.scanMemoryRow(rows)
+			if err != nil {
+				return nil, err
+			}
+			runItems = append(runItems, *item)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return runItems, nil
 	}
-	if err := rows.Err(); err != nil {
+
+	items, err := runFTS(ftsQuery, limit)
+	if err != nil {
 		return nil, err
 	}
+	if len(items) == 0 && ftsFallbackQuery != "" && ftsFallbackQuery != ftsQuery {
+		fallbackItems, fallbackErr := runFTS(ftsFallbackQuery, max(30, limit*6))
+		if fallbackErr == nil {
+			minTermHits := 1
+			if len(fallbackTerms) >= 3 {
+				minTermHits = 2
+			}
+			type scoredFallback struct {
+				item    MemoryItem
+				overlap int
+			}
+			scored := make([]scoredFallback, 0, len(fallbackItems))
+			for _, item := range fallbackItems {
+				overlap := fallbackTermOverlap(item, fallbackTerms)
+				if overlap < minTermHits {
+					continue
+				}
+				scored = append(scored, scoredFallback{item: item, overlap: overlap})
+			}
+			sort.SliceStable(scored, func(i, j int) bool {
+				if scored[i].overlap == scored[j].overlap {
+					if scored[i].item.RelevanceScore == scored[j].item.RelevanceScore {
+						return scored[i].item.ID < scored[j].item.ID
+					}
+					return scored[i].item.RelevanceScore > scored[j].item.RelevanceScore
+				}
+				return scored[i].overlap > scored[j].overlap
+			})
+			items = make([]MemoryItem, 0, len(scored))
+			for _, score := range scored {
+				items = append(items, score.item)
+			}
+		}
+	}
+
 	if s.hybridEnabled() {
-		items = s.blendHybridScores(items, ftsQuery, s.cfg.HybridAlpha)
+		qVec, err := s.embedText(ftsQuery)
+		if err == nil {
+			vectorItems, vectorErr := s.vectorSearchMemories(
+				qVec,
+				projectID, scope, kind, domain, status, originalStatus, writtenBy,
+				filters,
+				limit*2,
+			)
+			if vectorErr == nil && len(vectorItems) > 0 {
+				items = s.fuseHybridRRF(items, vectorItems, 60)
+				if len(items) > limit {
+					items = items[:limit]
+				}
+			}
+		}
 	}
 	return items, nil
+}
+
+var ftsFallbackStopWords = map[string]struct{}{
+	"the": {}, "and": {}, "or": {}, "for": {}, "with": {}, "from": {}, "into": {},
+	"this": {}, "that": {}, "what": {}, "when": {}, "where": {}, "which": {}, "who": {},
+	"is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {}, "being": {},
+	"should": {}, "must": {}, "can": {}, "could": {}, "would": {}, "will": {},
+	"how": {}, "why": {}, "before": {}, "after": {}, "then": {}, "current": {},
+}
+
+func buildFallbackTerms(raw string) []string {
+	parts := strings.Fields(strings.ToLower(raw))
+	if len(parts) == 0 {
+		return nil
+	}
+	terms := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		token := strings.Trim(part, `"'.,;:!?()[]{}<>`)
+		if len(token) < 3 {
+			continue
+		}
+		if _, skip := ftsFallbackStopWords[token]; skip {
+			continue
+		}
+		candidates := []string{token}
+		if strings.HasSuffix(token, "ies") && len(token) > 4 {
+			candidates = append(candidates, token[:len(token)-3]+"y")
+		} else if strings.HasSuffix(token, "es") && len(token) > 4 {
+			candidates = append(candidates, token[:len(token)-2])
+		} else if strings.HasSuffix(token, "s") && len(token) > 3 {
+			candidates = append(candidates, token[:len(token)-1])
+		}
+		for _, candidate := range candidates {
+			if len(candidate) < 3 {
+				continue
+			}
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			terms = append(terms, candidate)
+		}
+	}
+	return terms
+}
+
+func fallbackTermOverlap(item MemoryItem, terms []string) int {
+	if len(terms) == 0 {
+		return 0
+	}
+	text := strings.ToLower(item.Title + " " + item.Body + " " + strings.Join(item.Tags, " "))
+	hits := 0
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			hits++
+		}
+	}
+	return hits
 }
 
 // GetMemoryRevisions returns all revision entries for a memory item.

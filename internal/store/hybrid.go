@@ -5,12 +5,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type ollamaEmbeddingRequest struct {
@@ -36,8 +38,15 @@ type ollamaChatResponse struct {
 }
 
 func (s *Store) hybridEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(s.cfg.RetrievalMode), "hybrid") &&
-		strings.EqualFold(strings.TrimSpace(s.cfg.EmbeddingBackend), "ollama")
+	if !strings.EqualFold(strings.TrimSpace(s.cfg.RetrievalMode), "hybrid") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend)) {
+	case "ollama", "deterministic-test":
+		return true
+	default:
+		return false
+	}
 }
 
 func floatsToBytes(v []float32) []byte {
@@ -82,6 +91,17 @@ func cosineSimilarity(a, b []float32) float64 {
 }
 
 func (s *Store) embedText(text string) ([]float32, error) {
+	switch strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend)) {
+	case "ollama", "":
+		return s.embedTextOllama(text)
+	case "deterministic-test":
+		return deterministicTestEmbedding(text, s.cfg.EmbeddingDim), nil
+	default:
+		return nil, fmt.Errorf("unsupported embedding backend %q", s.cfg.EmbeddingBackend)
+	}
+}
+
+func (s *Store) embedTextOllama(text string) ([]float32, error) {
 	url := strings.TrimRight(s.cfg.OllamaURL, "/") + "/api/embeddings"
 	reqBody, err := json.Marshal(ollamaEmbeddingRequest{Model: s.cfg.EmbeddingModel, Prompt: text})
 	if err != nil {
@@ -107,6 +127,50 @@ func (s *Store) embedText(text string) ([]float32, error) {
 	return out.Embedding, nil
 }
 
+func deterministicTestEmbedding(text string, dim int) []float32 {
+	if dim <= 0 {
+		dim = 128
+	}
+	if dim > 2048 {
+		dim = 2048
+	}
+	vec := make([]float32, dim)
+	tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(tokens) == 0 {
+		return vec
+	}
+	for i, token := range tokens {
+		if token == "" {
+			continue
+		}
+		hasher := fnv.New64a()
+		_, _ = hasher.Write([]byte(token))
+		sum := hasher.Sum64()
+		idx := int(sum % uint64(dim))
+		sign := float32(1.0)
+		if (sum>>63)&1 == 1 {
+			sign = -1.0
+		}
+		weight := float32(1.0 / math.Sqrt(float64(i+1)))
+		vec[idx] += sign * weight
+	}
+
+	var norm float64
+	for _, v := range vec {
+		norm += float64(v * v)
+	}
+	if norm == 0 {
+		return vec
+	}
+	scale := float32(1.0 / math.Sqrt(norm))
+	for i := range vec {
+		vec[i] *= scale
+	}
+	return vec
+}
+
 func (s *Store) indexMemoryEmbedding(memoryID int64, text string) error {
 	if !s.hybridEnabled() {
 		return nil
@@ -127,35 +191,261 @@ func (s *Store) indexMemoryEmbedding(memoryID int64, text string) error {
 	return err
 }
 
-func (s *Store) blendHybridScores(items []MemoryItem, query string, alpha float64) []MemoryItem {
-	if len(items) == 0 {
-		return items
+func (s *Store) fuseHybridRRF(ftsItems, vectorItems []MemoryItem, rankConstant int) []MemoryItem {
+	if len(ftsItems) == 0 && len(vectorItems) == 0 {
+		return nil
 	}
-	qVec, err := s.embedText(query)
-	if err != nil {
-		return items // fallback to pure FTS5 when embedding backend unavailable
+	if rankConstant <= 0 {
+		rankConstant = 60
 	}
-	if alpha < 0 || alpha > 1 {
-		alpha = 0.6
-	}
-	for i := range items {
-		var embBlob []byte
-		err := s.db.QueryRow(`SELECT embedding FROM obs_embeddings WHERE obs_id = ?`, items[i].ID).Scan(&embBlob)
-		if err != nil || len(embBlob) == 0 {
-			continue
+
+	itemsByID := make(map[int64]MemoryItem, len(ftsItems)+len(vectorItems))
+	ftsRank := make(map[int64]int, len(ftsItems))
+	ftsBaseScore := make(map[int64]float64, len(ftsItems))
+	maxFTSBaseScore := 0.0
+	for i, item := range ftsItems {
+		itemsByID[item.ID] = item
+		ftsRank[item.ID] = i + 1
+		ftsBaseScore[item.ID] = item.RelevanceScore
+		if item.RelevanceScore > maxFTSBaseScore {
+			maxFTSBaseScore = item.RelevanceScore
 		}
-		mVec, err := bytesToFloats(embBlob)
-		if err != nil {
-			continue
-		}
-		cos := cosineSimilarity(qVec, mVec)
-		vecScore := (cos + 1.0) / 2.0
-		items[i].RelevanceScore = alpha*items[i].RelevanceScore + (1.0-alpha)*vecScore
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].RelevanceScore > items[j].RelevanceScore
+	vectorRank := make(map[int64]int, len(vectorItems))
+	for i, item := range vectorItems {
+		if _, ok := itemsByID[item.ID]; !ok {
+			itemsByID[item.ID] = item
+		}
+		vectorRank[item.ID] = i + 1
+	}
+
+	out := make([]MemoryItem, 0, len(itemsByID))
+	for id, item := range itemsByID {
+		rrfScore := 0.0
+		lexicalBonus := 0.0
+		if rank, ok := ftsRank[id]; ok {
+			rrfScore += 1.0 / float64(rankConstant+rank)
+			lexicalBonus = 0.010
+			if maxFTSBaseScore > 0 {
+				lexicalBonus += (ftsBaseScore[id] / maxFTSBaseScore) * 0.004
+			}
+		}
+		if rank, ok := vectorRank[id]; ok {
+			rrfScore += 1.0 / float64(rankConstant+rank)
+		}
+		item.RelevanceScore = rrfScore + lexicalBonus + hybridScoreModifiers(item)
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].RelevanceScore == out[j].RelevanceScore {
+			if out[i].UpdatedAt == out[j].UpdatedAt {
+				return out[i].ID < out[j].ID
+			}
+			return out[i].UpdatedAt > out[j].UpdatedAt
+		}
+		return out[i].RelevanceScore > out[j].RelevanceScore
 	})
-	return items
+	return out
+}
+
+func hybridScoreModifiers(item MemoryItem) float64 {
+	mod := 0.0
+	if item.UtilityWeight > 0 {
+		mod += item.UtilityWeight * 0.004
+	}
+
+	switch item.Kind {
+	case MemoryKindDecision:
+		mod += 0.004
+	case MemoryKindProcedure:
+		mod += 0.0035
+	case MemoryKindPattern:
+		mod += 0.003
+	case MemoryKindBugfix:
+		mod += 0.0025
+	}
+
+	switch item.Classification {
+	case "foundational":
+		mod += 0.002
+	case "observational":
+		mod -= 0.0015
+	}
+
+	if item.Status == MemoryStatusSuperseded || item.Status == MemoryStatusArchived {
+		mod -= 0.004
+	}
+	if item.SupersededBy != nil && *item.SupersededBy != 0 {
+		mod -= 0.004
+	}
+	if item.ExpiresAt != nil && *item.ExpiresAt != "" {
+		if expires, err := time.Parse(time.RFC3339Nano, *item.ExpiresAt); err == nil && expires.Before(time.Now().UTC()) {
+			mod -= 0.004
+		}
+	}
+	if item.TrustLevel == "untrusted" {
+		mod -= 0.002
+	}
+
+	if updated, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err == nil {
+		age := time.Since(updated)
+		if age <= 7*24*time.Hour {
+			mod += 0.002
+		} else if age > 180*24*time.Hour {
+			mod -= 0.002
+		}
+	}
+
+	return mod
+}
+
+func (s *Store) vectorSearchMemories(
+	queryEmbedding []float32,
+	projectID, scope, kind, domain, status, originalStatus, writtenBy string,
+	filters temporalFilters,
+	limit int,
+) ([]MemoryItem, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	candidateLimit := limit * 25
+	if candidateLimit < 300 {
+		candidateLimit = 300
+	}
+	if candidateLimit > 2000 {
+		candidateLimit = 2000
+	}
+
+	sqlQ := `
+		SELECT mi.id, mi.created_at, mi.updated_at, mi.project_id, mi.actor_id, mi.kind, mi.scope,
+		       mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at,
+		       mi.domain, mi.evidence_json, mi.applies_to_json, mi.related_json, mi.classification,
+		       mi.access_count, mi.last_accessed, mi.valid_from, mi.valid_to, mi.superseded_at, mi.session_id, mi.trust_level,
+		       mi.ingested_at, mi.written_by,
+		       mi.trigger_condition, mi.utility_weight, mi.consolidated_from,
+		       0 AS relevance_score,
+		       oe.embedding
+		FROM obs_embeddings oe
+		JOIN memory_items mi ON mi.id = oe.obs_id
+		WHERE mi.status = ?`
+	args := []any{status}
+
+	if originalStatus == "" || originalStatus == MemoryStatusActive {
+		sqlQ += " AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))"
+		sqlQ += " AND (mi.superseded_by IS NULL OR mi.superseded_by = 0)"
+	}
+	if projectID != "" {
+		sqlQ += " AND mi.project_id = ?"
+		args = append(args, projectID)
+	}
+	if scope != "" {
+		sqlQ += " AND mi.scope = ?"
+		args = append(args, scope)
+	}
+	if kind != "" {
+		sqlQ += " AND mi.kind = ?"
+		args = append(args, kind)
+	}
+	if domain != "" {
+		sqlQ += " AND mi.domain = ?"
+		args = append(args, domain)
+	}
+	if filters.asof != "" {
+		sqlQ += " AND (mi.valid_from IS NULL OR mi.valid_from <= ?) AND (mi.valid_to IS NULL OR mi.valid_to > ?)"
+		args = append(args, filters.asof, filters.asof)
+	}
+	if filters.since != "" {
+		sqlQ += " AND mi.updated_at >= ?"
+		args = append(args, filters.since)
+	}
+	if filters.ingestedAsof != "" {
+		sqlQ += " AND mi.ingested_at <= ?"
+		args = append(args, filters.ingestedAsof)
+	}
+	if filters.sessionID != "" {
+		sqlQ += " AND mi.session_id = ?"
+		args = append(args, filters.sessionID)
+	}
+	if filters.file != "" {
+		sqlQ += " AND mi.applies_to_json LIKE ?"
+		args = append(args, "%"+filters.file+"%")
+	}
+	if filters.path != "" {
+		sqlQ += " AND mi.applies_to_json LIKE ?"
+		args = append(args, "%"+filters.path+"%")
+	}
+	if writtenBy != "" {
+		sqlQ += " AND mi.written_by = ?"
+		args = append(args, writtenBy)
+	}
+	sqlQ += " ORDER BY mi.updated_at DESC LIMIT ?"
+	args = append(args, candidateLimit)
+
+	rows, err := s.queryItHook(s.db, sqlQ, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type vectorCandidate struct {
+		item  MemoryItem
+		score float64
+	}
+	candidates := make([]vectorCandidate, 0, candidateLimit)
+	for rows.Next() {
+		var item MemoryItem
+		var tagsJSON string
+		var embeddingBlob []byte
+		if err := rows.Scan(
+			&item.ID, &item.CreatedAt, &item.UpdatedAt, &item.ProjectID, &item.ActorID, &item.Kind, &item.Scope,
+			&item.Title, &item.Body, &tagsJSON, &item.Source, &item.Status, &item.SupersededBy, &item.ExpiresAt,
+			&item.Domain, &item.EvidenceJSON, &item.AppliesToJSON, &item.RelatedJSON, &item.Classification,
+			&item.AccessCount, &item.LastAccessed, &item.ValidFrom, &item.ValidTo, &item.SupersededAt, &item.SessionID, &item.TrustLevel,
+			&item.IngestedAt, &item.WrittenBy,
+			&item.TriggerCondition, &item.UtilityWeight, &item.ConsolidatedFrom,
+			&item.RelevanceScore,
+			&embeddingBlob,
+		); err != nil {
+			continue
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &item.Tags); err != nil {
+			item.Tags = []string{}
+		}
+		vec, err := bytesToFloats(embeddingBlob)
+		if err != nil || len(vec) == 0 {
+			continue
+		}
+		score := cosineSimilarity(queryEmbedding, vec)
+		if score < 0.12 {
+			continue
+		}
+		candidates = append(candidates, vectorCandidate{item: item, score: score})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			if candidates[i].item.UpdatedAt == candidates[j].item.UpdatedAt {
+				return candidates[i].item.ID < candidates[j].item.ID
+			}
+			return candidates[i].item.UpdatedAt > candidates[j].item.UpdatedAt
+		}
+		return candidates[i].score > candidates[j].score
+	})
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	out := make([]MemoryItem, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, c.item)
+	}
+	return out, nil
 }
 
 // RerankMemoriesWithLLM performs explicit opt-in slow-path reranking.

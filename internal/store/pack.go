@@ -12,11 +12,8 @@ import (
 )
 
 const (
-	defaultBudgetTokens    = 400
-	maxBudgetTokens        = 800
-	globalBudgetTokens     = 150
-	postmortemBudgetTokens = 100
-	maxProjectItems        = 5
+	defaultBudgetTokens = 400
+	maxBudgetTokens     = 800
 )
 
 // BuildPack assembles a context pack from memory items within a token budget.
@@ -36,81 +33,66 @@ func (s *Store) BuildPack(p PackParams) (*PackResult, error) {
 		MemoryItems:  []MemoryItem{},
 	}
 
-	// 1. Always include global scope items (identity, preferences, glossary)
-	globalItems, err := s.GetMemories("", MemoryScopeGlobal, "", MemoryStatusActive, 50)
+	candidates, err := s.collectPackCandidates(p)
 	if err != nil {
-		return nil, fmt.Errorf("build pack: get global items: %w", err)
+		return nil, fmt.Errorf("build pack: collect candidates: %w", err)
 	}
-	globalItems = filterPackItems(globalItems, p.Domain, p.Asof)
+	if len(candidates) == 0 {
+		return result, nil
+	}
 
+	scoredCandidates, err := s.scorePackCandidates(candidates, p)
+	if err != nil {
+		return nil, fmt.Errorf("build pack: score candidates: %w", err)
+	}
+
+	remainingBudget := budget - 20 // reserve for section headers
 	globalSection := ""
-	globalTokens := 0
-	for _, item := range globalItems {
-		section := formatMemorySection(item)
-		sectionTokens := token.Count(section)
-		if globalTokens+sectionTokens > globalBudgetTokens {
-			break
-		}
-		globalSection += section + "\n"
-		globalTokens += sectionTokens
-		result.MemoryItems = append(result.MemoryItems, item)
-		result.ItemCount++
-	}
-
-	// 2. Add project scope items up to budget
-	var projectItems []MemoryItem
-	if p.ProjectID != "" {
-		projectItems, err = s.GetMemories(p.ProjectID, MemoryScopeProject, "", MemoryStatusActive, maxProjectItems)
-		if err != nil {
-			return nil, fmt.Errorf("build pack: get project items: %w", err)
-		}
-		projectItems = filterPackItems(projectItems, p.Domain, p.Asof)
-	}
-
-	// Also include project-scope postmortems if session_id provided
-	if p.SessionID != "" {
-		pmItems, err := s.GetMemories(p.ProjectID, MemoryScopeProject, MemoryKindPostmortem, MemoryStatusActive, 5)
-		if err == nil && len(pmItems) > 0 {
-			pmItems = filterPackItems(pmItems, p.Domain, p.Asof)
-			// Limit postmortems to 100 tokens each
-			for _, item := range pmItems {
-				if len(projectItems) >= maxProjectItems {
-					break
-				}
-				projectItems = append(projectItems, item)
-			}
-		}
-	}
-
-	remainingBudget := budget - globalTokens - 20 // Reserve 20 for headers
 	projectSection := ""
-	projectTokens := 0
 
-	for _, item := range projectItems {
-		// Calculate if this item fits
-		itemSection := formatMemorySection(item)
+	for i := range scoredCandidates {
+		cand := scoredCandidates[i]
+		if cand.Item.Classification == "observational" && strings.TrimSpace(p.SessionID) == "" {
+			if p.Explain {
+				result.Explain = append(result.Explain, cand.Explain(false, "excluded: observational memory outside session scope"))
+			}
+			continue
+		}
+
+		itemSection := formatMemorySection(cand.Item)
 		itemTokens := token.Count(itemSection)
+		include := false
+		reason := "excluded: exceeds remaining token budget"
 
-		// If item itself exceeds remaining budget, truncate it
-		if itemTokens > remainingBudget && itemTokens <= remainingBudget+200 {
-			// Truncate body to fit
-			truncated := truncateToTokens(item.Body, remainingBudget-50) // Leave room for header
-			itemSection = formatMemorySectionWithBody(item, truncated)
+		if itemTokens > remainingBudget && itemTokens <= remainingBudget+200 && remainingBudget > 60 {
+			truncated := truncateToTokens(cand.Item.Body, remainingBudget-50)
+			itemSection = formatMemorySectionWithBody(cand.Item, truncated)
 			itemTokens = token.Count(itemSection)
+			if itemTokens <= remainingBudget {
+				include = true
+				reason = "included: truncated to fit remaining budget"
+			}
+		} else if itemTokens <= remainingBudget {
+			include = true
+			reason = "included: within remaining budget"
 		}
 
-		if itemTokens > remainingBudget {
-			break
+		if include {
+			if cand.Item.Scope == MemoryScopeGlobal {
+				globalSection += itemSection + "\n"
+			} else {
+				projectSection += itemSection + "\n"
+			}
+			result.MemoryItems = append(result.MemoryItems, cand.Item)
+			result.ItemCount++
+			remainingBudget -= itemTokens
 		}
-
-		projectSection += itemSection + "\n"
-		projectTokens += itemTokens
-		result.MemoryItems = append(result.MemoryItems, item)
-		result.ItemCount++
-		remainingBudget -= itemTokens
+		if p.Explain {
+			result.Explain = append(result.Explain, cand.Explain(include, reason))
+		}
 	}
 
-	// 3. Assemble final pack
+	// Assemble final pack.
 	var b strings.Builder
 	if globalSection != "" {
 		b.WriteString("## Global\n\n")
@@ -244,6 +226,57 @@ func FormatPackText(p *PackResult) string {
 		b.WriteString(" (truncated)")
 	}
 	return b.String()
+}
+
+// FormatPackExplain returns pack explain/debug output with score components.
+func FormatPackExplain(p *PackResult) string {
+	if p == nil {
+		return "No pack explain data available."
+	}
+	if len(p.Explain) == 0 {
+		return "No pack explain data available."
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Pack explain (%d evaluated, budget=%d, selected=%d):\n\n", len(p.Explain), p.BudgetTokens, p.ItemCount)
+	for i, row := range p.Explain {
+		status := "excluded"
+		if row.Included {
+			status = "included"
+		}
+		fmt.Fprintf(&b, "[%d] #%d %s (%s/%s) score=%.4f tokens=%d %s\n", i+1, row.MemoryID, row.Title, row.Kind, row.Scope, row.Score, row.TokenEstimate, status)
+		componentKeys := []string{
+			"base_retrieval_score",
+			"rrf_score",
+			"project_relevance",
+			"session_relevance",
+			"domain_relevance",
+			"kind_priority",
+			"classification_weight",
+			"recency_boost",
+			"utility_weight",
+			"structural_weight",
+			"relation_weight",
+			"usage_weight",
+			"stale_penalty",
+			"superseded_penalty",
+			"expiry_penalty",
+			"low_trust_penalty",
+			"final_score",
+		}
+		parts := make([]string, 0, len(componentKeys))
+		for _, key := range componentKeys {
+			if value, ok := row.ScoreComponents[key]; ok && value != 0 {
+				parts = append(parts, fmt.Sprintf("%s=%+.4f", key, value))
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "none")
+		}
+		fmt.Fprintf(&b, "    components: %s\n", strings.Join(parts, ", "))
+		fmt.Fprintf(&b, "    reason: %s\n\n", row.Reason)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // PackStats holds aggregate statistics for memory items.

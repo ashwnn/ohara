@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ashwnn/ohara/internal/token"
@@ -450,12 +451,27 @@ func MemoryExpiresAt(kind string) *string {
 
 // PackResult is the output of building a context pack.
 type PackResult struct {
-	Pack         string       `json:"pack"`
-	TokenCount   int          `json:"token_count"`
-	Truncated    bool         `json:"truncated"`
-	ItemCount    int          `json:"item_count"`
-	MemoryItems  []MemoryItem `json:"memory_items,omitempty"`
-	BudgetTokens int          `json:"budget_tokens"`
+	Pack         string             `json:"pack"`
+	TokenCount   int                `json:"token_count"`
+	Truncated    bool               `json:"truncated"`
+	ItemCount    int                `json:"item_count"`
+	MemoryItems  []MemoryItem       `json:"memory_items,omitempty"`
+	Explain      []PackExplainEntry `json:"explain,omitempty"`
+	BudgetTokens int                `json:"budget_tokens"`
+}
+
+// PackExplainEntry captures score components for pack assembly decisions.
+type PackExplainEntry struct {
+	MemoryID        int64              `json:"memory_id"`
+	Title           string             `json:"title"`
+	Kind            string             `json:"kind"`
+	Scope           string             `json:"scope"`
+	Classification  string             `json:"classification"`
+	Score           float64            `json:"score"`
+	ScoreComponents map[string]float64 `json:"score_components"`
+	TokenEstimate   int                `json:"token_estimate"`
+	Included        bool               `json:"included"`
+	Reason          string             `json:"reason"`
 }
 
 // PackParams holds the parameters for building a context pack.
@@ -465,6 +481,7 @@ type PackParams struct {
 	BudgetTokens int    `json:"budget_tokens"`
 	Domain       string `json:"domain,omitempty"`
 	Asof         string `json:"asof,omitempty"`
+	Explain      bool   `json:"explain,omitempty"`
 }
 
 // AddMemoryParams holds the parameters for creating a new memory item.
@@ -595,9 +612,13 @@ func FallbackConfig(dataDir string) Config {
 }
 
 type Store struct {
-	db    *sql.DB
-	cfg   Config
-	hooks storeHooks
+	db       *sql.DB
+	cfg      Config
+	hooks    storeHooks
+	jobsStop chan struct{}
+	jobsDone chan struct{}
+	closeMu  sync.Mutex
+	closed   bool
 }
 
 type execer interface {
@@ -762,15 +783,37 @@ func New(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("ohara: repair enrolled sync journal: %w", err)
 	}
 
+	s.startJobWorker()
+
 	return s, nil
 }
 
 func (s *Store) Close() error {
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return nil
+	}
+	s.closed = true
+	jobsStop := s.jobsStop
+	jobsDone := s.jobsDone
+	s.closeMu.Unlock()
+
+	if jobsStop != nil {
+		close(jobsStop)
+		if jobsDone != nil {
+			<-jobsDone
+		}
+	}
+	s.closeMu.Lock()
+	s.jobsStop = nil
+	s.jobsDone = nil
+	s.closeMu.Unlock()
 	return s.db.Close()
 }
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 25
+const currentSchemaVersion = 27
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -1391,6 +1434,57 @@ func (s *Store) applyMigration(version int) error {
 		// Migration 025: Phase 2.5 — no schema changes.
 		// Reserved for MCP Streamable HTTP auth/transport compatibility.
 		// All required auth and role infrastructure is app-level (no DB schema needed).
+
+	case 26:
+		// Migration 026: Raw session-scoped observation capture lane.
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS session_observations (
+				id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id    TEXT NOT NULL,
+				project_id    TEXT NOT NULL,
+				event_type    TEXT NOT NULL,
+				capture_level TEXT NOT NULL DEFAULT 'metadata',
+				source        TEXT NOT NULL DEFAULT 'opencode',
+				title         TEXT NOT NULL DEFAULT '',
+				body          TEXT NOT NULL DEFAULT '',
+				payload_json  TEXT NOT NULL DEFAULT '{}',
+				created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_session_observations_session ON session_observations(session_id, created_at DESC)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_session_observations_project ON session_observations(project_id, created_at DESC)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_session_observations_event ON session_observations(event_type, created_at DESC)`); err != nil {
+			return err
+		}
+
+	case 27:
+		// Migration 027: Durable derived-memory job outbox.
+		if _, err := s.execHook(s.db, `
+			CREATE TABLE IF NOT EXISTS memory_jobs (
+				id           INTEGER PRIMARY KEY AUTOINCREMENT,
+				memory_id    INTEGER NOT NULL REFERENCES memory_items(id),
+				job_type     TEXT NOT NULL,
+				status       TEXT NOT NULL DEFAULT 'pending',
+				attempts     INTEGER NOT NULL DEFAULT 0,
+				last_error   TEXT,
+				available_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+				created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+				updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now')),
+				UNIQUE(memory_id, job_type)
+			)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_memory_jobs_status_available ON memory_jobs(status, available_at)`); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_memory_jobs_memory ON memory_jobs(memory_id)`); err != nil {
+			return err
+		}
 
 	default:
 		return fmt.Errorf("unknown migration version %d (current: %d)", version, currentSchemaVersion)
@@ -3230,6 +3324,15 @@ func sanitizeFTS(query string) string {
 		words[i] = `"` + w + `"`
 	}
 	return strings.Join(words, " ")
+}
+
+func sanitizeFTSOR(query string) string {
+	words := strings.Fields(query)
+	for i, w := range words {
+		w = strings.Trim(w, `"`)
+		words[i] = `"` + w + `"`
+	}
+	return strings.Join(words, " OR ")
 }
 
 // PassiveCaptureParams holds the input for passive memory capture.
