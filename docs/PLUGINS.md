@@ -34,11 +34,17 @@ The plugin:
 - **Creates sessions** on-demand via `ensureSession()` (resilient to restarts/reconnects)
 - **Injects the Memory Protocol** into the agent's system prompt via `chat.system.transform` — strict rules for when to save, when to search, and a mandatory session close protocol. The protocol is concatenated into the existing system message (not pushed as a separate one), ensuring compatibility with models that only accept a single system block (Qwen, Mistral/Ministral via llama.cpp, etc.)
 - **Injects previous session context** into the compaction prompt
+- **Captures passive observations** to `POST /observe` with configurable breadth via `OHARA_PASSIVE_CAPTURE_LEVEL`
 - **Instructs the compressor** to tell the new agent to persist the compacted summary via `mem_session_summary`
 - **Strips `<private>` tags** before sending data
 - **Debug logs when requested** via `OHARA_DEBUG=1`; normal mode stays quiet
 
-**No raw tool call recording** — the agent handles all memory via `mem_save` and `mem_session_summary`.
+Capture levels:
+- `off` — disable passive capture
+- `prompts` — user prompts + minimal session metadata (default)
+- `metadata` — prompts + session/status/summary metadata
+- `tools` — metadata + tool/file/todo/command observations
+- `full` — tools + permission/config observations
 
 ### Memory Protocol (injected via system prompt)
 

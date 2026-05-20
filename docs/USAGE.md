@@ -1,7 +1,7 @@
 # Ohara — Complete Usage Guide
 
 **Version:** v3 (spec-aligned)
-**Last updated:** 2026-04-18
+**Last updated:** 2026-05-20
 
 This document is a comprehensive reference for anyone working with Ohara — whether as a human collaborator, an AI agent, or an integrator connecting via MCP.
 
@@ -12,7 +12,7 @@ This document is a comprehensive reference for anyone working with Ohara — whe
 1. [What Ohara Is](#1-what-ohara-is)
 2. [Core Concepts](#2-core-concepts)
 3. [OpenCode Integration](#3-opencode-integration)
-4. [MCP Tools Reference (31 tools)](#4-mcp-tools-reference-31-tools)
+4. [MCP Tools Reference (33 tools)](#4-mcp-tools-reference-33-tools)
 5. [Tool Profiles: What Loads When](#5-tool-profiles-what-loads-when)
 6. [HTTP API Reference](#6-http-api-reference)
 7. [CLI Commands](#7-cli-commands)
@@ -37,7 +37,7 @@ Ohara is a **persistent memory layer for AI coding agents**. It stores what agen
 - SQLite + FTS5 for storage and full-text search
 - OpenCode native plugin + generic MCP stdio interface
 - Works across multiple projects and multiple agents simultaneously
-- No automatic event capture — all memory is agent-curated
+- Local-first curated memory with optional passive observation capture
 
 ---
 
@@ -122,6 +122,13 @@ The OpenCode plugin (`plugin/opencode/ohara.ts`) adds enhanced session managemen
 Set `OHARA_DEBUG=1` when launching OpenCode to log failed plugin HTTP calls and
 auto-start attempts. Normal mode stays quiet to avoid disrupting agent sessions.
 
+Passive capture breadth is controlled by `OHARA_PASSIVE_CAPTURE_LEVEL`:
+- `off`
+- `prompts` (default)
+- `metadata`
+- `tools`
+- `full`
+
 The Memory Protocol is concatenated into the existing system prompt (not a separate system message), ensuring compatibility with models that only accept a single system block (Qwen, Mistral/Ministral via llama.cpp, etc.).
 
 ### 3.3 Three Layers of Memory Resilience
@@ -159,7 +166,7 @@ ohara setup --remove <agent>  # Cleanly undo integration
 
 ---
 
-## 4. MCP Tools Reference (31 tools)
+## 4. MCP Tools Reference (33 tools)
 
 Tools are organized by function. **Bold** tools are eager (always in context); others are deferred (loaded on demand).
 
@@ -210,6 +217,9 @@ force (boolean)            — Bypass governance checks
 | **`mem_context`** | agent | eager | Recent session context via context pack |
 | **`mem_prime`** | agent | eager | Structured prime context (markdown for system prompt) |
 | **`mem_pack`** | agent | eager | Token-budgeted explicit context pack |
+| `mem_pack_explain` | agent | deferred | Pack score components, inclusion/exclusion reasons |
+| `mem_file_history` | agent | deferred | File-scoped memory history |
+| `mem_file_context` | agent | deferred | Token-budgeted file-focused context |
 | `mem_timeline` | admin | deferred | Chronological context around a memory |
 | `mem_graph_context` | agent | deferred | Entity-centric graph traversal |
 
@@ -298,7 +308,7 @@ min_confidence (number)   — Confidence threshold; returns low_confidence:true 
 The MCP server supports tool profiles to control which tools an agent sees:
 
 ```bash
-ohara mcp                    → all 31 tools (default)
+ohara mcp                    → all 33 tools (default)
 ohara mcp --tools=agent      → 26 tools agents actually use
 ohara mcp --tools=admin       → 5 tools for TUI/CLI (delete, stats, timeline, merge, list_domains)
 ohara mcp --tools=agent,admin → combine profiles
@@ -306,7 +316,7 @@ ohara mcp --tools=mem_save,mem_search → individual tool names
 ```
 
 **Eager tools (always in context without ToolSearch):**
-- mem_save, mem_search, mem_context, mem_session_summary, mem_save_prompt, mem_pack, mem_prime
+- mem_save, mem_search, mem_context, mem_session_summary, mem_save_prompt, mem_pack, mem_pack_explain, mem_prime
 
 **Agent profile (26 tools):** all tools except the 5 admin-only tools (mem_delete, mem_stats, mem_timeline, mem_merge_projects, mem_list_domains)
 
@@ -362,6 +372,7 @@ DELETE /prompts/{id}
 
 ```
 POST /capture/passive
+POST /observe
 Body: { "session_id": "...", "content": "...", "project": "...", "source": "..." }
 → { "extracted": N, "saved": N, "duplicates": N }
 ```
@@ -386,6 +397,8 @@ DELETE /memories/{id}
 ```
 GET /context?project=...&scope=...
 POST /pack
+GET /files/history?path=...&project=...&limit=...
+POST /files/context
 Body: { "project_id": "...", "budget_tokens": 2000, ... }
 ```
 
@@ -440,6 +453,7 @@ ohara validate        # Schema correctness check (non-zero exit on failure, for 
 ohara search <query> [--domain <domain>] [--kinds <kinds>] [--format json|md]
 ohara context [project] [--domain <domain>] [--budget <tokens>]
 ohara prime [project] [--project <project>] [--domain <domain>] [--budget <tokens>]
+ohara pack [project] [--budget <tokens>] [--session <id>] [--domain <domain>] [--asof <rfc3339>] [--explain]
 ```
 
 ### Session Management
@@ -467,6 +481,7 @@ ohara projects consolidate --all
 
 ```bash
 ohara consolidate [--dry-run]    # Generate consolidation candidates
+ohara jobs run --once [--limit N] # Drain durable indexing jobs once (test/CI hook)
 ```
 
 ### Sync
@@ -481,8 +496,8 @@ ohara sync --import       # Import new chunks from .ohara/ directory
 ### MCP Server
 
 ```bash
-ohara mcp                 # Start MCP stdio server (all 31 tools)
-ohara mcp --tools=agent  # Start with agent profile (26 tools)
+ohara mcp                 # Start MCP stdio server (all 33 tools)
+ohara mcp --tools=agent  # Start with agent profile (28 tools)
 ohara mcp --tools=admin  # Start with admin profile (5 tools)
 ```
 
@@ -873,7 +888,7 @@ Import skips any record whose ID already exists locally. Content conflicts betwe
 │                   Ohara (single binary)                    │
 │  ┌──────────┐  ┌──────────────┐  ┌────────────────────┐    │
 │  │ CLI      │  │ MCP Server   │  │ HTTP API           │   │
-│  │ (human)  │  │ (31 tools)   │  │ (port 7331)        │   │
+│  │ (human)  │  │ (33 tools)   │  │ (port 7331)        │   │
 │  └────┬─────┘  └──────┬───────┘  └────────┬───────────┘    │
 │       │               │                   │                 │
 │       └───────────────┴───────────────────┘                 │
@@ -906,7 +921,7 @@ ohara/
 │   │   ├── hybrid.go           # FTS5 + embedding hybrid retrieval
 │   │   └── graph_feedback.go    # Relation graph, entities, utility feedback
 │   ├── server/server.go         # HTTP REST API (v2 spec aligned)
-│   ├── mcp/mcp.go               # MCP stdio server (31 tools)
+│   ├── mcp/mcp.go               # MCP stdio server (33 tools)
 │   ├── config/config.go          # Configuration loading
 │   ├── redact/redact.go          # Secret redaction pipeline
 │   ├── maintain/maintain.go      # Archive, backup, integrity

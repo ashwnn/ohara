@@ -49,19 +49,27 @@ DELETE /prompts/{id}
 
 ```http
 POST /capture/passive
+POST /observe
 ```
 
 Extracts structured learnings from text and saves them as curated discovery
 memories. This endpoint is optional plugin support, not raw tool-call logging.
+`POST /observe` stores raw session-scoped observations (events/metadata) for
+later consolidation; it does not auto-promote them to authoritative memories.
 
 ## Context
 
 ```http
 GET /context?project=...&scope=...
 POST /pack
+GET /files/history?path=...&project=...&limit=...
+POST /files/context
 ```
 
 `POST /pack` builds a token-budget-aware context pack from typed memories.
+Set `{"explain": true}` in `POST /pack` to include score-component explain rows.
+`GET /files/history` and `POST /files/context` provide file-aware retrieval for
+recent bugfixes/decisions/procedures tied to a path.
 
 ## Memory Items
 

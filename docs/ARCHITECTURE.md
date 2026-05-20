@@ -134,7 +134,7 @@ ohara/
 │   │   ├── hybrid.go               # FTS5 + embedding hybrid retrieval
 │   │   └── graph_feedback.go       # Relation graph, entities, utility feedback
 │   ├── server/server.go            # HTTP REST API
-│   ├── mcp/mcp.go                  # MCP stdio server (31 tools)
+│   ├── mcp/mcp.go                  # MCP stdio server (33 tools)
 │   ├── config/config.go            # Configuration loading
 │   ├── redact/redact.go            # Secret redaction pipeline
 │   ├── maintain/maintain.go        # Archive, backup, integrity

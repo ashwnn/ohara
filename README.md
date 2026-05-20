@@ -34,7 +34,7 @@ graph TB
     subgraph Ohara["Ohara (single binary)"]
         direction TB
         CLI["CLI: search, save, prime, validate, doctor, consolidate"]
-        MCP["MCP Server: 31 tools via stdio"]
+        MCP["MCP Server: 33 tools via stdio"]
         HTTP["HTTP API: port 7331"]
     end
 
@@ -280,10 +280,21 @@ Each feature was motivated by a specific failure mode identified through compara
 - **Consolidation** — heuristic grouping of episodic memories into candidates for promotion to semantic knowledge, with mandatory agent review
 - **Actor-aware writes** — source tracking (`user`, `agent`, `consolidation`, `import`, `system`) so agents can weight inferences lower than verified facts
 - **Secret redaction** — regex-based pre-write redaction strips tokens and keys before they touch the database
-- **31 MCP tools** — save, search, retrieve, link, consolidate, feedback, outcomes, conflict resolution, entity extraction, graph traversal, session lifecycle
+- **33 MCP tools** — save, search, retrieve, link, consolidate, feedback, outcomes, conflict resolution, entity extraction, graph traversal, file-aware retrieval, and pack explain
+- **Durable post-write pipeline** — memory writes enqueue SQLite-backed jobs (`memory_jobs`) for embedding/entity/relation/utility processing; writes stay fast and reliable
+- **True hybrid fusion** — rank-level RRF fusion for FTS + vector lanes, with deterministic FTS fallback if embeddings are unavailable
+- **Configurable passive capture** — OpenCode plugin observation capture via `OHARA_PASSIVE_CAPTURE_LEVEL=off|prompts|metadata|tools|full`
 - **Multi-agent** — OpenCode native plugin, MCP stdio for Claude Code / Gemini CLI / any MCP client, HTTP API
 - **Git sync** — JSONL mirror for repo-portable project memory with union merge strategy
 - **Schema validation and health checks** — `ohara validate` for CI, `ohara doctor --fix` for periodic maintenance
+
+Example runtime commands:
+
+```bash
+OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=ollama ohara serve
+ohara jobs run --once
+ohara pack --project my-project --explain
+```
 
 ## Production Ready
 
