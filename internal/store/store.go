@@ -510,6 +510,7 @@ type AddMemoryParams struct {
 	TriggerCondition string  `json:"trigger_condition,omitempty"`
 	UtilityWeight    float64 `json:"utility_weight,omitempty"`
 	ConsolidatedFrom string  `json:"consolidated_from,omitempty"`
+	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
 }
 
 // UpdateMemoryParams holds the parameters for updating a memory item.
@@ -813,7 +814,7 @@ func (s *Store) Close() error {
 }
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 27
+const currentSchemaVersion = 28
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -1483,6 +1484,15 @@ func (s *Store) applyMigration(version int) error {
 			return err
 		}
 		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_memory_jobs_memory ON memory_jobs(memory_id)`); err != nil {
+			return err
+		}
+
+	case 28:
+		// Migration 028: Idempotent writes for client retries.
+		if err := s.addColumnIfNotExists("memory_items", "idempotency_key", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_mem_idempotency ON memory_items(project_id, idempotency_key)`); err != nil {
 			return err
 		}
 

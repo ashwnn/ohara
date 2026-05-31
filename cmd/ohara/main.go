@@ -18,6 +18,7 @@ import (
 	"github.com/ashwnn/ohara/internal/config"
 	"github.com/ashwnn/ohara/internal/maintain"
 	"github.com/ashwnn/ohara/internal/mcp"
+	projectpkg "github.com/ashwnn/ohara/internal/project"
 	"github.com/ashwnn/ohara/internal/server"
 	"github.com/ashwnn/ohara/internal/setup"
 	"github.com/ashwnn/ohara/internal/store"
@@ -142,9 +143,7 @@ var jsonMarshalIndent = json.MarshalIndent
 var jsonUnmarshal = json.Unmarshal
 
 var detectProject = func(dir string) string {
-	name := filepath.Base(dir)
-	name = strings.TrimSuffix(name, "-git")
-	return strings.ToLower(name)
+	return projectpkg.DetectProject(dir)
 }
 
 var storeConsolidate = func(s *store.Store, sources []string, canonical string) (*store.MergeResult, error) {
@@ -208,6 +207,7 @@ var cmdValidate = realCmdValidate
 var cmdDoctor = realCmdDoctor
 var cmdConsolidate = realCmdConsolidate
 var cmdTools = realCmdTools
+var cmdProjectID = realCmdProjectID
 
 func fatal(msg interface{}) {
 	fmt.Fprintln(os.Stderr, "ohara: "+fmt.Sprint(msg))
@@ -236,6 +236,7 @@ func printUsage() {
 	fmt.Println("  backup             Create a database snapshot")
 	fmt.Println("  check              Run integrity checks")
 	fmt.Println("  tools [profile]    List MCP tool names (agent, admin, all)")
+	fmt.Println("  project-id         Print detected project identity metadata")
 	fmt.Println("  setup [agent]      Set up plugin for an agent")
 	fmt.Println("  prime [project]   Build AI-optimised context pack for injection")
 	fmt.Println("  pack [project]    Build context pack from memory items")
@@ -2145,6 +2146,8 @@ func main() {
 			cmdConsolidate(cfg)
 		case "tools":
 			cmdTools(cfg)
+		case "project-id":
+			cmdProjectID(cfg)
 		}
 		return
 	default:
@@ -2152,4 +2155,11 @@ func main() {
 		printUsage()
 		exitFunc(1)
 	}
+}
+
+func realCmdProjectID(_ store.Config) {
+	cwd, _ := os.Getwd()
+	id := projectpkg.DetectIdentity(cwd)
+	out, _ := json.MarshalIndent(id, "", "  ")
+	fmt.Println(string(out))
 }

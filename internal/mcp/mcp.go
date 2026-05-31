@@ -599,7 +599,7 @@ Examples:
 					mcp.Description("Project name"),
 				),
 				mcp.WithString("scope",
-					mcp.Description("Scope for this observation: project (default) or personal"),
+					mcp.Description("Scope for this observation: task, project (default), or global"),
 				),
 				mcp.WithString("topic_key",
 					mcp.Description("Optional topic identifier for upserts (e.g. architecture/auth-model). Reuses and updates the latest observation in same project+scope."),
@@ -627,6 +627,9 @@ Examples:
 				),
 				mcp.WithString("related",
 					mcp.Description("JSON array of related memory IDs"),
+				),
+				mcp.WithString("idempotency_key",
+					mcp.Description("Optional idempotency key to prevent duplicate writes on retries"),
 				),
 				mcp.WithBoolean("force",
 					mcp.Description("Bypass governance checks (e.g. missing evidence for decision/procedure)"),
@@ -1732,6 +1735,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 		evidence, _ := req.GetArguments()["evidence"].(string)
 		appliesTo, _ := req.GetArguments()["applies_to"].(string)
 		related, _ := req.GetArguments()["related"].(string)
+		idempotencyKey, _ := req.GetArguments()["idempotency_key"].(string)
 		force := boolArg(req, "force", false)
 
 		// Apply default project when LLM sends empty
@@ -1818,6 +1822,7 @@ func handleSave(s *store.Store, cfg MCPConfig, activity *SessionActivity) server
 			AppliesToJSON:    appliesTo,
 			RelatedJSON:      related,
 			TrustLevel:       "system",
+			IdempotencyKey:   idempotencyKey,
 		})
 		if err != nil {
 			return mcp.NewToolResultError("Failed to save: " + err.Error()), nil

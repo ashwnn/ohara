@@ -1349,7 +1349,6 @@ func (s *Server) handlePack(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
 	}
-
 	// Use config-driven defaults when budget is not specified by the caller.
 	defaultBudget := s.packConfig.DefaultBudgetTokens
 	if defaultBudget <= 0 {
@@ -1398,6 +1397,7 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		WrittenBy        string   `json:"written_by"`
 		ExpiresAt        string   `json:"expires_at"`
 		TriggerCondition string   `json:"trigger_condition"`
+		IdempotencyKey   string   `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -1411,6 +1411,9 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 	if err := s.checkProjectScope(r, body.ProjectID); err != nil {
 		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
+	}
+	if strings.TrimSpace(body.Source) == "" {
+		body.Source = "http"
 	}
 
 	// Conflict detection for decision/pattern/config kinds (non-blocking).
@@ -1454,6 +1457,7 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		WrittenBy:        body.WrittenBy,
 		ExpiresAt:        body.ExpiresAt,
 		TriggerCondition: body.TriggerCondition,
+		IdempotencyKey:   body.IdempotencyKey,
 	})
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())

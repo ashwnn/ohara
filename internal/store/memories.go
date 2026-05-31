@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,10 @@ func (s *Store) LogAudit(obsID, action, actorID, sessionID, project string) erro
 // AddMemory creates a new memory item and returns its ID.
 // It enforces body size limits per kind and records the initial revision.
 func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
+	if _, err := applyEnvelopeDefaults(&p); err != nil {
+		return 0, err
+	}
+
 	// Validate kind
 	if !ValidMemoryKinds[p.Kind] {
 		return 0, fmt.Errorf("invalid memory kind %q", p.Kind)
@@ -81,7 +86,7 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 	body := TruncateBodyToTokenLimit(stripPrivateTags(redact.Redact(p.Body)), p.Kind)
 
 	// Normalize scope
-	scope := p.Scope
+	scope := normalizeScopeAlias(p.Scope)
 	if scope == "" {
 		if isGlobalKind(p.Kind) {
 			scope = MemoryScopeGlobal
@@ -117,6 +122,15 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 	if p.TrustLevel == "" {
 		p.TrustLevel = "system"
 	}
+	if p.IdempotencyKey == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("OHARA_WRITE_MODE")), "idempotent") {
+		commit := ""
+		var env MemoryEnvelope
+		if json.Unmarshal([]byte(p.EvidenceJSON), &env) == nil {
+			commit = env.Evidence.GitCommit
+		}
+		base := strings.Join([]string{projectID, scope, p.Title, hashNormalized(body), commit, p.SessionID}, "|")
+		p.IdempotencyKey = hashNormalized(base)
+	}
 
 	tagsJSON := "[]"
 	if len(p.Tags) > 0 {
@@ -131,16 +145,24 @@ func (s *Store) AddMemory(p AddMemoryParams) (int64, error) {
 		expiresAt = &p.ExpiresAt
 	}
 
+	if strings.TrimSpace(p.IdempotencyKey) != "" {
+		var existingID int64
+		err := s.db.QueryRow(`SELECT id FROM memory_items WHERE project_id = ? AND idempotency_key = ? ORDER BY id DESC LIMIT 1`, projectID, p.IdempotencyKey).Scan(&existingID)
+		if err == nil && existingID > 0 {
+			return existingID, nil
+		}
+	}
+
 	var memoryID int64
 	err := s.withTx(func(tx *sql.Tx) error {
 		res, err := s.execHook(tx,
 			`INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, tags, source, status, expires_at,
 			 domain, evidence_json, applies_to_json, related_json, session_id, trust_level,
-			 classification, written_by, trigger_condition, utility_weight, consolidated_from)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 classification, written_by, trigger_condition, utility_weight, consolidated_from, idempotency_key)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			projectID, p.ActorID, p.Kind, scope, title, body, tagsJSON, p.Source, MemoryStatusActive, expiresAt,
 			p.Domain, p.EvidenceJSON, p.AppliesToJSON, p.RelatedJSON, p.SessionID, p.TrustLevel,
-			p.Classification, p.WrittenBy, p.TriggerCondition, p.UtilityWeight, p.ConsolidatedFrom,
+			p.Classification, p.WrittenBy, p.TriggerCondition, p.UtilityWeight, p.ConsolidatedFrom, p.IdempotencyKey,
 		)
 		if err != nil {
 			return err
