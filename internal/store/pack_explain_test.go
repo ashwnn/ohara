@@ -223,3 +223,131 @@ func TestBuildPackExplainRespectsTokenBudget(t *testing.T) {
 		t.Fatalf("included explain rows (%d) should match item_count (%d)", includedRows, result.ItemCount)
 	}
 }
+
+func TestBuildPackSessionScopedObservationalIncludedUnderTightBudget(t *testing.T) {
+	s := newTestStore(t)
+
+	// Add a foundational memory that would normally outrank observational noise.
+	foundationalID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "pack-session-scope",
+		Kind:           MemoryKindDecision,
+		Scope:          MemoryScopeProject,
+		Title:          "Important auth decision",
+		Body:           "Use rotating refresh tokens with replay protection.",
+		Classification: "foundational",
+		Domain:         "auth",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory foundational: %v", err)
+	}
+
+	// Add observational noise from an explicit session.
+	obsID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "pack-session-scope",
+		Kind:           MemoryKindDiscovery,
+		Scope:          MemoryScopeProject,
+		Title:          "Session scratch notes",
+		Body:           "Random ideas about auth middleware, maybe retry.",
+		Classification: "observational",
+		Domain:         "auth",
+		SessionID:      "sess-active",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory observational: %v", err)
+	}
+
+	// Build pack with explicit session scope and tight budget.
+	result, err := s.BuildPack(PackParams{
+		ProjectID:    "pack-session-scope",
+		SessionID:    "sess-active",
+		BudgetTokens: 150,
+		Explain:      true,
+	})
+	if err != nil {
+		t.Fatalf("BuildPack: %v", err)
+	}
+
+	// The observational item should be included because the session matches.
+	foundObs := false
+	for _, item := range result.MemoryItems {
+		if item.ID == obsID {
+			foundObs = true
+			break
+		}
+	}
+	if !foundObs {
+		t.Fatalf("expected session-scoped observational memory (id=%d) to be included; included ids=%v", obsID, memoryItemIDs(result.MemoryItems))
+	}
+
+	// The foundational memory may or may not be included depending on budget, but
+	// the observational item must appear.
+	_ = foundationalID
+}
+
+func TestBuildPackDefaultExcludesObservationalWithoutSessionScope(t *testing.T) {
+	s := newTestStore(t)
+
+	foundationalID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "pack-default-excl",
+		Kind:           MemoryKindDecision,
+		Scope:          MemoryScopeProject,
+		Title:          "Canonical decision",
+		Body:           "Canonical project decision body.",
+		Classification: "foundational",
+		Domain:         "agent",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory foundational: %v", err)
+	}
+
+	obsID, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "pack-default-excl",
+		Kind:           MemoryKindDiscovery,
+		Scope:          MemoryScopeProject,
+		Title:          "Transient observation",
+		Body:           "Debug notes for a specific run.",
+		Classification: "observational",
+		Domain:         "agent",
+		SessionID:      "sess-ephemeral",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory observational: %v", err)
+	}
+
+	// Default pack: no session scope — observational items must be excluded.
+	result, err := s.BuildPack(PackParams{
+		ProjectID:    "pack-default-excl",
+		BudgetTokens: 400,
+		Explain:      true,
+	})
+	if err != nil {
+		t.Fatalf("BuildPack: %v", err)
+	}
+
+	// Observational item must NOT be included.
+	for _, item := range result.MemoryItems {
+		if item.ID == obsID {
+			t.Fatalf("expected observational memory (id=%d) to be excluded from default pack", obsID)
+		}
+	}
+
+	// Foundational item must be present.
+	foundFoundational := false
+	for _, item := range result.MemoryItems {
+		if item.ID == foundationalID {
+			foundFoundational = true
+			break
+		}
+	}
+	if !foundFoundational {
+		t.Fatalf("expected foundational memory (id=%d) to be included", foundationalID)
+	}
+}
+
+func memoryItemIDs(items []MemoryItem) []int64 {
+	ids := make([]int64, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	return ids
+}

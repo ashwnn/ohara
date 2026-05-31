@@ -188,7 +188,7 @@ func scorePackItem(item MemoryItem, p PackParams, entityWeight, relationWeight f
 	}
 
 	if p.SessionID != "" && item.SessionID == p.SessionID {
-		components["session_relevance"] = 0.12
+		components["session_relevance"] = 0.36
 	}
 	if p.Domain != "" {
 		if item.Domain == p.Domain {
@@ -199,7 +199,11 @@ func scorePackItem(item MemoryItem, p PackParams, entityWeight, relationWeight f
 	}
 
 	components["kind_priority"] = packKindPriority(item.Kind)
-	components["classification_weight"] = packClassificationWeight(item.Classification)
+	classificationWeight := packClassificationWeight(item.Classification)
+	if p.SessionID != "" && item.SessionID == p.SessionID && item.Classification == "observational" {
+		classificationWeight = 0
+	}
+	components["classification_weight"] = classificationWeight
 	components["utility_weight"] = clamp(item.UtilityWeight*0.04, -0.06, 0.16)
 	components["structural_weight"] = clamp(entityWeight, 0, 0.16)
 	components["relation_weight"] = clamp(relationWeight, -0.06, 0.14)
