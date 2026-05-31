@@ -45,10 +45,11 @@ type MemoryFixture struct {
 type CaseFixture struct {
 	ID            string   `json:"id"`
 	Category      string   `json:"category"`
-	Type          string   `json:"type"` // search|search_abstain|file_history|file_context|pack
+	Type          string   `json:"type"` // search|search_abstain|file_history|file_context|pack|graph_context
 	Mode          string   `json:"mode"` // default|hybrid_fallback
 	Query         string   `json:"query"`
 	Path          string   `json:"path"`
+	Entity        string   `json:"entity"`
 	Project       string   `json:"project"`
 	SessionID     string   `json:"session_id"`
 	Domain        string   `json:"domain"`
@@ -92,6 +93,7 @@ type Metrics struct {
 	WrongProjectHitRate  float64
 	SupersededHitRate    float64
 	FileContextAccuracy  float64
+	GraphContextAccuracy float64
 	PackBudgetCompliance float64
 	AbstentionFalsePos   float64
 }
@@ -110,6 +112,19 @@ type Failure struct {
 	HasSupersed bool
 }
 
+type CaseResult struct {
+	CaseID        string  `json:"case_id"`
+	Category      string  `json:"category"`
+	Type          string  `json:"type"`
+	Source        string  `json:"source"`
+	Pass          bool    `json:"pass"`
+	FailureReason string  `json:"failure_reason,omitempty"`
+	TopIDs        []int64 `json:"top_ids"`
+	ExpectedIDs   []int64 `json:"expected_ids"`
+	ForbiddenIDs  []int64 `json:"forbidden_ids"`
+	DurationMs    float64 `json:"duration_ms"`
+}
+
 type Report struct {
 	Mode                string
 	EmbeddingMode       string
@@ -119,6 +134,7 @@ type Report struct {
 	Metrics             Metrics
 	PerCategory         map[string]Metrics
 	CategoryCaseCounts  map[string]int
+	CaseResults         []CaseResult
 	Failures            []Failure
 	Runtime             time.Duration
 	HybridEnabled       bool
@@ -139,6 +155,8 @@ type caseAgg struct {
 	supersededHits    int
 	fileExpectedTotal int
 	fileHitTotal      int
+	graphExpectedTotal int
+	graphHitTotal      int
 	packCases         int
 	packPass          int
 	abstentionCases   int
@@ -272,6 +290,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	global := &caseAgg{}
 	byCategory := map[string]*caseAgg{}
 	failures := make([]Failure, 0, 32)
+	caseResults := make([]CaseResult, 0, len(fixture.Cases))
 
 	for _, c := range fixture.Cases {
 		report.TotalCases++
@@ -293,7 +312,31 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			keyToID = hybridIDs
 		}
 
-		passed, failure, updates := runCase(targetStore, keyToID, c, opts.K)
+		caseStart := time.Now()
+		passed, failure, updates, source, topIDsForResult := runCase(targetStore, keyToID, c, opts.K)
+		durationMs := float64(time.Since(caseStart)) / float64(time.Millisecond)
+
+		expectedIDs := keysToIDs(keyToID, c.ExpectedKeys)
+		forbiddenIDs := keysToIDs(keyToID, c.ForbiddenKeys)
+		reason := ""
+		if !passed {
+			reason = failure.Reason
+		}
+
+		cr := CaseResult{
+			CaseID:        c.ID,
+			Category:      category,
+			Type:          c.Type,
+			Source:        source,
+			Pass:          passed,
+			FailureReason: reason,
+			TopIDs:        topIDsForResult,
+			ExpectedIDs:   expectedIDs,
+			ForbiddenIDs:  forbiddenIDs,
+			DurationMs:    durationMs,
+		}
+		caseResults = append(caseResults, cr)
+
 		mergeAgg(global, updates)
 		mergeAgg(cAgg, updates)
 		if passed {
@@ -303,6 +346,8 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			failures = append(failures, failure)
 		}
 	}
+
+	report.CaseResults = caseResults
 
 	report.Metrics = aggToMetrics(global)
 	for category, agg := range byCategory {
@@ -399,6 +444,12 @@ func seededStore(fixture Fixture, mutator func(store.Config) store.Config) (*sto
 			return nil, nil, fmt.Errorf("seed %s: %w", memory.Key, err)
 		}
 		keyToID[memory.Key] = id
+
+		entities := store.ExtractEntitiesHeuristic(memory.Title + "\n" + memory.Body)
+		if _, err := s.AttachExtractedEntities(id, memory.Project, entities); err != nil {
+			_ = s.Close()
+			return nil, nil, fmt.Errorf("entity attach %s: %w", memory.Key, err)
+		}
 	}
 
 	for _, memory := range fixture.Memories {
@@ -434,7 +485,7 @@ func seededStore(fixture Fixture, mutator func(store.Config) store.Config) (*sto
 	return s, keyToID, nil
 }
 
-func runCase(s *store.Store, keyToID map[string]int64, c CaseFixture, defaultK int) (bool, Failure, *caseAgg) {
+func runCase(s *store.Store, keyToID map[string]int64, c CaseFixture, defaultK int) (bool, Failure, *caseAgg, string, []int64) {
 	agg := &caseAgg{}
 	k := c.TopK
 	if k <= 0 {
@@ -446,27 +497,34 @@ func runCase(s *store.Store, keyToID map[string]int64, c CaseFixture, defaultK i
 
 	switch c.Type {
 	case "search", "search_abstain":
-		return runSearchCase(s, keyToID, c, k, agg)
+		passed, failure, updates, source, topIDs := runSearchCase(s, keyToID, c, k, agg)
+		return passed, failure, updates, source, topIDs
 	case "file_history":
-		return runFileHistoryCase(s, keyToID, c, k, agg)
+		passed, failure, updates, source, topIDs := runFileHistoryCase(s, keyToID, c, k, agg)
+		return passed, failure, updates, source, topIDs
 	case "file_context":
-		return runFileContextCase(s, keyToID, c, agg)
+		passed, failure, updates, source, topIDs := runFileContextCase(s, keyToID, c, agg)
+		return passed, failure, updates, source, topIDs
+	case "graph_context":
+		passed, failure, updates, source, topIDs := runGraphContextCase(s, keyToID, c, agg)
+		return passed, failure, updates, source, topIDs
 	case "pack":
-		return runPackCase(s, keyToID, c, agg)
+		passed, failure, updates, source, topIDs := runPackCase(s, keyToID, c, agg)
+		return passed, failure, updates, source, topIDs
 	default:
-		return false, Failure{CaseID: c.ID, Category: c.Category, Reason: "unknown case type", Severity: 1.0}, agg
+		return false, Failure{CaseID: c.ID, Category: c.Category, Reason: "unknown case type", Severity: 1.0}, agg, "unknown", nil
 	}
 }
 
-func runSearchCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k int, agg *caseAgg) (bool, Failure, *caseAgg) {
+func runSearchCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k int, agg *caseAgg) (bool, Failure, *caseAgg, string, []int64) {
 	results, err := s.SearchMemories(c.Query, c.Project, "", c.Kind, c.Domain, store.MemoryStatusActive, k, "")
 	if err != nil {
-		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Query, Reason: err.Error(), Severity: 1.0}, agg
+		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Query, Reason: err.Error(), Severity: 1.0}, agg, "error", nil
 	}
 
 	expectedIDs := keysToIDs(keyToID, c.ExpectedKeys)
 	forbiddenIDs := keysToIDs(keyToID, c.ForbiddenKeys)
-	topIDs := topIDs(results, k)
+	top := topIDs(results, k)
 	firstRank := firstRelevantRank(results, expectedIDs)
 	relevantInTopK := countRelevant(results, expectedIDs, k)
 
@@ -487,7 +545,7 @@ func runSearchCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k in
 			reason = fmt.Sprintf("abstention score too high: %.4f > %.4f", results[0].RelevanceScore, c.MaxTopScore)
 		}
 		if passed && len(forbiddenIDs) > 0 {
-			for _, id := range topIDs {
+			for _, id := range top {
 				if containsInt64(forbiddenIDs, id) {
 					passed = false
 					falsePositive = true
@@ -534,7 +592,7 @@ func runSearchCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k in
 			reason = fmt.Sprintf("only %d/%d expected memories in top-%d", relevantInTopK, minHits, k)
 		}
 		if passed && len(forbiddenIDs) > 0 {
-			for _, id := range topIDs {
+			for _, id := range top {
 				if containsInt64(forbiddenIDs, id) {
 					passed = false
 					reason = "forbidden memory returned in top results"
@@ -555,23 +613,23 @@ func runSearchCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k in
 			Category:    c.Category,
 			QueryOrPath: c.Query,
 			ExpectedIDs: expectedIDs,
-			ActualTopK:  topIDs,
+			ActualTopK:  top,
 			Reason:      reason,
 			Severity:    failureSeverity(relevantInTopK, minHits, firstRank),
 			Source:      source,
 			HasStale:    staleHits > 0,
 			HasSupersed: supersededHits > 0,
 			HasWrongPrj: wrongProject > 0,
-		}, agg
+		}, agg, source, top
 	}
-	return true, Failure{}, agg
+	return true, Failure{}, agg, source, top
 }
 
-func runFileHistoryCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k int, agg *caseAgg) (bool, Failure, *caseAgg) {
+func runFileHistoryCase(s *store.Store, keyToID map[string]int64, c CaseFixture, k int, agg *caseAgg) (bool, Failure, *caseAgg, string, []int64) {
 	agg.count++
 	items, err := s.FileHistory(c.Path, c.Project, k)
 	if err != nil {
-		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Path, Reason: err.Error(), Severity: 1.0}, agg
+		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Path, Reason: err.Error(), Severity: 1.0}, agg, "file_history_error", nil
 	}
 	expectedIDs := keysToIDs(keyToID, c.ExpectedKeys)
 	top := topIDs(items, k)
@@ -608,12 +666,12 @@ func runFileHistoryCase(s *store.Store, keyToID map[string]int64, c CaseFixture,
 			Reason:      fmt.Sprintf("file history hits %d < required %d", hits, required),
 			Severity:    float64(required-hits) + 0.5,
 			Source:      "file_history_scoring",
-		}, agg
+		}, agg, "file_history_scoring", top
 	}
-	return true, Failure{}, agg
+	return true, Failure{}, agg, "file_history_scoring", top
 }
 
-func runFileContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *caseAgg) (bool, Failure, *caseAgg) {
+func runFileContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *caseAgg) (bool, Failure, *caseAgg, string, []int64) {
 	agg.count++
 	budget := c.BudgetTokens
 	if budget <= 0 {
@@ -621,7 +679,7 @@ func runFileContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture,
 	}
 	ctx, err := s.FileContext(c.Path, c.Project, budget)
 	if err != nil {
-		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Path, Reason: err.Error(), Severity: 1.0}, agg
+		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Path, Reason: err.Error(), Severity: 1.0}, agg, "file_context_error", nil
 	}
 	expectedIDs := keysToIDs(keyToID, c.ExpectedKeys)
 	actualIDs := topIDs(ctx.MemoryItems, 10)
@@ -657,7 +715,7 @@ func runFileContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture,
 			Reason:      fmt.Sprintf("file context exceeded budget: %d > %d", ctx.TokenCount, budget),
 			Severity:    1.0,
 			Source:      "file_context_scoring",
-		}, agg
+		}, agg, "file_context_scoring", actualIDs
 	}
 	if hits < required {
 		return false, Failure{
@@ -669,12 +727,76 @@ func runFileContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture,
 			Reason:      fmt.Sprintf("file context hits %d < required %d", hits, required),
 			Severity:    float64(required-hits) + 0.5,
 			Source:      "file_context_scoring",
-		}, agg
+		}, agg, "file_context_scoring", actualIDs
 	}
-	return true, Failure{}, agg
+	return true, Failure{}, agg, "file_context_scoring", actualIDs
 }
 
-func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *caseAgg) (bool, Failure, *caseAgg) {
+func runGraphContextCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *caseAgg) (bool, Failure, *caseAgg, string, []int64) {
+	agg.count++
+	k := c.TopK
+	if k <= 0 {
+		k = 5
+	}
+	items, err := s.GraphContext(c.Project, c.Entity, k)
+	if err != nil {
+		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Entity, Reason: err.Error(), Severity: 1.0}, agg, "graph_context_error", nil
+	}
+	expectedIDs := keysToIDs(keyToID, c.ExpectedKeys)
+	forbiddenIDs := keysToIDs(keyToID, c.ForbiddenKeys)
+	top := topIDs(items, k)
+	firstRank := firstRelevantRank(items, expectedIDs)
+	if firstRank == 1 {
+		agg.hit1++
+	}
+	if firstRank > 0 && firstRank <= minInt(3, k) {
+		agg.hit3++
+	}
+	if firstRank > 0 && firstRank <= minInt(5, k) {
+		agg.hit5++
+	}
+	if firstRank > 0 {
+		agg.rrSum += 1.0 / float64(firstRank)
+	}
+	agg.ndcgSum += ndcgAtK(items, expectedIDs, minInt(5, k))
+	hits := countIDsInTop(top, expectedIDs)
+	required := c.MinHits
+	if required <= 0 {
+		required = 1
+	}
+	agg.graphExpectedTotal += maxInt(1, required)
+	agg.graphHitTotal += minInt(hits, required)
+
+	if hits < required {
+		return false, Failure{
+			CaseID:      c.ID,
+			Category:    c.Category,
+			QueryOrPath: c.Entity,
+			ExpectedIDs: expectedIDs,
+			ActualTopK:  top,
+			Reason:      fmt.Sprintf("graph context hits %d < required %d", hits, required),
+			Severity:    float64(required-hits) + 0.5,
+			Source:      "graph_context",
+		}, agg, "graph_context", top
+	}
+	for _, id := range top {
+		if containsInt64(forbiddenIDs, id) {
+			return false, Failure{
+				CaseID:      c.ID,
+				Category:    c.Category,
+				QueryOrPath: c.Entity,
+				ExpectedIDs: expectedIDs,
+				ActualTopK:  top,
+				Reason:      "graph context returned forbidden memory",
+				Severity:    1.0,
+				Source:      "graph_context",
+			}, agg, "graph_context", top
+		}
+	}
+	return true, Failure{}, agg, "graph_context", top
+}
+
+func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *caseAgg) (bool, Failure, *caseAgg, string, []int64) {
 	budget := c.BudgetTokens
 	if budget <= 0 {
 		budget = 280
@@ -687,7 +809,7 @@ func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *c
 		Explain:      true,
 	})
 	if err != nil {
-		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Project, Reason: err.Error(), Severity: 1.0}, agg
+		return false, Failure{CaseID: c.ID, Category: c.Category, QueryOrPath: c.Project, Reason: err.Error(), Severity: 1.0}, agg, "pack_error", nil
 	}
 	agg.packCases++
 	if pack.TokenCount <= budget {
@@ -713,7 +835,7 @@ func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *c
 			Reason:      fmt.Sprintf("pack token budget exceeded: %d > %d", pack.TokenCount, budget),
 			Severity:    1.0,
 			Source:      "pack_scoring",
-		}, agg
+		}, agg, "pack_scoring", actual
 	}
 	if hits < required {
 		return false, Failure{
@@ -725,7 +847,7 @@ func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *c
 			Reason:      fmt.Sprintf("pack included only %d/%d required memories", hits, required),
 			Severity:    float64(required-hits) + 0.5,
 			Source:      "pack_scoring",
-		}, agg
+		}, agg, "pack_scoring", actual
 	}
 	for _, id := range actual {
 		if containsInt64(forbiddenIDs, id) {
@@ -738,10 +860,10 @@ func runPackCase(s *store.Store, keyToID map[string]int64, c CaseFixture, agg *c
 				Reason:      "pack included forbidden memory",
 				Severity:    1.0,
 				Source:      "pack_scoring",
-			}, agg
+			}, agg, "pack_scoring", actual
 		}
 	}
-	return true, Failure{}, agg
+	return true, Failure{}, agg, "pack_scoring", actual
 }
 
 func aggToMetrics(agg *caseAgg) Metrics {
@@ -762,6 +884,9 @@ func aggToMetrics(agg *caseAgg) Metrics {
 	}
 	if agg.fileExpectedTotal > 0 {
 		m.FileContextAccuracy = float64(agg.fileHitTotal) / float64(agg.fileExpectedTotal)
+	}
+	if agg.graphExpectedTotal > 0 {
+		m.GraphContextAccuracy = float64(agg.graphHitTotal) / float64(agg.graphExpectedTotal)
 	}
 	if agg.packCases > 0 {
 		m.PackBudgetCompliance = float64(agg.packPass) / float64(agg.packCases)
@@ -784,6 +909,8 @@ func mergeAgg(dst, src *caseAgg) {
 	dst.supersededHits += src.supersededHits
 	dst.fileExpectedTotal += src.fileExpectedTotal
 	dst.fileHitTotal += src.fileHitTotal
+	dst.graphExpectedTotal += src.graphExpectedTotal
+	dst.graphHitTotal += src.graphHitTotal
 	dst.packCases += src.packCases
 	dst.packPass += src.packPass
 	dst.abstentionCases += src.abstentionCases

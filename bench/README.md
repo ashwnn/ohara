@@ -55,9 +55,34 @@ The retrieval harness report includes:
 
 - overall metrics (`Recall@1/3/5`, `MRR`, `nDCG@5`)
 - stale/wrong-project/superseded hit rates
-- file-context accuracy and pack budget compliance
+- file-context accuracy, graph-context accuracy, and pack budget compliance
 - abstention false-positive rate
 - category case counts and per-category metrics
 - fixture audit summary (lexical overlap + weak-distractor detection)
 - worst failures with expected/actual IDs and scoring-source hints
 - explicit embedding mode (`real-ollama`, `deterministic-test`, `fts-fallback`)
+
+### JSON Replay Output
+
+Pass `-json` to output the full report as pretty-printed JSON:
+
+```bash
+go run ./bench/run_retrieval.go -k 5 -json
+```
+
+The JSON includes a `CaseResults` array with one entry per fixture case:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `case_id` | string | Fixture case identifier |
+| `category` | string | Fixture category (e.g. `lexical`, `graph_context`) |
+| `type` | string | Case type (`search`, `file_history`, `file_context`, `graph_context`, `pack`) |
+| `source` | string | Retrieval source (`strict_fts`, `or_fallback`, `graph_context`, `file_context_scoring`, etc.) |
+| `pass` | bool | Whether the case passed |
+| `failure_reason` | string | Failure description (empty on pass) |
+| `top_ids` | []int64 | Top returned memory IDs |
+| `expected_ids` | []int64 | Expected memory IDs |
+| `forbidden_ids` | []int64 | Forbidden memory IDs |
+| `duration_ms` | float64 | Per-case wall-clock time in milliseconds |
+
+No ranking behavior is changed; the JSON trace is a pure overlay on the existing harness.

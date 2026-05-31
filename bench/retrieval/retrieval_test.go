@@ -1,6 +1,7 @@
 package retrieval
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,11 +45,90 @@ func TestRetrievalBenchmarkHasCategoryCoverage(t *testing.T) {
 		"context_pack",
 		"abstention",
 		"hybrid_fallback",
+		"graph_context",
 	}
 	for _, category := range requiredCategories {
 		if _, ok := report.PerCategory[category]; !ok {
 			t.Fatalf("missing category coverage: %s", category)
 		}
+	}
+}
+
+func TestCaseResultsCountMatchesTotalCases(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	if len(report.CaseResults) != report.TotalCases {
+		t.Fatalf("case results count %d != total cases %d", len(report.CaseResults), report.TotalCases)
+	}
+}
+
+func TestCaseResultsDurationsNonNegative(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	for _, cr := range report.CaseResults {
+		if cr.DurationMs < 0 {
+			t.Fatalf("case %s has negative duration_ms: %.3f", cr.CaseID, cr.DurationMs)
+		}
+	}
+}
+
+func TestCaseResultsGraphContextTraceExists(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	found := false
+	for _, cr := range report.CaseResults {
+		if cr.Type == "graph_context" {
+			found = true
+			if cr.Source != "graph_context" && cr.Source != "graph_context_error" {
+				t.Fatalf("graph_context case %s has unexpected source: %s", cr.CaseID, cr.Source)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no graph_context cases found in results")
+	}
+}
+
+func TestReportJSONRoundTrip(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("json marshal failed: %v", err)
+	}
+	var decoded Report
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json unmarshal failed: %v", err)
+	}
+	if decoded.TotalCases != report.TotalCases {
+		t.Fatalf("round-trip total cases mismatch: %d != %d", decoded.TotalCases, report.TotalCases)
+	}
+	if len(decoded.CaseResults) != len(report.CaseResults) {
+		t.Fatalf("round-trip case results count mismatch: %d != %d", len(decoded.CaseResults), len(report.CaseResults))
 	}
 }
 
@@ -111,21 +191,23 @@ func TestRunBenchmarkHybridDefaultsToOllamaFallbackLabel(t *testing.T) {
 
 func TestAggToMetricsCalculations(t *testing.T) {
 	agg := &caseAgg{
-		count:             4,
-		hit1:              2,
-		hit3:              3,
-		hit5:              4,
-		rrSum:             2.75,
-		ndcgSum:           2.5,
-		staleHits:         1,
-		wrongProjectHits:  2,
-		supersededHits:    1,
-		fileExpectedTotal: 5,
-		fileHitTotal:      4,
-		packCases:         3,
-		packPass:          2,
-		abstentionCases:   4,
-		abstentionFP:      1,
+		count:              4,
+		hit1:               2,
+		hit3:               3,
+		hit5:               4,
+		rrSum:              2.75,
+		ndcgSum:            2.5,
+		staleHits:          1,
+		wrongProjectHits:   2,
+		supersededHits:     1,
+		fileExpectedTotal:  5,
+		fileHitTotal:       4,
+		graphExpectedTotal: 6,
+		graphHitTotal:      4,
+		packCases:          3,
+		packPass:           2,
+		abstentionCases:    4,
+		abstentionFP:       1,
 	}
 	m := aggToMetrics(agg)
 	if m.RecallAt1 != 0.5 {
@@ -142,6 +224,9 @@ func TestAggToMetricsCalculations(t *testing.T) {
 	}
 	if m.FileContextAccuracy != 0.8 {
 		t.Fatalf("file accuracy=%f want=0.8", m.FileContextAccuracy)
+	}
+	if m.GraphContextAccuracy != (4.0 / 6.0) {
+		t.Fatalf("graph accuracy=%f want=%f", m.GraphContextAccuracy, 4.0/6.0)
 	}
 	if m.PackBudgetCompliance != (2.0 / 3.0) {
 		t.Fatalf("pack compliance=%f want=%f", m.PackBudgetCompliance, 2.0/3.0)

@@ -91,6 +91,7 @@ Deterministic fixture-driven retrieval checks for:
 - stale/superseded filtering behavior
 - temporal update ordering
 - file-history/file-context retrieval
+- graph/entity context retrieval accuracy
 - hybrid-mode fallback to FTS when embeddings are unavailable
 - context pack token-budget envelope
 - abstention false-positive rate
@@ -105,6 +106,14 @@ The CLI report includes:
 - failure flags (`stale`, `wrong_project`, `superseded`)
 - retrieval source hints (`strict_fts`, `or_fallback`, `hybrid_fallback`, `pack_scoring`, etc.)
 - embedding mode labels (`real-ollama`, `deterministic-test`, `fts-fallback`)
+
+Pass `-json` to output the full report as pretty-printed JSON including per-case `CaseResults` with timing, source, and top/expected/forbidden IDs:
+
+```bash
+go run ./bench/run_retrieval.go -k 5 -json
+```
+
+The JSON `CaseResults` array contains one entry per fixture case with `case_id`, `category`, `type`, `source`, `pass`, `failure_reason`, `top_ids`, `expected_ids`, `forbidden_ids`, and `duration_ms` fields.
 
 ## Token Benchmarks (`internal/token/`)
 

@@ -124,6 +124,13 @@
     { "id": "hyb_02", "category": "hybrid_fallback", "type": "search", "mode": "hybrid_fallback", "query": "migration lock race", "project": "apollo-api", "expected_keys": ["a_db_migration_bugfix"], "top_k": 5 },
     { "id": "hyb_03", "category": "hybrid_fallback", "type": "search", "mode": "hybrid_fallback", "query": "token bucket tenant rate limiter", "project": "apollo-api", "expected_keys": ["a_rl_decision"], "top_k": 5 },
     { "id": "hyb_04", "category": "hybrid_fallback", "type": "search", "mode": "hybrid_fallback", "query": "how do we combine search ranks", "project": "apollo-api", "expected_keys": ["a_rank_fusion_rrf"], "top_k": 5 },
-    { "id": "hyb_05", "category": "hybrid_fallback", "type": "search", "mode": "hybrid_fallback", "query": "why are session notes missing from context", "project": "apollo-api", "expected_keys": ["a_pack_obs_exclusion"], "top_k": 5 }
+    { "id": "hyb_05", "category": "hybrid_fallback", "type": "search", "mode": "hybrid_fallback", "query": "why are session notes missing from context", "project": "apollo-api", "expected_keys": ["a_pack_obs_exclusion"], "top_k": 5 },
+
+    { "id": "gc_01", "category": "graph_context", "type": "graph_context", "entity": "middleware", "project": "apollo-api", "expected_keys": ["a_auth_nil_bugfix", "a_auth_rename_bugfix"], "min_hits": 2, "top_k": 5, "forbidden_keys": ["z_auth_bugfix", "s_noise_auth_1"] },
+    { "id": "gc_02", "category": "graph_context", "type": "graph_context", "entity": "jitter", "project": "apollo-api", "expected_keys": ["a_retry_pattern"], "top_k": 5, "forbidden_keys": ["a_auth_jwt_v2"] },
+    { "id": "gc_03", "category": "graph_context", "type": "graph_context", "entity": "compaction", "project": "apollo-api", "expected_keys": ["a_compaction_decision"], "top_k": 5 },
+    { "id": "gc_04", "category": "graph_context", "type": "graph_context", "entity": "rate", "project": "apollo-api", "expected_keys": ["a_rl_decision"], "top_k": 5, "forbidden_keys": ["a_auth_jwt_v2"] },
+    { "id": "gc_05", "category": "graph_context", "type": "graph_context", "entity": "checklist", "project": "apollo-api", "expected_keys": ["a_release_proc", "a_breakage_triage_proc"], "min_hits": 2, "top_k": 5, "forbidden_keys": ["z_release_proc"] },
+    { "id": "gc_06", "category": "graph_context", "type": "graph_context", "entity": "fusion", "project": "apollo-api", "expected_keys": ["a_rank_fusion_rrf"], "top_k": 5, "forbidden_keys": ["a_hybrid_alpha_old"] }
   ]
 }

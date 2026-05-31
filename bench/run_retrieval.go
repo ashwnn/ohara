@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ func main() {
 	fixturePath := flag.String("fixture", filepath.Join("bench", "fixtures", "retrieval_fixture.json"), "path to retrieval fixture JSON")
 	k := flag.Int("k", 5, "top-k for reporting")
 	enforce := flag.Bool("enforce", true, "enforce threshold gates and exit non-zero on regression")
+	jsonOut := flag.Bool("json", false, "pretty-print full report as JSON")
 	flag.Parse()
 
 	report, err := retrieval.RunBenchmark(retrieval.RunOptions{
@@ -26,6 +28,19 @@ func main() {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "benchmark error: %v\n\n", err)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if encodeErr := enc.Encode(report); encodeErr != nil {
+			fmt.Fprintf(os.Stderr, "json encode error: %v\n", encodeErr)
+			os.Exit(1)
+		}
+		if err != nil {
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Println("Ohara retrieval benchmark")
@@ -48,6 +63,7 @@ func main() {
 	fmt.Printf("Wrong-project-hit rate: %.4f\n", report.Metrics.WrongProjectHitRate)
 	fmt.Printf("Superseded-hit rate: %.4f\n", report.Metrics.SupersededHitRate)
 	fmt.Printf("File-context accuracy: %.3f\n", report.Metrics.FileContextAccuracy)
+	fmt.Printf("Graph-context accuracy: %.3f\n", report.Metrics.GraphContextAccuracy)
 	fmt.Printf("Pack budget compliance: %.3f\n", report.Metrics.PackBudgetCompliance)
 	fmt.Printf("Abstention false-positive rate: %.3f\n", report.Metrics.AbstentionFalsePos)
 
@@ -59,8 +75,8 @@ func main() {
 	fmt.Println("\nPer-category:")
 	for _, category := range sortedCategoryKeys(report.PerCategory) {
 		m := report.PerCategory[category]
-		fmt.Printf("- %s: recall@3=%.3f mrr=%.3f file_acc=%.3f pack_budget=%.3f abst_fp=%.3f\n",
-			category, m.RecallAt3, m.MRR, m.FileContextAccuracy, m.PackBudgetCompliance, m.AbstentionFalsePos)
+		fmt.Printf("- %s: recall@3=%.3f mrr=%.3f file_acc=%.3f graph_acc=%.3f pack_budget=%.3f abst_fp=%.3f\n",
+			category, m.RecallAt3, m.MRR, m.FileContextAccuracy, m.GraphContextAccuracy, m.PackBudgetCompliance, m.AbstentionFalsePos)
 	}
 
 	fmt.Println("\nFixture audit:")
