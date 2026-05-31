@@ -28,10 +28,15 @@ func (s *Store) UpsertEntity(name, typ, project string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	id, _ := res.LastInsertId()
-	if id != 0 {
-		return id, nil
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
 	}
+	if rowsAffected > 0 {
+		return res.LastInsertId()
+	}
+	// ON CONFLICT DO NOTHING did nothing — entity already exists.
+	var id int64
 	if err := s.db.QueryRow(`SELECT id FROM entities WHERE name = ? AND type = ? AND project_key = ?`, name, typ, project).Scan(&id); err != nil {
 		return 0, err
 	}
