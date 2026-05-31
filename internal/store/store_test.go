@@ -2716,6 +2716,118 @@ func TestKeywordOverlap_JaccardSimilarity(t *testing.T) {
 	}
 }
 
+func TestFallbackTermOverlap_CountsSubstringMatches(t *testing.T) {
+	item := MemoryItem{
+		Title: "FTS5 default retrieval mode",
+		Body:  "Keep SQLite FTS5 as default retrieval mode for deterministic local-first behavior.",
+		Tags:  []string{"sqlite", "fts5"},
+	}
+	terms := []string{"fts5", "decision", "migration", "order"}
+	overlap := fallbackTermOverlap(item, terms)
+	if overlap != 1 {
+		t.Errorf("expected overlap=1 (fts5 only), got %d", overlap)
+	}
+}
+
+func TestFallbackTermOverlap_EmptyTerms(t *testing.T) {
+	item := MemoryItem{Title: "test", Body: "body"}
+	overlap := fallbackTermOverlap(item, nil)
+	if overlap != 0 {
+		t.Errorf("expected 0 for nil terms, got %d", overlap)
+	}
+	overlap = fallbackTermOverlap(item, []string{})
+	if overlap != 0 {
+		t.Errorf("expected 0 for empty terms, got %d", overlap)
+	}
+}
+
+func TestBuildFallbackTerms_ExcludesStopwords(t *testing.T) {
+	terms := buildFallbackTerms("why did this break after deploy")
+	// "why", "did", "this", "after" are stopwords
+	// Only "break" and "deploy" should remain
+	for _, forbidden := range []string{"why", "did", "this", "after"} {
+		for _, term := range terms {
+			if term == forbidden {
+				t.Errorf("stopword %q should have been filtered out, got terms: %v", forbidden, terms)
+			}
+		}
+	}
+	found := map[string]bool{}
+	for _, term := range terms {
+		found[term] = true
+	}
+	if !found["break"] {
+		t.Error("expected 'break' in fallback terms")
+	}
+	if !found["deploy"] {
+		t.Error("expected 'deploy' in fallback terms")
+	}
+	if len(terms) != 2 {
+		t.Errorf("expected 2 terms (break, deploy), got %d: %v", len(terms), terms)
+	}
+}
+
+func TestBuildFallbackTerms_ShortWordsFiltered(t *testing.T) {
+	terms := buildFallbackTerms("a b c d ab cd ef xy")
+	if len(terms) != 0 {
+		t.Errorf("expected 0 terms for all short words, got %d: %v", len(terms), terms)
+	}
+}
+
+func TestORFallbackRanking_RareTermDominatesCommonTerm(t *testing.T) {
+	s := newTestStore(t)
+
+	// Rare-term item: only "fts5" matches (rare in this candidate set)
+	_, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "test",
+		Kind:      MemoryKindDiscovery, // Lower kind boost than decision
+		Title:     "FTS5 storage engine",
+		Body:      "We use FTS5 for search with the default tokenizer.",
+	})
+	if err != nil {
+		t.Fatalf("seed fts5: %v", err)
+	}
+
+	// Common-term items: "general" exists in many items. Use 6+ to trigger IDF path.
+	commonTitles := []string{
+		"General notes A",
+		"General notes B",
+		"General notes C",
+		"General notes D",
+		"General notes E",
+		"General notes F",
+	}
+	for _, title := range commonTitles {
+		_, err = s.AddMemory(AddMemoryParams{
+			ProjectID: "test",
+			Kind:      MemoryKindDecision, // Higher kind boost than discovery
+			Title:     title,
+			Body:      "General search observations.",
+		})
+		if err != nil {
+			t.Fatalf("seed general: %v", err)
+		}
+	}
+
+	// Query: "fts5 general" — strict AND fails (no item has both),
+	// OR fallback activates, minTermHits=1 (2 terms), >5 candidates => IDF path.
+	// "fts5" is rare (df=1), "general" is common (df=6).
+	results, err := s.SearchMemories("fts5 general", "test", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+	// The FTS5 item has kind=discovery (0.85x boost) but matches rare term "fts5".
+	// All others have kind=decision (1.5x boost) but only match common term "general".
+	// With IDF weighting, rare-term match should dominate kind boost.
+	if results[0].Title != "FTS5 storage engine" {
+		t.Errorf("rare term 'fts5' should dominate common term 'general': got title=%q kind=%s",
+			results[0].Title, results[0].Kind)
+	}
+}
+
 // ─── SearchMemories ranking tests ──────────────────────────────────────────────
 
 func TestSearchMemories_DefaultLimit(t *testing.T) {

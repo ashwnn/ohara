@@ -1196,6 +1196,7 @@ var fallbackStopWords = map[string]struct{}{
 	"is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {}, "being": {},
 	"should": {}, "must": {}, "can": {}, "could": {}, "would": {}, "will": {},
 	"how": {}, "why": {}, "before": {}, "after": {}, "then": {}, "current": {},
+	"did": {}, "does": {}, "has": {}, "had": {},
 }
 
 func buildFallbackTermsLocal(raw string) []string {

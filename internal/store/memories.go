@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -801,23 +802,62 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 			type scoredFallback struct {
 				item    MemoryItem
 				overlap int
+				score   float64
 			}
 			scored := make([]scoredFallback, 0, len(fallbackItems))
-			for _, item := range fallbackItems {
-				overlap := fallbackTermOverlap(item, fallbackTerms)
-				if overlap < minTermHits {
-					continue
+			// For small candidate sets (≤ 5), IDF weighting provides negligible
+			// differentiation — use flat overlap to avoid the extra DF pass.
+			useWeighted := len(fallbackItems) > 5 && len(fallbackTerms) > 0
+			if useWeighted {
+				// Single pass: pre-compute lowercased text and term DF.
+				nCandidates := len(fallbackItems)
+				fallbackTexts := make([]string, nCandidates)
+				termDF := make(map[string]int, len(fallbackTerms))
+				for i, item := range fallbackItems {
+					fallbackTexts[i] = strings.ToLower(item.Title + " " + item.Body + " " + strings.Join(item.Tags, " "))
+					for _, term := range fallbackTerms {
+						if strings.Contains(fallbackTexts[i], term) {
+							termDF[term]++
+						}
+					}
 				}
-				scored = append(scored, scoredFallback{item: item, overlap: overlap})
+				nCandidatesF := float64(nCandidates)
+				termIDF := make(map[string]float64, len(fallbackTerms))
+				for _, term := range fallbackTerms {
+					termIDF[term] = math.Log(1.0 + nCandidatesF/(1.0+float64(termDF[term])))
+				}
+				for i, item := range fallbackItems {
+					text := fallbackTexts[i]
+					overlap := 0
+					score := 0.0
+					for _, term := range fallbackTerms {
+						if strings.Contains(text, term) {
+							overlap++
+							score += termIDF[term]
+						}
+					}
+					if overlap < minTermHits {
+						continue
+					}
+					scored = append(scored, scoredFallback{item: item, overlap: overlap, score: score})
+				}
+			} else {
+				for _, item := range fallbackItems {
+					overlap := fallbackTermOverlap(item, fallbackTerms)
+					if overlap < minTermHits {
+						continue
+					}
+					scored = append(scored, scoredFallback{item: item, overlap: overlap, score: float64(overlap)})
+				}
 			}
 			sort.SliceStable(scored, func(i, j int) bool {
-				if scored[i].overlap == scored[j].overlap {
+				if scored[i].score == scored[j].score {
 					if scored[i].item.RelevanceScore == scored[j].item.RelevanceScore {
 						return scored[i].item.ID < scored[j].item.ID
 					}
 					return scored[i].item.RelevanceScore > scored[j].item.RelevanceScore
 				}
-				return scored[i].overlap > scored[j].overlap
+				return scored[i].score > scored[j].score
 			})
 			items = make([]MemoryItem, 0, len(scored))
 			for _, score := range scored {
@@ -852,6 +892,7 @@ var ftsFallbackStopWords = map[string]struct{}{
 	"is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {}, "being": {},
 	"should": {}, "must": {}, "can": {}, "could": {}, "would": {}, "will": {},
 	"how": {}, "why": {}, "before": {}, "after": {}, "then": {}, "current": {},
+	"did": {}, "does": {}, "has": {}, "had": {},
 }
 
 func buildFallbackTerms(raw string) []string {
@@ -891,6 +932,8 @@ func buildFallbackTerms(raw string) []string {
 	return terms
 }
 
+// fallbackTermOverlap counts how many query terms appear as substrings in the
+// memory item's text. It is used for the min-term-hits filter, not for ranking.
 func fallbackTermOverlap(item MemoryItem, terms []string) int {
 	if len(terms) == 0 {
 		return 0
