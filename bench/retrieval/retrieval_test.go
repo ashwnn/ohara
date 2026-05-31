@@ -245,20 +245,30 @@ func TestEnforceThresholdsRejectsRegression(t *testing.T) {
 			WrongProjectHitRate: 0.01,
 			SupersededHitRate:   0.01,
 		},
+		Latency: LatencyMetrics{
+			P50Ms:  10,
+			P95Ms:  30,
+			MaxMs:  100,
+			MeanMs: 15,
+		},
 		PerCategory: map[string]Metrics{
 			"lexical":    {RecallAt3: 0.80},
 			"file_aware": {RecallAt3: 0.70},
 		},
 		Thresholds: ThresholdsFixture{
-			OverallRecallAt3:       0.80,
-			RecallAt3Lexical:       0.90,
-			RecallAt3FileAware:     0.85,
-			MRROverall:             0.70,
-			StaleHitRateMax:        0.0,
-			WrongProjectHitRateMax: 0.0,
-			SupersededHitRateMax:   0.0,
-			PackBudgetCompliance:   1.0,
-			AbstentionFalsePosMax:  0.10,
+			OverallRecallAt3:            0.80,
+			RecallAt3Lexical:            0.90,
+			RecallAt3FileAware:          0.85,
+			MRROverall:                  0.70,
+			StaleHitRateMax:             0.0,
+			WrongProjectHitRateMax:      0.0,
+			SupersededHitRateMax:        0.0,
+			PackBudgetCompliance:        1.0,
+			AbstentionFalsePosMax:       0.10,
+			LatencyP95MsMax:             50,
+			LatencyMaxMsMax:             150,
+			FixtureWeakDistractorRateMax: 0.55,
+			FixtureHighOverlapRateMax:    0.35,
 		},
 	}
 	err := enforceThresholds(r)
@@ -267,5 +277,282 @@ func TestEnforceThresholdsRejectsRegression(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "overall recall@3") {
 		t.Fatalf("expected overall recall failure in error, got: %v", err)
+	}
+}
+
+func TestComputeLatencyMetrics(t *testing.T) {
+	results := []CaseResult{
+		{CaseID: "a", DurationMs: 10},
+		{CaseID: "b", DurationMs: 20},
+		{CaseID: "c", DurationMs: 30},
+		{CaseID: "d", DurationMs: 40},
+		{CaseID: "e", DurationMs: 50},
+	}
+	m := computeLatencyMetrics(results)
+	if m.P50Ms != 30 {
+		t.Fatalf("p50=%f want=30", m.P50Ms)
+	}
+	if m.P95Ms != 48 {
+		t.Fatalf("p95=%f want=48", m.P95Ms)
+	}
+	if m.MaxMs != 50 {
+		t.Fatalf("max=%f want=50", m.MaxMs)
+	}
+	if m.MeanMs != 30 {
+		t.Fatalf("mean=%f want=30", m.MeanMs)
+	}
+}
+
+func TestComputeLatencyMetricsEmpty(t *testing.T) {
+	m := computeLatencyMetrics(nil)
+	if m.P50Ms != 0 || m.P95Ms != 0 || m.MaxMs != 0 || m.MeanMs != 0 {
+		t.Fatal("expected zero latency metrics for empty input")
+	}
+}
+
+func TestWithDefaultThresholdsLatencyAndFixture(t *testing.T) {
+	in := ThresholdsFixture{}
+	out := withDefaultThresholds(in)
+	if out.LatencyP95MsMax != 50 {
+		t.Fatalf("default latency p95 max=%f want=50", out.LatencyP95MsMax)
+	}
+	if out.LatencyMaxMsMax != 150 {
+		t.Fatalf("default latency max max=%f want=150", out.LatencyMaxMsMax)
+	}
+	if out.FixtureWeakDistractorRateMax != 0.55 {
+		t.Fatalf("default weak-distractor rate max=%f want=0.55", out.FixtureWeakDistractorRateMax)
+	}
+	if out.FixtureHighOverlapRateMax != 0.35 {
+		t.Fatalf("default high-overlap rate max=%f want=0.35", out.FixtureHighOverlapRateMax)
+	}
+}
+
+func TestEnforceThresholdsRejectsLatencyP95(t *testing.T) {
+	r := Report{
+		Metrics: Metrics{
+			RecallAt3:           1.0,
+			MRR:                 1.0,
+			StaleHitRate:        0.0,
+			WrongProjectHitRate: 0.0,
+			SupersededHitRate:   0.0,
+			PackBudgetCompliance: 1.0,
+			AbstentionFalsePos:  0.0,
+		},
+		Latency: LatencyMetrics{
+			P95Ms: 60,
+			MaxMs: 100,
+		},
+		PerCategory: map[string]Metrics{
+			"lexical":    {RecallAt3: 1.0},
+			"file_aware": {RecallAt3: 1.0},
+		},
+		Thresholds: ThresholdsFixture{
+			OverallRecallAt3:            0.80,
+			RecallAt3Lexical:            0.90,
+			RecallAt3FileAware:          0.85,
+			MRROverall:                  0.70,
+			StaleHitRateMax:             0.0,
+			WrongProjectHitRateMax:      0.0,
+			SupersededHitRateMax:        0.0,
+			PackBudgetCompliance:        1.0,
+			AbstentionFalsePosMax:       0.10,
+			LatencyP95MsMax:             50,
+			LatencyMaxMsMax:             150,
+			FixtureWeakDistractorRateMax: 0.55,
+			FixtureHighOverlapRateMax:    0.35,
+		},
+	}
+	err := enforceThresholds(r)
+	if err == nil {
+		t.Fatal("expected latency p95 enforcement to fail")
+	}
+	if !strings.Contains(err.Error(), "latency p95") {
+		t.Fatalf("expected latency p95 message in error, got: %v", err)
+	}
+}
+
+func TestEnforceThresholdsRejectsLatencyMax(t *testing.T) {
+	r := Report{
+		Metrics: Metrics{
+			RecallAt3:           1.0,
+			MRR:                 1.0,
+			StaleHitRate:        0.0,
+			WrongProjectHitRate: 0.0,
+			SupersededHitRate:   0.0,
+			PackBudgetCompliance: 1.0,
+			AbstentionFalsePos:  0.0,
+		},
+		Latency: LatencyMetrics{
+			P95Ms: 30,
+			MaxMs: 200,
+		},
+		PerCategory: map[string]Metrics{
+			"lexical":    {RecallAt3: 1.0},
+			"file_aware": {RecallAt3: 1.0},
+		},
+		Thresholds: ThresholdsFixture{
+			OverallRecallAt3:            0.80,
+			RecallAt3Lexical:            0.90,
+			RecallAt3FileAware:          0.85,
+			MRROverall:                  0.70,
+			StaleHitRateMax:             0.0,
+			WrongProjectHitRateMax:      0.0,
+			SupersededHitRateMax:        0.0,
+			PackBudgetCompliance:        1.0,
+			AbstentionFalsePosMax:       0.10,
+			LatencyP95MsMax:             50,
+			LatencyMaxMsMax:             150,
+			FixtureWeakDistractorRateMax: 0.55,
+			FixtureHighOverlapRateMax:    0.35,
+		},
+	}
+	err := enforceThresholds(r)
+	if err == nil {
+		t.Fatal("expected latency max enforcement to fail")
+	}
+	if !strings.Contains(err.Error(), "latency max") {
+		t.Fatalf("expected latency max message in error, got: %v", err)
+	}
+}
+
+func TestEnforceThresholdsRejectsFixtureWeakDistractorRate(t *testing.T) {
+	r := Report{
+		Metrics: Metrics{
+			RecallAt3:           1.0,
+			MRR:                 1.0,
+			StaleHitRate:        0.0,
+			WrongProjectHitRate: 0.0,
+			SupersededHitRate:   0.0,
+			PackBudgetCompliance: 1.0,
+			AbstentionFalsePos:  0.0,
+		},
+		Latency: LatencyMetrics{
+			P95Ms: 10,
+			MaxMs: 50,
+		},
+		PerCategory: map[string]Metrics{
+			"lexical":    {RecallAt3: 1.0},
+			"file_aware": {RecallAt3: 1.0},
+		},
+		FixtureAudit: FixtureAudit{
+			SearchCaseCount:     20,
+			WeakDistractorCount: 18,
+			WeakDistractorRate:  0.90,
+		},
+		Thresholds: ThresholdsFixture{
+			OverallRecallAt3:            0.80,
+			RecallAt3Lexical:            0.90,
+			RecallAt3FileAware:          0.85,
+			MRROverall:                  0.70,
+			StaleHitRateMax:             0.0,
+			WrongProjectHitRateMax:      0.0,
+			SupersededHitRateMax:        0.0,
+			PackBudgetCompliance:        1.0,
+			AbstentionFalsePosMax:       0.10,
+			LatencyP95MsMax:             50,
+			LatencyMaxMsMax:             150,
+			FixtureWeakDistractorRateMax: 0.55,
+			FixtureHighOverlapRateMax:    0.35,
+		},
+	}
+	err := enforceThresholds(r)
+	if err == nil {
+		t.Fatal("expected fixture weak-distractor enforcement to fail")
+	}
+	if !strings.Contains(err.Error(), "fixture weak-distractor rate") {
+		t.Fatalf("expected weak-distractor message in error, got: %v", err)
+	}
+}
+
+func TestEnforceThresholdsRejectsFixtureHighOverlapRate(t *testing.T) {
+	r := Report{
+		Metrics: Metrics{
+			RecallAt3:           1.0,
+			MRR:                 1.0,
+			StaleHitRate:        0.0,
+			WrongProjectHitRate: 0.0,
+			SupersededHitRate:   0.0,
+			PackBudgetCompliance: 1.0,
+			AbstentionFalsePos:  0.0,
+		},
+		Latency: LatencyMetrics{
+			P95Ms: 10,
+			MaxMs: 50,
+		},
+		PerCategory: map[string]Metrics{
+			"lexical":    {RecallAt3: 1.0},
+			"file_aware": {RecallAt3: 1.0},
+		},
+		FixtureAudit: FixtureAudit{
+			SearchCaseCount:    20,
+			HighOverlapCaseIDs: []string{"a", "b", "c", "d", "e", "f", "g", "h"},
+			HighOverlapRate:    0.40,
+		},
+		Thresholds: ThresholdsFixture{
+			OverallRecallAt3:            0.80,
+			RecallAt3Lexical:            0.90,
+			RecallAt3FileAware:          0.85,
+			MRROverall:                  0.70,
+			StaleHitRateMax:             0.0,
+			WrongProjectHitRateMax:      0.0,
+			SupersededHitRateMax:        0.0,
+			PackBudgetCompliance:        1.0,
+			AbstentionFalsePosMax:       0.10,
+			LatencyP95MsMax:             50,
+			LatencyMaxMsMax:             150,
+			FixtureWeakDistractorRateMax: 0.55,
+			FixtureHighOverlapRateMax:    0.35,
+		},
+	}
+	err := enforceThresholds(r)
+	if err == nil {
+		t.Fatal("expected fixture high-overlap enforcement to fail")
+	}
+	if !strings.Contains(err.Error(), "fixture high-overlap rate") {
+		t.Fatalf("expected high-overlap message in error, got: %v", err)
+	}
+}
+
+func TestReportIncludesLatencyMetrics(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	if report.Latency.MaxMs <= 0 {
+		t.Fatal("expected non-zero latency max after benchmark run")
+	}
+	if report.Latency.P95Ms <= 0 {
+		t.Fatal("expected non-zero latency p95 after benchmark run")
+	}
+	if report.Latency.MeanMs <= 0 {
+		t.Fatal("expected non-zero latency mean after benchmark run")
+	}
+	if report.Latency.P50Ms <= 0 {
+		t.Fatal("expected non-zero latency p50 after benchmark run")
+	}
+}
+
+func TestFixtureAuditRates(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath: fixturePath(),
+		K:           5,
+		Enforce:     false,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	if report.FixtureAudit.SearchCaseCount > 0 {
+		expectedRate := float64(report.FixtureAudit.WeakDistractorCount) / float64(report.FixtureAudit.SearchCaseCount)
+		if report.FixtureAudit.WeakDistractorRate != expectedRate {
+			t.Fatalf("WeakDistractorRate=%f want=%f", report.FixtureAudit.WeakDistractorRate, expectedRate)
+		}
+		expectedHORate := float64(len(report.FixtureAudit.HighOverlapCaseIDs)) / float64(report.FixtureAudit.SearchCaseCount)
+		if report.FixtureAudit.HighOverlapRate != expectedHORate {
+			t.Fatalf("HighOverlapRate=%f want=%f", report.FixtureAudit.HighOverlapRate, expectedHORate)
+		}
 	}
 }

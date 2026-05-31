@@ -102,6 +102,8 @@ The CLI report includes:
 - total/passed/failed case counts
 - case counts by category
 - per-category metrics
+- per-case latency metrics (p50, p95, max, mean)
+- threshold SLO gates (latency p95/max, fixture weak-distractor rate, fixture high-overlap rate)
 - worst failures with expected vs actual IDs
 - failure flags (`stale`, `wrong_project`, `superseded`)
 - retrieval source hints (`strict_fts`, `or_fallback`, `hybrid_fallback`, `pack_scoring`, etc.)

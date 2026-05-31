@@ -57,8 +57,10 @@ The retrieval harness report includes:
 - stale/wrong-project/superseded hit rates
 - file-context accuracy, graph-context accuracy, and pack budget compliance
 - abstention false-positive rate
+- per-case latency metrics (p50, p95, max, mean)
+- threshold SLO gates (latency p95/max, fixture weak-distractor rate, fixture high-overlap rate)
 - category case counts and per-category metrics
-- fixture audit summary (lexical overlap + weak-distractor detection)
+- fixture audit summary (lexical overlap, weak-distractor detection, high-overlap rate)
 - worst failures with expected/actual IDs and scoring-source hints
 - explicit embedding mode (`real-ollama`, `deterministic-test`, `fts-fallback`)
 

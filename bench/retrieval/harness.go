@@ -63,15 +63,19 @@ type CaseFixture struct {
 }
 
 type ThresholdsFixture struct {
-	OverallRecallAt3       float64 `json:"overall_recall_at_3"`
-	RecallAt3Lexical       float64 `json:"recall_at_3_lexical"`
-	RecallAt3FileAware     float64 `json:"recall_at_3_file_aware"`
-	MRROverall             float64 `json:"mrr_overall"`
-	StaleHitRateMax        float64 `json:"stale_hit_rate_max"`
-	WrongProjectHitRateMax float64 `json:"wrong_project_hit_rate_max"`
-	SupersededHitRateMax   float64 `json:"superseded_hit_rate_max"`
-	PackBudgetCompliance   float64 `json:"pack_budget_compliance"`
-	AbstentionFalsePosMax  float64 `json:"abstention_false_positive_rate_max"`
+	OverallRecallAt3             float64 `json:"overall_recall_at_3"`
+	RecallAt3Lexical             float64 `json:"recall_at_3_lexical"`
+	RecallAt3FileAware           float64 `json:"recall_at_3_file_aware"`
+	MRROverall                   float64 `json:"mrr_overall"`
+	StaleHitRateMax              float64 `json:"stale_hit_rate_max"`
+	WrongProjectHitRateMax       float64 `json:"wrong_project_hit_rate_max"`
+	SupersededHitRateMax         float64 `json:"superseded_hit_rate_max"`
+	PackBudgetCompliance         float64 `json:"pack_budget_compliance"`
+	AbstentionFalsePosMax        float64 `json:"abstention_false_positive_rate_max"`
+	LatencyP95MsMax              float64 `json:"latency_p95_ms_max"`
+	LatencyMaxMsMax              float64 `json:"latency_max_ms_max"`
+	FixtureWeakDistractorRateMax float64 `json:"fixture_weak_distractor_rate_max"`
+	FixtureHighOverlapRateMax    float64 `json:"fixture_high_overlap_rate_max"`
 }
 
 type RunOptions struct {
@@ -96,6 +100,13 @@ type Metrics struct {
 	GraphContextAccuracy float64
 	PackBudgetCompliance float64
 	AbstentionFalsePos   float64
+}
+
+type LatencyMetrics struct {
+	P50Ms  float64 `json:"p50_ms"`
+	P95Ms  float64 `json:"p95_ms"`
+	MaxMs  float64 `json:"max_ms"`
+	MeanMs float64 `json:"mean_ms"`
 }
 
 type Failure struct {
@@ -132,6 +143,7 @@ type Report struct {
 	PassedCases         int
 	FailedCases         int
 	Metrics             Metrics
+	Latency             LatencyMetrics
 	PerCategory         map[string]Metrics
 	CategoryCaseCounts  map[string]int
 	CaseResults         []CaseResult
@@ -164,14 +176,16 @@ type caseAgg struct {
 }
 
 type FixtureAudit struct {
-	CategoryCounts      map[string]int
-	CategoriesUnder5    []string
-	HappyPathExactCount int
-	WeakDistractorCount int
-	HighOverlapCaseIDs  []string
-	AverageTitleOverlap float64
-	MaxTitleOverlap     float64
-	SearchCaseCount     int
+	CategoryCounts       map[string]int
+	CategoriesUnder5     []string
+	HappyPathExactCount  int
+	WeakDistractorCount  int
+	WeakDistractorRate   float64
+	HighOverlapCaseIDs   []string
+	HighOverlapRate      float64
+	AverageTitleOverlap  float64
+	MaxTitleOverlap      float64
+	SearchCaseCount      int
 }
 
 func LoadFixture(path string) (Fixture, error) {
@@ -361,6 +375,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	})
 	report.Failures = failures
 	report.Runtime = time.Since(start)
+	report.Latency = computeLatencyMetrics(caseResults)
 
 	if opts.Enforce {
 		if err := enforceThresholds(report); err != nil {
@@ -392,6 +407,18 @@ func withDefaultThresholds(in ThresholdsFixture) ThresholdsFixture {
 	}
 	if out.AbstentionFalsePosMax <= 0 {
 		out.AbstentionFalsePosMax = 0.10
+	}
+	if out.LatencyP95MsMax <= 0 {
+		out.LatencyP95MsMax = 50
+	}
+	if out.LatencyMaxMsMax <= 0 {
+		out.LatencyMaxMsMax = 150
+	}
+	if out.FixtureWeakDistractorRateMax <= 0 {
+		out.FixtureWeakDistractorRateMax = 0.55
+	}
+	if out.FixtureHighOverlapRateMax <= 0 {
+		out.FixtureHighOverlapRateMax = 0.35
 	}
 	return out
 }
@@ -917,6 +944,51 @@ func mergeAgg(dst, src *caseAgg) {
 	dst.abstentionFP += src.abstentionFP
 }
 
+func computeLatencyMetrics(results []CaseResult) LatencyMetrics {
+	if len(results) == 0 {
+		return LatencyMetrics{}
+	}
+	durations := make([]float64, len(results))
+	for i, cr := range results {
+		durations[i] = cr.DurationMs
+	}
+	sort.Float64s(durations)
+
+	n := len(durations)
+	sum := 0.0
+	for _, d := range durations {
+		sum += d
+	}
+	p50 := percentileSorted(durations, 0.50)
+	p95 := percentileSorted(durations, 0.95)
+	return LatencyMetrics{
+		P50Ms:  p50,
+		P95Ms:  p95,
+		MaxMs:  durations[n-1],
+		MeanMs: sum / float64(n),
+	}
+}
+
+func percentileSorted(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+	idx := p * float64(len(sorted)-1)
+	lo := int(math.Floor(idx))
+	hi := int(math.Ceil(idx))
+	if lo == hi {
+		return sorted[lo]
+	}
+	frac := idx - float64(lo)
+	return sorted[lo]*(1-frac) + sorted[hi]*frac
+}
+
 func enforceThresholds(r Report) error {
 	lex := r.PerCategory["lexical"]
 	fileAware := r.PerCategory["file_aware"]
@@ -948,6 +1020,18 @@ func enforceThresholds(r Report) error {
 	}
 	if r.Metrics.AbstentionFalsePos > r.Thresholds.AbstentionFalsePosMax {
 		failures = append(failures, fmt.Sprintf("abstention false-positive rate %.3f > %.3f", r.Metrics.AbstentionFalsePos, r.Thresholds.AbstentionFalsePosMax))
+	}
+	if r.Latency.P95Ms > r.Thresholds.LatencyP95MsMax {
+		failures = append(failures, fmt.Sprintf("latency p95 %.1fms > %.0fms", r.Latency.P95Ms, r.Thresholds.LatencyP95MsMax))
+	}
+	if r.Latency.MaxMs > r.Thresholds.LatencyMaxMsMax {
+		failures = append(failures, fmt.Sprintf("latency max %.1fms > %.0fms", r.Latency.MaxMs, r.Thresholds.LatencyMaxMsMax))
+	}
+	if r.FixtureAudit.WeakDistractorRate > r.Thresholds.FixtureWeakDistractorRateMax {
+		failures = append(failures, fmt.Sprintf("fixture weak-distractor rate %.3f > %.3f", r.FixtureAudit.WeakDistractorRate, r.Thresholds.FixtureWeakDistractorRateMax))
+	}
+	if r.FixtureAudit.HighOverlapRate > r.Thresholds.FixtureHighOverlapRateMax {
+		failures = append(failures, fmt.Sprintf("fixture high-overlap rate %.3f > %.3f", r.FixtureAudit.HighOverlapRate, r.Thresholds.FixtureHighOverlapRateMax))
 	}
 	if len(failures) > 0 {
 		return errors.New(strings.Join(failures, "; "))
@@ -1290,6 +1374,8 @@ func auditFixture(fixture Fixture) FixtureAudit {
 	}
 	if out.SearchCaseCount > 0 {
 		out.AverageTitleOverlap = overlapSum / float64(out.SearchCaseCount)
+		out.WeakDistractorRate = float64(out.WeakDistractorCount) / float64(out.SearchCaseCount)
+		out.HighOverlapRate = float64(len(out.HighOverlapCaseIDs)) / float64(out.SearchCaseCount)
 	}
 	for category, count := range out.CategoryCounts {
 		if count < 5 {

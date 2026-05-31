@@ -66,6 +66,18 @@ func main() {
 	fmt.Printf("Graph-context accuracy: %.3f\n", report.Metrics.GraphContextAccuracy)
 	fmt.Printf("Pack budget compliance: %.3f\n", report.Metrics.PackBudgetCompliance)
 	fmt.Printf("Abstention false-positive rate: %.3f\n", report.Metrics.AbstentionFalsePos)
+	fmt.Println()
+	fmt.Println("Latency (per-case):")
+	fmt.Printf("- p50: %.1fms\n", report.Latency.P50Ms)
+	fmt.Printf("- p95: %.1fms\n", report.Latency.P95Ms)
+	fmt.Printf("- max: %.1fms\n", report.Latency.MaxMs)
+	fmt.Printf("- mean: %.1fms\n", report.Latency.MeanMs)
+	fmt.Println()
+	fmt.Println("Thresholds:")
+	fmt.Printf("- latency p95 SLO: <= %.0fms\n", report.Thresholds.LatencyP95MsMax)
+	fmt.Printf("- latency max SLO: <= %.0fms\n", report.Thresholds.LatencyMaxMsMax)
+	fmt.Printf("- fixture weak-distractor rate SLO: <= %.3f\n", report.Thresholds.FixtureWeakDistractorRateMax)
+	fmt.Printf("- fixture high-overlap rate SLO: <= %.3f\n", report.Thresholds.FixtureHighOverlapRateMax)
 
 	fmt.Println("\nCase count by category:")
 	for _, category := range sortedCategoryCaseKeys(report.CategoryCaseCounts) {
@@ -83,9 +95,9 @@ func main() {
 	fmt.Printf("- search cases analyzed: %d\n", report.FixtureAudit.SearchCaseCount)
 	fmt.Printf("- avg expected-title overlap: %.3f\n", report.FixtureAudit.AverageTitleOverlap)
 	fmt.Printf("- max expected-title overlap: %.3f\n", report.FixtureAudit.MaxTitleOverlap)
-	fmt.Printf("- high-overlap cases (>=0.70): %d\n", len(report.FixtureAudit.HighOverlapCaseIDs))
-	fmt.Printf("- weak-distractor cases: %d\n", report.FixtureAudit.WeakDistractorCount)
+	fmt.Printf("- weak-distractor cases: %d (rate: %.3f)\n", report.FixtureAudit.WeakDistractorCount, report.FixtureAudit.WeakDistractorRate)
 	fmt.Printf("- exact/happy-path cases: %d\n", report.FixtureAudit.HappyPathExactCount)
+	fmt.Printf("- high-overlap cases: %d (rate: %.3f)\n", len(report.FixtureAudit.HighOverlapCaseIDs), report.FixtureAudit.HighOverlapRate)
 	if len(report.FixtureAudit.CategoriesUnder5) == 0 {
 		fmt.Println("- categories under 5 cases: none")
 	} else {
