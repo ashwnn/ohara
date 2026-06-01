@@ -796,7 +796,7 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 		fallbackItems, fallbackErr := runFTS(ftsFallbackQuery, max(30, limit*6))
 		if fallbackErr == nil {
 			minTermHits := 1
-			if len(fallbackTerms) >= 3 {
+			if len(fallbackTerms) >= 6 {
 				minTermHits = 2
 			}
 			type scoredFallback struct {

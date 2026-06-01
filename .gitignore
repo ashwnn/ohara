@@ -29,3 +29,7 @@ Thumbs.db
 ohara-dev
 .atl/
 .release-notes-beta.md
+
+# Session state / agent runtime artifacts
+.opencode/
+.serena/
