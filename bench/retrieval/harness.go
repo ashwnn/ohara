@@ -79,12 +79,13 @@ type ThresholdsFixture struct {
 }
 
 type RunOptions struct {
-	FixturePath string
-	K           int
-	Enforce     bool
-	Mode        string
-	Embedding   string
-	OllamaURL   string
+	FixturePath     string
+	K               int
+	Enforce         bool
+	SkipLatencyGate bool
+	Mode            string
+	Embedding       string
+	OllamaURL       string
 }
 
 type Metrics struct {
@@ -377,6 +378,14 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	report.Runtime = time.Since(start)
 	report.Latency = computeLatencyMetrics(caseResults)
 
+	if opts.SkipLatencyGate {
+		// Disable latency gates so that standard test suite runs
+		// are not flaked by I/O variance across CI environments.
+		// Latency enforcement remains available for dedicated
+		// benchmark runs (e.g. bench/run_retrieval.go -enforce).
+		report.Thresholds.LatencyP95MsMax = math.MaxFloat64
+		report.Thresholds.LatencyMaxMsMax = math.MaxFloat64
+	}
 	if opts.Enforce {
 		if err := enforceThresholds(report); err != nil {
 			return report, err
