@@ -305,7 +305,7 @@ Ohara is production-oriented for local, source-built use:
 - Operational tooling: `ohara check`, `ohara validate`, `ohara doctor`, `ohara backup`, and `ohara maintain`
 - Recovery path: SQLite snapshots plus import/export and git-sync JSONL mirrors
 
-Start with [Installation](docs/INSTALLATION.md), then use [Operations](docs/OPERATIONS.md) for service, backup, restore, and migration runbooks.
+Start with the install section below, then use [Operations](docs/OPERATIONS.md) for service, backup, restore, and migration runbooks.
 
 ## Community Ready
 
@@ -314,12 +314,11 @@ This is an open project. Contributions are welcome — see [CONTRIBUTING.md](CON
 - **License**: [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution
 - **Install options**: one-command installer, manual release downloads, or source build fallback
 - **No TUI**: CLI and MCP are the production interface
-- **Battle tested**: see [Production Notes](docs/PRODUCTION_NOTES.md) for testing evidence and known limitations
+- **Battle tested**: see [Production Notes](docs/PRODUCTION_NOTES.md) for testing evidence and known limitations (local single-user contexts)
 
 ## License
 
 [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution. Built on the Engram core memory system (MIT).
-
 
 ## Install
 
@@ -332,7 +331,7 @@ curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
 Install a pinned version:
 
 ```bash
-OHARA_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
+OHARA_VERSION=v1 curl -fsSL https://raw.githubusercontent.com/ashwnn/ohara/main/install.sh | sh
 ```
 
 Build from source via installer fallback:
@@ -372,8 +371,8 @@ rm -f ~/.local/bin/ohara
 Tag and push a semantic version; GitHub Actions handles build and release publication:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1
+git push origin v1
 ```
 
 The release workflow runs tests, builds archives for supported targets, writes `checksums.txt`, and uploads all artifacts to GitHub Releases.

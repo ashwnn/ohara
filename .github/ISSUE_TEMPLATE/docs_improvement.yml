@@ -32,13 +32,14 @@ body:
       description: Where is the documentation issue?
       options:
         - README.md
+        - DOCS.md
         - CONTRIBUTING.md
-        - docs/INSTALLATION.md
-        - docs/AGENT-SETUP.md
+        - BENCHMARKS.md
         - docs/ARCHITECTURE.md
+        - docs/OPERATIONS.md
+        - docs/PRODUCTION_NOTES.md
         - docs/PLUGINS.md
         - docs/COMPARISON.md
-        - DOCS.md
         - A skill in skills/
         - Other
     validations:

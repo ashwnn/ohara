@@ -2,9 +2,10 @@
 
 # Documentation
 
-This is the canonical reference for Ohara outside the README. The goal is one
-maintained reference file plus the small set of standalone files that GitHub
-and the README already expect.
+- [Database Schema](#database-schema)
+- [HTTP API Endpoints](#http-api-endpoints)
+- [MCP Tools](#mcp-tools-33-tools)
+- [Design Decisions](#design-decisions)
 
 ## Core Entry Points
 
@@ -18,12 +19,19 @@ and the README already expect.
 
 ## Agent Integration
 
-Ohara has two integration paths:
+- **sessions** — `id` (TEXT PK), `project`, `directory`, `started_at`, `ended_at`, `summary`, `status`
+- **memory_items** — `id` (INTEGER PK), `project_id`, `actor_id`, `kind`, `scope`, `title`, `body`, `tags`, `source`, `status`, `superseded_by`, `expires_at`, `domain`, `evidence_json`, `applies_to_json`, `related_json`, `classification`, `access_count`, `last_accessed`, `session_id`, `written_by`, `trigger_condition`, `utility_weight`, `consolidated_from`, `idempotency_key`
+- **memory_relations** — typed directional links: `from_id`, `to_id`, `relation` (caused, resolves, supersedes, implements, contradicts)
+- **memory_outcomes** — success/failure tracking per memory
+- **memory_usage** — explicit usage events
+- **memory_embeddings** — float32 embedding vectors (opt-in Ollama sidecar)
+- **entities** + **memory_entities** — entity graph for cross-memory queries
+- **audit_log** — append-only, snapshots before mutation
+- **user_prompts** + **prompts_fts** — user prompt storage with FTS5
 
-- OpenCode plugin for the full local experience
-- MCP for any agent that speaks standard MCP
+### SQLite Config
 
-Recommended setup:
+WAL mode, busy timeout 5000ms, synchronous NORMAL, foreign keys ON.
 
 - OpenCode: `ohara setup opencode`
 - Other agents: `ohara mcp` for stdio, or remote MCP over HTTP when network
@@ -31,130 +39,99 @@ Recommended setup:
 
 The MCP server supports these profiles:
 
-- `agent` — focused memory operations
-- `admin` — curation and maintenance tools
-- `all` — everything
+Base URL: `http://127.0.0.1:7331`. All JSON.
 
-Use `agent` unless you are deliberately doing maintenance work.
+### Stability Rules
 
-## Plugin Behavior
+- Routes listed here are the supported contract. Legacy aliases may exist; new integrations should use canonical routes.
+- Error responses use non-2xx HTTP status codes with JSON or text error body.
+- Breaking route or payload changes require docs and tests in the same change.
+- The API assumes a trusted local caller. Do not expose directly to a network. For remote MCP, use the dedicated remote MCP mode.
 
-Ohara ships a thin OpenCode plugin. Everything else should integrate through
-MCP unless there is a strong reason to add client-specific behavior.
+### Endpoints
 
-The plugin can:
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/health` | GET | Service status, version, DB size |
+| `/sessions` | POST | Create session |
+| `/sessions/{id}/end` | POST | End session with summary |
+| `/sessions/recent` | GET | Recent sessions |
+| `/search` | GET | FTS5 search with filters |
+| `/timeline` | GET | Chronological context around a memory |
+| `/prompts` | POST | Save user prompt |
+| `/prompts/recent` | GET | Recent prompts |
+| `/prompts/search` | GET | Search prompts |
+| `/context` | GET | Formatted context pack |
+| `/mem/capture_passive` | POST | Extract learnings from text |
+| `/export` | GET | Export all data as JSON |
+| `/import` | POST | Import from JSON |
+| `/stats` | GET | Memory statistics |
+| `/observe` | POST | Store raw observation (plugin support) |
+| `/memories` | GET/POST | List/create memory items |
+| `/memories/search` | GET | Memory search |
+| `/memories/{id}` | GET/PATCH/DELETE | Single memory CRUD |
+| `/memories/{id}/timeline` | GET | Per-memory timeline |
+| `/pack` | POST | Build context pack |
+| `/projects/migrate` | POST | Merge memories from old project name to canonical |
+| `/sync/status` | GET | Autosync phase, last error, backoff |
+| `/files/history` | GET | File-scoped memory history |
+| `/files/context` | POST | File-focused context pack |
 
-- ensure a local server is available
-- create sessions on demand
-- inject memory protocol guidance into the system prompt
-- preserve context across compaction
-- optionally send passive observations to `POST /observe`
-- strip `<private>` tags before persistence
-
-Relevant environment variables:
-
-- `OHARA_BIN` — explicit binary path override
-- `OHARA_PORT` — local HTTP port, default `7331`
-- `OHARA_MEMORY_INJECTION` — disable protocol injection with `0`
-- `OHARA_MEMORY_AGENTS` — comma-separated agent allowlist for injection
-- `OHARA_PASSIVE_CAPTURE_LEVEL` — `off|prompts|metadata|tools|full`
-- `OHARA_DEBUG` — enable plugin diagnostics
-
-## HTTP API
-
-Base URL: `http://127.0.0.1:7331`
-
-Contract rules:
-
-- routes listed here are the supported surface
-- request and response bodies are JSON unless noted otherwise
-- route or payload changes require docs and tests in the same change
-
-Health:
-
-```http
-GET /health
-GET /ready
-```
-
-Sessions:
-
-```http
-POST /sessions
-PATCH /sessions/{id}
-POST /sessions/{id}/end
-GET /sessions/{id}/context
-GET /sessions/recent
-DELETE /sessions/{id}
-```
-
-`POST /sessions/{id}/end` is a legacy alias. Prefer `PATCH /sessions/{id}`.
-
-Prompts and observation:
-
-```http
-POST /prompts
-GET /prompts/recent
-GET /prompts/search
-DELETE /prompts/{id}
-POST /capture/passive
-POST /observe
-```
+For remote MCP mode (streamable HTTP at `/mcp`), see the Operations runbook.
 
 Memory retrieval:
 
-```http
-GET /context
-GET /files/history
-POST /files/context
-GET /memories
-GET /memories/search
-GET /memories/{id}
-GET /memories/{id}/timeline
-GET /memories/{id}/revisions
-POST /pack
-GET /stats
-GET /sync/status
-```
+## MCP Tools (33 tools)
 
 Memory mutation:
 
-```http
-POST /memories
-PATCH /memories/{id}
-DELETE /memories/{id}
-POST /projects/migrate
-GET /export
-POST /import
-```
+| Tool | Purpose |
+|------|---------|
+| `mem_save` | Save structured observation (domain, classification, evidence, actor) |
+| `mem_update` | Update by ID (partial) |
+| `mem_delete` | Soft or hard delete |
+| `mem_forget` | Archive with documented reason |
+| `mem_suggest_topic_key` | Stable upsert key |
 
 Remote MCP:
 
-```http
-GET /mcp
-POST /mcp
-GET /mcp/sse
-POST /mcp/message
-```
+| Tool | Purpose |
+|------|---------|
+| `mem_search` | FTS5 + optional hybrid, domain/kind/actor filters, relevance scoring |
+| `mem_search_rerank` | Explicit LLM reranking (opt-in) |
+| `mem_context` | Recent session context |
+| `mem_prime` | Knowledge vs Episode tier markdown packs |
+| `mem_pack` | Token-budgeted context pack |
+| `mem_pack_explain` | Per-memory score breakdown |
+| `mem_timeline` | Chronological context around a memory |
+| `mem_graph_context` | Entity-centric traversal |
+| `mem_file_history` | Recent memories for a file path |
+| `mem_file_context` | File-focused context pack |
 
 Use `streamable-http` as the canonical remote transport. Keep auth enabled if
 you expose remote MCP.
 
-## Architecture
+| Tool | Purpose |
+|------|---------|
+| `mem_link` | Create typed relation (caused, resolves, supersedes, implements, contradicts) |
+| `mem_unlink` | Remove relation |
+| `mem_related` | Traverse relations |
 
 Ohara is a local-first memory layer for coding agents. The boundaries are:
 
-- CLI and HTTP expose the product surface
-- MCP exposes agent-facing memory tools
-- the OpenCode plugin adds lifecycle behavior on top of MCP
-- SQLite is the system of record
+| Tool | Purpose |
+|------|---------|
+| `mem_consolidate_candidates` | Grouped episodic memories for review |
+| `mem_mark_consolidated` | Archive sources after semantic consolidation |
+| `mem_extract_entities` | Heuristic entity extraction and linking |
 
 Runtime shape:
 
-```text
-agent/plugin -> MCP or HTTP -> store -> SQLite
-                           -> post-write jobs
-```
+| Tool | Purpose |
+|------|---------|
+| `mem_mark_used` | Record usage (increments access_count) |
+| `mem_append_outcome` | Append success/failure outcome |
+| `mem_feedback` | Explicit utility feedback (RL weighting) |
 
 Storage and retrieval:
 
@@ -208,16 +185,52 @@ go test ./internal/token/ -bench=. -benchmem -benchtime=1s
 
 Useful retrieval variants:
 
-```bash
-OHARA_RETRIEVAL_MODE=fts5 go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=deterministic-test go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=ollama go run ./bench/run_retrieval.go -k 5
-```
+| Tool | Purpose |
+|------|---------|
+| `mem_session_start` | Register session start |
+| `mem_session_end` | Mark session completed |
+| `mem_session_summary` | Save end-of-session summary |
 
 ## Documentation Rules
 
-- Keep the README as the product front page.
-- Prefer one canonical page per topic over parallel guides.
-- Remove stale plans, reports, and duplicate references instead of keeping them
-  around as live documentation.
+| Tool | Purpose |
+|------|---------|
+| `mem_save_prompt` | Save user prompt |
+| `mem_capture_passive` | Extract learnings from text |
+| `mem_stats` | System statistics |
+| `mem_merge_projects` | Merge project name variants (admin) |
+| `mem_list_domains` | List domains for a project (admin) |
+
+### Tool Profiles
+
+The MCP server supports profiles to control visible tools:
+
+```bash
+ohara mcp                       # All 33 tools (default)
+ohara mcp --tools=agent         # 26 tools agents use in practice
+ohara mcp --tools=admin         # 5 tools for manual curation
+ohara mcp --tools=agent,admin   # Combine profiles
+ohara mcp --tools=mem_save,mem_search  # Specific tool names
+```
+
+---
+
+## Design Decisions
+
+1. **Go over TypeScript** — single binary, no runtime
+2. **SQLite + FTS5 over vector DB** — FTS5 covers most use cases; embeddings opt-in
+3. **Agent-agnostic core** — Go binary is brain, thin plugins per-agent
+4. **Agent-driven compression** — agent already has an LLM, no need for another
+5. **Privacy at two layers** — strip in plugin AND store
+6. **Pure Go SQLite** — no CGO, true cross-platform
+7. **No raw auto-capture** — curated summaries only
+8. **Zero LLM at retrieval time** — deterministic query latency, reranking is explicit opt-in
+
+---
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `github.com/mark3labs/mcp-go` | v0.44.0 | MCP protocol |
+| `modernc.org/sqlite` | v1.45.0 | Pure Go SQLite (no CGO) |
