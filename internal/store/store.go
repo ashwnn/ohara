@@ -550,7 +550,52 @@ type Config struct {
 	EmbeddingDim      int
 	HybridAlpha       float64
 	OllamaURL         string
-	RerankerBackend   string // "none", "tfidf" (default), "ollama"
+	RerankerBackend   string         // "none", "tfidf" (default), "ollama"
+	Scoring           ScoringWeights // tunable retrieval scoring weights
+}
+
+// ScoringWeights centralizes all retrieval scoring parameters.
+// Zero values are replaced by sensible defaults at store initialization.
+type ScoringWeights struct {
+	// Kind boosts (multiplied into FTS5 relevance).
+	KindDecision   float64 `json:"kind_decision"`   // default: 1.5
+	KindProcedure  float64 `json:"kind_procedure"`  // default: 1.4
+	KindBugfix     float64 `json:"kind_bugfix"`     // default: 1.3
+	KindPattern    float64 `json:"kind_pattern"`    // default: 1.2
+	KindConfig     float64 `json:"kind_config"`     // default: 1.1
+	KindPostmortem float64 `json:"kind_postmortem"` // default: 1.05
+	KindDiscovery  float64 `json:"kind_discovery"`  // default: 0.85
+
+	// Classification boosts.
+	ClassFoundational float64 `json:"class_foundational"` // default: 1.10
+	ClassTactical     float64 `json:"class_tactical"`     // default: 1.03
+	ClassObservational float64 `json:"class_observational"` // default: 0.84
+
+	// Recency boosts.
+	Recency7DayBoost  float64 `json:"recency_7day_boost"`  // default: 1.15
+	Recency30DayBoost float64 `json:"recency_30day_boost"` // default: 1.05
+
+	// Outcome boost from memory_outcomes.
+	OutcomeSuccessBonus float64 `json:"outcome_success_bonus"` // default: 0.2
+	OutcomeFailurePenalty float64 `json:"outcome_failure_penalty"` // default: 0.3
+
+	// Hybrid RRF modifiers (additive to RRF score, ~0.001-0.004 range).
+	HybridLexicalBonus       float64 `json:"hybrid_lexical_bonus"`       // default: 0.010
+	HybridLexicalScoreBonus  float64 `json:"hybrid_lexical_score_bonus"` // default: 0.004
+	HybridKindDecisionBonus  float64 `json:"hybrid_kind_decision_bonus"` // default: 0.004
+	HybridKindProcedureBonus float64 `json:"hybrid_kind_procedure_bonus"` // default: 0.0035
+	HybridKindPatternBonus   float64 `json:"hybrid_kind_pattern_bonus"`  // default: 0.003
+	HybridKindBugfixBonus    float64 `json:"hybrid_kind_bugfix_bonus"`   // default: 0.0025
+	HybridClassFoundBonus    float64 `json:"hybrid_class_found_bonus"`   // default: 0.002
+	HybridClassObsPenalty    float64 `json:"hybrid_class_obs_penalty"`   // default: 0.0015
+	HybridArchivedPenalty    float64 `json:"hybrid_archived_penalty"`    // default: 0.004
+	HybridExpiredPenalty     float64 `json:"hybrid_expired_penalty"`     // default: 0.004
+	HybridUntrustedPenalty   float64 `json:"hybrid_untrusted_penalty"`   // default: 0.002
+	HybridRecency7DayBonus   float64 `json:"hybrid_recency_7day_bonus"`  // default: 0.002
+	HybridRecencyOldPenalty  float64 `json:"hybrid_recency_old_penalty"` // default: 0.002
+
+	// Utility weight multiplier in hybrid RRF.
+	HybridUtilityMultiplier float64 `json:"hybrid_utility_multiplier"` // default: 0.004
 }
 
 func DefaultConfig() (Config, error) {
@@ -596,14 +641,103 @@ func DefaultConfig() (Config, error) {
 	if reranker := strings.TrimSpace(os.Getenv("OHARA_RERANKER_BACKEND")); reranker != "" {
 		cfg.RerankerBackend = reranker
 	}
+	applyScoringDefaults(&cfg.Scoring)
 	return cfg, nil
+}
+
+// applyScoringDefaults fills zero-valued scoring weights with sensible defaults.
+func applyScoringDefaults(sw *ScoringWeights) {
+	if sw.KindDecision == 0 {
+		sw.KindDecision = 1.5
+	}
+	if sw.KindProcedure == 0 {
+		sw.KindProcedure = 1.4
+	}
+	if sw.KindBugfix == 0 {
+		sw.KindBugfix = 1.3
+	}
+	if sw.KindPattern == 0 {
+		sw.KindPattern = 1.2
+	}
+	if sw.KindConfig == 0 {
+		sw.KindConfig = 1.1
+	}
+	if sw.KindPostmortem == 0 {
+		sw.KindPostmortem = 1.05
+	}
+	if sw.KindDiscovery == 0 {
+		sw.KindDiscovery = 0.85
+	}
+	if sw.ClassFoundational == 0 {
+		sw.ClassFoundational = 1.10
+	}
+	if sw.ClassTactical == 0 {
+		sw.ClassTactical = 1.03
+	}
+	if sw.ClassObservational == 0 {
+		sw.ClassObservational = 0.84
+	}
+	if sw.Recency7DayBoost == 0 {
+		sw.Recency7DayBoost = 1.15
+	}
+	if sw.Recency30DayBoost == 0 {
+		sw.Recency30DayBoost = 1.05
+	}
+	if sw.OutcomeSuccessBonus == 0 {
+		sw.OutcomeSuccessBonus = 0.2
+	}
+	if sw.OutcomeFailurePenalty == 0 {
+		sw.OutcomeFailurePenalty = 0.3
+	}
+	if sw.HybridLexicalBonus == 0 {
+		sw.HybridLexicalBonus = 0.010
+	}
+	if sw.HybridLexicalScoreBonus == 0 {
+		sw.HybridLexicalScoreBonus = 0.004
+	}
+	if sw.HybridKindDecisionBonus == 0 {
+		sw.HybridKindDecisionBonus = 0.004
+	}
+	if sw.HybridKindProcedureBonus == 0 {
+		sw.HybridKindProcedureBonus = 0.0035
+	}
+	if sw.HybridKindPatternBonus == 0 {
+		sw.HybridKindPatternBonus = 0.003
+	}
+	if sw.HybridKindBugfixBonus == 0 {
+		sw.HybridKindBugfixBonus = 0.0025
+	}
+	if sw.HybridClassFoundBonus == 0 {
+		sw.HybridClassFoundBonus = 0.002
+	}
+	if sw.HybridClassObsPenalty == 0 {
+		sw.HybridClassObsPenalty = 0.0015
+	}
+	if sw.HybridArchivedPenalty == 0 {
+		sw.HybridArchivedPenalty = 0.004
+	}
+	if sw.HybridExpiredPenalty == 0 {
+		sw.HybridExpiredPenalty = 0.004
+	}
+	if sw.HybridUntrustedPenalty == 0 {
+		sw.HybridUntrustedPenalty = 0.002
+	}
+	if sw.HybridRecency7DayBonus == 0 {
+		sw.HybridRecency7DayBonus = 0.002
+	}
+	if sw.HybridRecencyOldPenalty == 0 {
+		sw.HybridRecencyOldPenalty = 0.002
+	}
+	if sw.HybridUtilityMultiplier == 0 {
+		sw.HybridUtilityMultiplier = 0.004
+	}
 }
 
 // FallbackConfig returns a Config with the given DataDir and default values.
 // Use this when DefaultConfig fails and you have resolved the home directory
 // through alternative means.
 func FallbackConfig(dataDir string) Config {
-	return Config{
+	cfg := Config{
 		DataDir:           dataDir,
 		MaxContextResults: 20,
 		MaxSearchResults:  20,
@@ -616,6 +750,8 @@ func FallbackConfig(dataDir string) Config {
 		OllamaURL:         "http://localhost:11434",
 		RerankerBackend:   "tfidf",
 	}
+	applyScoringDefaults(&cfg.Scoring)
+	return cfg
 }
 
 type Store struct {
@@ -753,6 +889,9 @@ func (s *Store) commitHook(tx *sql.Tx) error {
 }
 
 func New(cfg Config) (*Store, error) {
+	// Apply scoring defaults for any zero-valued weights.
+	applyScoringDefaults(&cfg.Scoring)
+
 	if !filepath.IsAbs(cfg.DataDir) {
 		return nil, fmt.Errorf("ohara: data directory must be an absolute path, got %q — set OHARA_DATA_DIR or ensure your home directory is resolvable", cfg.DataDir)
 	}

@@ -570,3 +570,107 @@ func TestRerankerBackendEnvVar(t *testing.T) {
 		t.Errorf("reranker backend from env = %q, want none", cfg.RerankerBackend)
 	}
 }
+
+// -- Scoring weights tests --
+
+func TestScoringWeightsDefaultsApplied(t *testing.T) {
+	cfg := FallbackConfig(t.TempDir())
+	if cfg.Scoring.KindDecision != 1.5 {
+		t.Errorf("default KindDecision = %f, want 1.5", cfg.Scoring.KindDecision)
+	}
+	if cfg.Scoring.KindDiscovery != 0.85 {
+		t.Errorf("default KindDiscovery = %f, want 0.85", cfg.Scoring.KindDiscovery)
+	}
+	if cfg.Scoring.ClassFoundational != 1.10 {
+		t.Errorf("default ClassFoundational = %f, want 1.10", cfg.Scoring.ClassFoundational)
+	}
+	if cfg.Scoring.HybridLexicalBonus != 0.010 {
+		t.Errorf("default HybridLexicalBonus = %f, want 0.010", cfg.Scoring.HybridLexicalBonus)
+	}
+	if cfg.Scoring.HybridUtilityMultiplier != 0.004 {
+		t.Errorf("default HybridUtilityMultiplier = %f, want 0.004", cfg.Scoring.HybridUtilityMultiplier)
+	}
+}
+
+func TestScoringWeightsCustomPreserved(t *testing.T) {
+	cfg := FallbackConfig(t.TempDir())
+	cfg.Scoring = ScoringWeights{
+		KindDecision: 2.0,
+		KindBugfix:   5.0,
+	}
+	applyScoringDefaults(&cfg.Scoring)
+	// Set values should be preserved.
+	if cfg.Scoring.KindDecision != 2.0 {
+		t.Errorf("custom KindDecision = %f, want 2.0", cfg.Scoring.KindDecision)
+	}
+	if cfg.Scoring.KindBugfix != 5.0 {
+		t.Errorf("custom KindBugfix = %f, want 5.0", cfg.Scoring.KindBugfix)
+	}
+	// Unset values should get defaults.
+	if cfg.Scoring.KindProcedure != 1.4 {
+		t.Errorf("default KindProcedure = %f, want 1.4", cfg.Scoring.KindProcedure)
+	}
+}
+
+func TestHybridScoreModifiersUsesConfig(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	// Set extreme custom weights.
+	s.cfg.Scoring.HybridKindDecisionBonus = 0.999
+	s.cfg.Scoring.HybridArchivedPenalty = 0.001
+
+	item := MemoryItem{
+		ID:     1,
+		Kind:   MemoryKindDecision,
+		Status: MemoryStatusActive,
+		Title:  "Test",
+		Body:   "Test body",
+	}
+	mod := s.hybridScoreModifiers(item)
+	if mod < 0.9 {
+		t.Errorf("expected high decision bonus from custom weight, got %f", mod)
+	}
+}
+
+func TestScoringWeightsAllHaveDefaults(t *testing.T) {
+	sw := ScoringWeights{}
+	applyScoringDefaults(&sw)
+	// Spot-check that all fields are non-zero after defaults.
+	checks := []struct {
+		name  string
+		value float64
+	}{
+		{"KindDecision", sw.KindDecision},
+		{"KindProcedure", sw.KindProcedure},
+		{"KindBugfix", sw.KindBugfix},
+		{"KindPattern", sw.KindPattern},
+		{"KindConfig", sw.KindConfig},
+		{"KindPostmortem", sw.KindPostmortem},
+		{"KindDiscovery", sw.KindDiscovery},
+		{"ClassFoundational", sw.ClassFoundational},
+		{"ClassTactical", sw.ClassTactical},
+		{"ClassObservational", sw.ClassObservational},
+		{"Recency7DayBoost", sw.Recency7DayBoost},
+		{"Recency30DayBoost", sw.Recency30DayBoost},
+		{"OutcomeSuccessBonus", sw.OutcomeSuccessBonus},
+		{"OutcomeFailurePenalty", sw.OutcomeFailurePenalty},
+		{"HybridLexicalBonus", sw.HybridLexicalBonus},
+		{"HybridLexicalScoreBonus", sw.HybridLexicalScoreBonus},
+		{"HybridKindDecisionBonus", sw.HybridKindDecisionBonus},
+		{"HybridKindProcedureBonus", sw.HybridKindProcedureBonus},
+		{"HybridKindPatternBonus", sw.HybridKindPatternBonus},
+		{"HybridKindBugfixBonus", sw.HybridKindBugfixBonus},
+		{"HybridClassFoundBonus", sw.HybridClassFoundBonus},
+		{"HybridClassObsPenalty", sw.HybridClassObsPenalty},
+		{"HybridArchivedPenalty", sw.HybridArchivedPenalty},
+		{"HybridExpiredPenalty", sw.HybridExpiredPenalty},
+		{"HybridUntrustedPenalty", sw.HybridUntrustedPenalty},
+		{"HybridRecency7DayBonus", sw.HybridRecency7DayBonus},
+		{"HybridRecencyOldPenalty", sw.HybridRecencyOldPenalty},
+		{"HybridUtilityMultiplier", sw.HybridUtilityMultiplier},
+	}
+	for _, c := range checks {
+		if c.value == 0 {
+			t.Errorf("scoring weight %s has zero value after defaults", c.name)
+		}
+	}
+}

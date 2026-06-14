@@ -274,15 +274,15 @@ func (s *Store) fuseHybridRRF(ftsItems, vectorItems []MemoryItem, rankConstant i
 		lexicalBonus := 0.0
 		if rank, ok := ftsRank[id]; ok {
 			rrfScore += 1.0 / float64(rankConstant+rank)
-			lexicalBonus = 0.010
+			lexicalBonus = s.cfg.Scoring.HybridLexicalBonus
 			if maxFTSBaseScore > 0 {
-				lexicalBonus += (ftsBaseScore[id] / maxFTSBaseScore) * 0.004
+				lexicalBonus += (ftsBaseScore[id] / maxFTSBaseScore) * s.cfg.Scoring.HybridLexicalScoreBonus
 			}
 		}
 		if rank, ok := vectorRank[id]; ok {
 			rrfScore += 1.0 / float64(rankConstant+rank)
 		}
-		item.RelevanceScore = rrfScore + lexicalBonus + hybridScoreModifiers(item)
+		item.RelevanceScore = rrfScore + lexicalBonus + s.hybridScoreModifiers(item)
 		out = append(out, item)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -297,51 +297,52 @@ func (s *Store) fuseHybridRRF(ftsItems, vectorItems []MemoryItem, rankConstant i
 	return out
 }
 
-func hybridScoreModifiers(item MemoryItem) float64 {
+func (s *Store) hybridScoreModifiers(item MemoryItem) float64 {
+	sw := s.cfg.Scoring
 	mod := 0.0
 	if item.UtilityWeight > 0 {
-		mod += item.UtilityWeight * 0.004
+		mod += item.UtilityWeight * sw.HybridUtilityMultiplier
 	}
 
 	switch item.Kind {
 	case MemoryKindDecision:
-		mod += 0.004
+		mod += sw.HybridKindDecisionBonus
 	case MemoryKindProcedure:
-		mod += 0.0035
+		mod += sw.HybridKindProcedureBonus
 	case MemoryKindPattern:
-		mod += 0.003
+		mod += sw.HybridKindPatternBonus
 	case MemoryKindBugfix:
-		mod += 0.0025
+		mod += sw.HybridKindBugfixBonus
 	}
 
 	switch item.Classification {
 	case "foundational":
-		mod += 0.002
+		mod += sw.HybridClassFoundBonus
 	case "observational":
-		mod -= 0.0015
+		mod -= sw.HybridClassObsPenalty
 	}
 
 	if item.Status == MemoryStatusSuperseded || item.Status == MemoryStatusArchived {
-		mod -= 0.004
+		mod -= sw.HybridArchivedPenalty
 	}
 	if item.SupersededBy != nil && *item.SupersededBy != 0 {
-		mod -= 0.004
+		mod -= sw.HybridArchivedPenalty
 	}
 	if item.ExpiresAt != nil && *item.ExpiresAt != "" {
 		if expires, err := time.Parse(time.RFC3339Nano, *item.ExpiresAt); err == nil && expires.Before(time.Now().UTC()) {
-			mod -= 0.004
+			mod -= sw.HybridExpiredPenalty
 		}
 	}
 	if item.TrustLevel == "untrusted" {
-		mod -= 0.002
+		mod -= sw.HybridUntrustedPenalty
 	}
 
 	if updated, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err == nil {
 		age := time.Since(updated)
 		if age <= 7*24*time.Hour {
-			mod += 0.002
+			mod += sw.HybridRecency7DayBonus
 		} else if age > 180*24*time.Hour {
-			mod -= 0.002
+			mod -= sw.HybridRecencyOldPenalty
 		}
 	}
 
