@@ -382,7 +382,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		// Disable latency gates so that standard test suite runs
 		// are not flaked by I/O variance across CI environments.
 		// Latency enforcement remains available for dedicated
-		// benchmark runs (e.g. bench/run_retrieval.go -enforce).
+		// benchmark runs (e.g. bench/cmd/run-retrieval/ -enforce).
 		report.Thresholds.LatencyP95MsMax = math.MaxFloat64
 		report.Thresholds.LatencyMaxMsMax = math.MaxFloat64
 	}

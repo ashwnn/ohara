@@ -38,11 +38,11 @@ go test ./bench/retrieval -v
 Run the standalone fixture harness:
 
 ```bash
-go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=fts5 go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=deterministic-test go run ./bench/run_retrieval.go -k 5
-OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=ollama go run ./bench/run_retrieval.go -k 5
+go run ./bench/cmd/run-retrieval/ -k 5
+OHARA_RETRIEVAL_MODE=fts5 go run ./bench/cmd/run-retrieval/ -k 5
+OHARA_RETRIEVAL_MODE=hybrid go run ./bench/cmd/run-retrieval/ -k 5
+OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=deterministic-test go run ./bench/cmd/run-retrieval/ -k 5
+OHARA_RETRIEVAL_MODE=hybrid OHARA_EMBEDDING_BACKEND=ollama go run ./bench/cmd/run-retrieval/ -k 5
 ```
 
 Notes:
@@ -69,7 +69,7 @@ The retrieval harness report includes:
 Pass `-json` to output the full report as pretty-printed JSON:
 
 ```bash
-go run ./bench/run_retrieval.go -k 5 -json
+go run ./bench/cmd/run-retrieval/ -k 5 -json
 ```
 
 The JSON includes a `CaseResults` array with one entry per fixture case:
@@ -104,9 +104,9 @@ go test ./bench/longmemeval -v
 Run standalone harness:
 
 ```bash
-go run ./bench/run_longmemeval.go -k 5
-go run ./bench/run_longmemeval.go -k 5 -json
-go run ./bench/run_longmemeval.go -k 5 -enforce -skip-latency
+go run ./bench/cmd/run-longmemeval/ -k 5
+go run ./bench/cmd/run-longmemeval/ -k 5 -json
+go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
 ```
 
 The harness report includes:
@@ -123,7 +123,7 @@ The harness report includes:
 Pass `-json` to output the full report as pretty-printed JSON:
 
 ```bash
-go run ./bench/run_longmemeval.go -k 5 -json
+go run ./bench/cmd/run-longmemeval/ -k 5 -json
 ```
 
 The JSON includes a `CaseResults` array with per-question fields:

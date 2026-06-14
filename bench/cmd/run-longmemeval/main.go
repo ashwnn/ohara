@@ -2,10 +2,10 @@
 //
 // Usage:
 //
-//	go run ./bench/run_longmemeval.go -k 5
-//	go run ./bench/run_longmemeval.go -k 5 -json
-//	go run ./bench/run_longmemeval.go -k 5 -judge -mode hybrid
-//	go run ./bench/run_longmemeval.go -k 5 -enforce -skip-latency
+//	go run ./bench/cmd/run-longmemeval/ -k 5
+//	go run ./bench/cmd/run-longmemeval/ -k 5 -json
+//	go run ./bench/cmd/run-longmemeval/ -k 5 -judge -mode hybrid
+//	go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
 package main
 
 import (

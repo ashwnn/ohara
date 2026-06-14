@@ -81,11 +81,11 @@ go run ./bench/precision/   -k 3
 
 # Retrieval fixture harness
 go test ./bench/retrieval/ -v
-go run ./bench/run_retrieval.go -k 5
+go run ./bench/cmd/run-retrieval/ -k 5
 
 # LongMemEval session-distance recall
 go test ./bench/longmemeval/ -v
-go run ./bench/run_longmemeval.go -k 5
+go run ./bench/cmd/run-longmemeval/ -k 5
 
 # Token counting
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s
