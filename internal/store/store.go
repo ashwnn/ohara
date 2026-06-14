@@ -550,6 +550,7 @@ type Config struct {
 	EmbeddingDim      int
 	HybridAlpha       float64
 	OllamaURL         string
+	RerankerBackend   string // "none", "tfidf" (default), "ollama"
 }
 
 func DefaultConfig() (Config, error) {
@@ -568,6 +569,7 @@ func DefaultConfig() (Config, error) {
 		EmbeddingDim:      768,
 		HybridAlpha:       0.6,
 		OllamaURL:         "http://localhost:11434",
+		RerankerBackend:   "tfidf",
 	}
 	if mode := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MODE")); mode != "" {
 		cfg.RetrievalMode = mode
@@ -591,6 +593,9 @@ func DefaultConfig() (Config, error) {
 	if ollamaURL := strings.TrimSpace(os.Getenv("OHARA_OLLAMA_URL")); ollamaURL != "" {
 		cfg.OllamaURL = ollamaURL
 	}
+	if reranker := strings.TrimSpace(os.Getenv("OHARA_RERANKER_BACKEND")); reranker != "" {
+		cfg.RerankerBackend = reranker
+	}
 	return cfg, nil
 }
 
@@ -609,6 +614,7 @@ func FallbackConfig(dataDir string) Config {
 		EmbeddingDim:      768,
 		HybridAlpha:       0.6,
 		OllamaURL:         "http://localhost:11434",
+		RerankerBackend:   "tfidf",
 	}
 }
 

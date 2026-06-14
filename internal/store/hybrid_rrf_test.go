@@ -398,3 +398,175 @@ func TestSearchMemoriesActiveFiltersSupersededAndWrongProject(t *testing.T) {
 		}
 	}
 }
+
+// -- TF-IDF reranker tests --
+
+func TestRerankTFIDFBasic(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	s.cfg.RerankerBackend = "tfidf"
+
+	items := []MemoryItem{
+		{ID: 1, Title: "JWT signing algorithm", Body: "All tokens signed with RS256 using 2048-bit RSA keys."},
+		{ID: 2, Title: "Database backup strategy", Body: "Backups run daily at 2 AM using SQLite .backup command."},
+		{ID: 3, Title: "API rate limiting", Body: "Login endpoint limited to 5 requests per minute per IP."},
+	}
+	ranked, err := s.RerankMemoriesWithLLM("JWT signing RSA keys", items, 3)
+	if err != nil {
+		t.Fatalf("rerank failed: %v", err)
+	}
+	if len(ranked) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(ranked))
+	}
+	// Item 1 (JWT) should be ranked highest.
+	if ranked[0].ID != 1 {
+		t.Errorf("expected JWT item first, got ID %d", ranked[0].ID)
+	}
+}
+
+func TestRerankTFIDFInvertsOrder(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	s.cfg.RerankerBackend = "tfidf"
+
+	items := []MemoryItem{
+		{ID: 1, Title: "Database connection pool", Body: "Connection pool capped at 25 with SetMaxOpenConns."},
+		{ID: 2, Title: "Deploy blue-green", Body: "Production uses blue-green deployment with traffic shifting."},
+		{ID: 3, Title: "Logging with slog", Body: "All services use structured logging with Go slog package."},
+	}
+	ranked, err := s.RerankMemoriesWithLLM("deployment strategy production traffic", items, 3)
+	if err != nil {
+		t.Fatalf("rerank failed: %v", err)
+	}
+	// Item 2 (deployment) should be ranked highest.
+	if ranked[0].ID != 2 {
+		t.Errorf("expected deployment item first, got ID %d", ranked[0].ID)
+	}
+}
+
+func TestRerankNoneBackend(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	s.cfg.RerankerBackend = "none"
+
+	items := []MemoryItem{
+		{ID: 1, Title: "First", Body: "First item body."},
+		{ID: 2, Title: "Second", Body: "Second item body."},
+		{ID: 3, Title: "Third", Body: "Third item body."},
+	}
+	ranked, err := s.RerankMemoriesWithLLM("any query", items, 3)
+	if err != nil {
+		t.Fatalf("rerank with none backend failed: %v", err)
+	}
+	// With "none", should return items in original order.
+	if ranked[0].ID != 1 {
+		t.Errorf("expected original order preserved, got ID %d", ranked[0].ID)
+	}
+}
+
+func TestRerankTFIDFHandlesEmpty(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	s.cfg.RerankerBackend = "tfidf"
+
+	ranked, err := s.RerankMemoriesWithLLM("query", nil, 3)
+	if err != nil {
+		t.Fatalf("rerank nil failed: %v", err)
+	}
+	if len(ranked) != 0 {
+		t.Errorf("expected empty for nil input, got %d", len(ranked))
+	}
+}
+
+func TestRerankUnknownBackendFallsBackToTFIDF(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	s.cfg.RerankerBackend = "magical-ranker"
+
+	items := []MemoryItem{
+		{ID: 1, Title: "Target item", Body: "This is the target item body that matches the query."},
+		{ID: 2, Title: "Noise item", Body: "Completely unrelated body text here."},
+	}
+	ranked, err := s.RerankMemoriesWithLLM("target matches query", items, 2)
+	if err != nil {
+		t.Fatalf("rerank with unknown backend failed: %v", err)
+	}
+	// Should fall back to tfidf and rank correctly.
+	if ranked[0].ID != 1 {
+		t.Errorf("expected target item first (tfidf fallback), got ID %d", ranked[0].ID)
+	}
+}
+
+func TestCosineTFIDFExactMatch(t *testing.T) {
+	a := map[string]float64{"jwt": 1.0, "signing": 1.0, "rs256": 1.0}
+	b := map[string]float64{"jwt": 1.0, "signing": 1.0, "rs256": 1.0}
+	score := cosineTFIDF(a, b)
+	if score < 0.99 {
+		t.Errorf("expected near 1.0 for identical vectors, got %.3f", score)
+	}
+}
+
+func TestCosineTFIDFNoMatch(t *testing.T) {
+	a := map[string]float64{"jwt": 1.0, "signing": 1.0}
+	b := map[string]float64{"database": 1.0, "backup": 1.0}
+	score := cosineTFIDF(a, b)
+	if score > 0.01 {
+		t.Errorf("expected near 0 for disjoint vectors, got %.3f", score)
+	}
+}
+
+func TestCosineTFIDFEmpty(t *testing.T) {
+	if cosineTFIDF(nil, map[string]float64{"x": 1.0}) != 0 {
+		t.Error("expected 0 for nil a")
+	}
+	if cosineTFIDF(map[string]float64{"x": 1.0}, nil) != 0 {
+		t.Error("expected 0 for nil b")
+	}
+}
+
+// -- Hybrid auto-detection tests --
+
+func TestCheckHybridAvailabilityDeterministic(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	avail := s.checkHybridAvailability()
+	if !avail.Enabled {
+		t.Fatal("expected deterministic-test backend to be enabled")
+	}
+	if !avail.EmbeddingsAvailable {
+		t.Fatal("expected deterministic-test embeddings to be available")
+	}
+}
+
+func TestCheckHybridAvailabilityUnreachableOllama(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "ollama", "http://127.0.0.1:19999")
+	avail := s.checkHybridAvailability()
+	if avail.Enabled {
+		t.Fatal("expected unreachable ollama to not be enabled")
+	}
+	if avail.Reason == "" {
+		t.Fatal("expected reason for unavailable ollama")
+	}
+}
+
+func TestCheckHybridAvailabilityUnknownBackend(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "unknown-backend", "")
+	avail := s.checkHybridAvailability()
+	if avail.Enabled {
+		t.Fatal("expected unknown backend to not be enabled")
+	}
+}
+
+// -- Reranker configuration tests --
+
+func TestDefaultRerankerBackendIsTFIDF(t *testing.T) {
+	cfg := FallbackConfig(t.TempDir())
+	if cfg.RerankerBackend != "tfidf" {
+		t.Errorf("default reranker backend = %q, want tfidf", cfg.RerankerBackend)
+	}
+}
+
+func TestRerankerBackendEnvVar(t *testing.T) {
+	t.Setenv("OHARA_RERANKER_BACKEND", "none")
+	cfg, err := DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig: %v", err)
+	}
+	if cfg.RerankerBackend != "none" {
+		t.Errorf("reranker backend from env = %q, want none", cfg.RerankerBackend)
+	}
+}

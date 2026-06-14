@@ -49,6 +49,55 @@ func (s *Store) hybridEnabled() bool {
 	}
 }
 
+// hybridAvailability describes whether hybrid retrieval is operational.
+type hybridAvailability struct {
+	Enabled            bool   `json:"enabled"`
+	Backend            string `json:"backend"`
+	EmbeddingsAvailable bool  `json:"embeddings_available"`
+	Reason             string `json:"reason,omitempty"`
+}
+
+// checkHybridAvailability probes the configured embedding backend and returns
+// availability status. This can be used to auto-detect whether hybrid should be
+// enabled without requiring explicit OHARA_RETRIEVAL_MODE=hybrid.
+func (s *Store) checkHybridAvailability() hybridAvailability {
+	backend := strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend))
+	result := hybridAvailability{Backend: backend}
+
+	switch backend {
+	case "deterministic-test":
+		result.Enabled = true
+		result.EmbeddingsAvailable = true
+		return result
+	case "ollama", "":
+		if s.cfg.OllamaURL == "" {
+			result.Reason = "ollama URL not configured"
+			return result
+		}
+		url := strings.TrimRight(s.cfg.OllamaURL, "/") + "/api/embeddings"
+		reqBody, _ := json.Marshal(ollamaEmbeddingRequest{Model: s.cfg.EmbeddingModel, Prompt: "healthcheck"})
+		hc := &http.Client{Timeout: 1500 * time.Millisecond}
+		req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hc.Do(req)
+		if err != nil {
+			result.Reason = fmt.Sprintf("ollama unreachable: %v", err)
+			return result
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			result.Reason = fmt.Sprintf("ollama returned status %d", resp.StatusCode)
+			return result
+		}
+		result.Enabled = true
+		result.EmbeddingsAvailable = true
+		return result
+	default:
+		result.Reason = fmt.Sprintf("unsupported embedding backend %q", backend)
+		return result
+	}
+}
+
 func floatsToBytes(v []float32) []byte {
 	b := make([]byte, len(v)*4)
 	for i, x := range v {
@@ -450,7 +499,178 @@ func (s *Store) vectorSearchMemories(
 
 // RerankMemoriesWithLLM performs explicit opt-in slow-path reranking.
 // This is intentionally separate from mem_search to keep default retrieval deterministic.
+//
+// The reranker backend is configured via cfg.RerankerBackend:
+//   - "none": identity (no reranking, returns items as-is)
+//   - "tfidf": deterministic TF-IDF cosine ranking (default, no LLM)
+//   - "ollama": LLM-based reranking via Ollama chat API
 func (s *Store) RerankMemoriesWithLLM(query string, items []MemoryItem, topN int) ([]MemoryItem, error) {
+	if len(items) == 0 {
+		return items, nil
+	}
+	if topN <= 0 || topN > len(items) {
+		topN = len(items)
+	}
+
+	backend := strings.ToLower(strings.TrimSpace(s.cfg.RerankerBackend))
+	switch backend {
+	case "none", "":
+		return items, nil
+	case "tfidf":
+		return s.rerankTFIDF(query, items, topN), nil
+	case "ollama":
+		return s.rerankOllama(query, items, topN)
+	default:
+		// Unknown backend: fall back to tfidf.
+		return s.rerankTFIDF(query, items, topN), nil
+	}
+}
+
+// rerankTFIDF performs deterministic TF-IDF cosine similarity reranking.
+// No LLM calls, no CGO, no external dependency.
+func (s *Store) rerankTFIDF(query string, items []MemoryItem, topN int) []MemoryItem {
+	if len(items) == 0 {
+		return items
+	}
+	if topN <= 0 || topN > len(items) {
+		topN = len(items)
+	}
+
+	// Build document corpus: title + body for each item.
+	docs := make([]string, len(items))
+	for i, item := range items {
+		docs[i] = item.Title + " " + item.Body
+	}
+
+	// Compute TF-IDF vectors.
+	queryVec, docVecs := computeTFIDF(query, docs)
+
+	// Score each document by cosine similarity to query.
+	type scored struct {
+		idx   int
+		score float64
+	}
+	scores := make([]scored, len(items))
+	for i, dv := range docVecs {
+		scores[i] = scored{idx: i, score: cosineTFIDF(queryVec, dv)}
+	}
+
+	sort.SliceStable(scores, func(i, j int) bool {
+		if scores[i].score == scores[j].score {
+			return items[scores[i].idx].RelevanceScore > items[scores[j].idx].RelevanceScore
+		}
+		return scores[i].score > scores[j].score
+	})
+
+	out := make([]MemoryItem, 0, len(items))
+	for _, sc := range scores {
+		out = append(out, items[sc.idx])
+	}
+	return out
+}
+
+// computeTFIDF builds a sparse TF-IDF vector for a query and a set of documents.
+// Returns the query vector and one vector per document.
+func computeTFIDF(query string, docs []string) (map[string]float64, []map[string]float64) {
+	// Tokenize query.
+	queryTokens := tokenizeForRerank(query)
+
+	// Tokenize all documents and build document frequencies.
+	docTokens := make([][]string, len(docs))
+	df := make(map[string]int) // document frequency
+	for i, doc := range docs {
+		tokens := tokenizeForRerank(doc)
+		docTokens[i] = tokens
+		seen := make(map[string]bool)
+		for _, t := range tokens {
+			if !seen[t] {
+				seen[t] = true
+				df[t]++
+			}
+		}
+	}
+
+	nDocs := float64(len(docs))
+
+	// Build query TF-IDF vector.
+	queryVec := make(map[string]float64)
+	maxTF := 0
+	qf := make(map[string]int)
+	for _, t := range queryTokens {
+		qf[t]++
+		if qf[t] > maxTF {
+			maxTF = qf[t]
+		}
+	}
+	for t, tf := range qf {
+		idf := math.Log((nDocs+1)/float64(df[t]+1)) + 1
+		queryVec[t] = (0.5 + 0.5*float64(tf)/float64(maxTF)) * idf
+	}
+
+	// Build document TF-IDF vectors.
+	docVecs := make([]map[string]float64, len(docs))
+	for i, tokens := range docTokens {
+		vec := make(map[string]float64)
+		maxTF := 0
+		tf := make(map[string]int)
+		for _, t := range tokens {
+			tf[t]++
+			if tf[t] > maxTF {
+				maxTF = tf[t]
+			}
+		}
+		for t, f := range tf {
+			idf := math.Log((nDocs+1)/float64(df[t]+1)) + 1
+			vec[t] = (0.5 + 0.5*float64(f)/float64(maxTF)) * idf
+		}
+		docVecs[i] = vec
+	}
+
+	return queryVec, docVecs
+}
+
+// cosineTFIDF computes cosine similarity between two sparse TF-IDF vectors.
+func cosineTFIDF(a, b map[string]float64) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for k, va := range a {
+		normA += va * va
+		if vb, ok := b[k]; ok {
+			dot += va * vb
+		}
+	}
+	for _, vb := range b {
+		normB += vb * vb
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// tokenizeForRerank tokenizes text for TF-IDF processing.
+func tokenizeForRerank(text string) []string {
+	parts := strings.Fields(strings.ToLower(text))
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]bool)
+	for _, p := range parts {
+		token := strings.Trim(p, `"'.,;:!?()[]{}<>`)
+		if len(token) < 2 {
+			continue
+		}
+		if seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	return out
+}
+
+// rerankOllama performs LLM-based reranking via the Ollama chat API.
+func (s *Store) rerankOllama(query string, items []MemoryItem, topN int) ([]MemoryItem, error) {
 	if len(items) == 0 {
 		return items, nil
 	}
