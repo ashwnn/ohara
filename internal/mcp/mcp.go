@@ -1618,6 +1618,7 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 		if hasMem {
 			fmt.Fprintf(&b, "Found %d memory item(s):\n\n", len(memItems))
 			for i, m := range memItems {
+				bodyTokens := estimateTokens(m.Body)
 				preview := util.Truncate(m.Body, 300)
 				if len(m.Body) > 300 {
 					preview += " [preview]"
@@ -1626,12 +1627,20 @@ func handleSearch(s *store.Store, cfg MCPConfig, activity *SessionActivity) serv
 				if m.Status == store.MemoryStatusSuperseded {
 					supsersededNote = " [superseded]"
 				}
-				fmt.Fprintf(&b, "[%d] **%s** (%s | %s | %s)%s\n    %s\n    %s | tokens: ~%d\n\n",
+				triggerNote := ""
+				if m.Kind == store.MemoryKindProcedure && m.TriggerCondition != "" {
+					triggerNote = fmt.Sprintf(" [when: %s]", m.TriggerCondition)
+				}
+				weightNote := ""
+				if m.UtilityWeight > 0 {
+					weightNote = fmt.Sprintf(" [weight: %.2f]", m.UtilityWeight)
+				}
+				fmt.Fprintf(&b, "[%d] **%s** (%s | %s | %s)%s%s%s\n    %s\n    %s | body: ~%d tokens\n\n",
 					i+1, m.Title, m.Kind, m.Scope, m.Source,
-					supsersededNote,
+					supsersededNote, triggerNote, weightNote,
 					preview,
 					m.UpdatedAt,
-					estimateTokens(m.Body),
+					bodyTokens,
 				)
 			}
 		}
@@ -2594,6 +2603,13 @@ func handlePrime(s *store.Store) server.ToolHandlerFunc {
 			store.MemoryKindProcedure: 3,
 		}
 
+		// Batch-fetch outcome counts for all items at once to avoid N+1 queries.
+		allIDs := make([]int64, 0, len(items))
+		for _, item := range items {
+			allIDs = append(allIDs, item.ID)
+		}
+		outcomeMap, _ := s.GetMemoryOutcomesCountBatch(allIDs)
+
 		// formatSectionItem formats a single memory item as a string.
 		formatSectionItem := func(item store.MemoryItem) string {
 			tags := ""
@@ -2604,7 +2620,21 @@ func handlePrime(s *store.Store) server.ToolHandlerFunc {
 			if showActor && item.WrittenBy != "" {
 				actorTag = " [" + item.WrittenBy + "]"
 			}
-			return fmt.Sprintf("**%s** (%s)%s%s\n%s", item.Title, item.Kind, tags, actorTag, item.Body)
+			annotations := ""
+			if item.Kind == store.MemoryKindProcedure && item.TriggerCondition != "" {
+				annotations += fmt.Sprintf(" [when: %s]", item.TriggerCondition)
+			}
+			if item.UtilityWeight > 0 {
+				annotations += fmt.Sprintf(" [weight: %.2f]", item.UtilityWeight)
+			}
+			if oc, ok := outcomeMap[item.ID]; ok {
+				total := oc.Success + oc.Failure + oc.Unknown
+				if total > 0 {
+					annotations += fmt.Sprintf(" [outcomes: %d ok, %d fail, %d unknown]", oc.Success, oc.Failure, oc.Unknown)
+				}
+			}
+			return fmt.Sprintf("**%s** (%s)%s%s%s\n%s",
+				item.Title, item.Kind, tags, actorTag, annotations, item.Body)
 		}
 
 		buildSection := func(sec section) string {

@@ -424,6 +424,40 @@ func TruncateBodyToTokenLimit(text string, kind string) (body string) {
 	return text[:lo] + "... [truncated]"
 }
 
+// TruncateSearchDisplay truncates a memory body for display in search results.
+// This prevents large episodic bodies (e.g., bugfix, discovery) from bloating
+// search output. The full body is always preserved in the database.
+//
+// The displayLimit is in tokens; if 0, uses the default of 300.
+// Returns the original body if it fits, or a truncated version with "... [more]".
+func TruncateSearchDisplay(body string, displayLimit int) string {
+	if displayLimit <= 0 {
+		displayLimit = 300
+	}
+	if token.CountStrict(body) <= displayLimit {
+		return body
+	}
+	// Binary search for the max prefix that fits within the display limit.
+	safetyMargin := 5
+	effectiveLimit := displayLimit - safetyMargin
+	if effectiveLimit < 1 {
+		effectiveLimit = 1
+	}
+	lo, hi := 0, len(body)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if token.CountStrict(body[:mid]) <= effectiveLimit {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo == 0 {
+		return body
+	}
+	return body[:lo] + "... [more]"
+}
+
 // Memory kind TTLs (spec-defined expiry windows from creation).
 var memoryKindTTL = map[string]int{
 	MemoryKindDiscovery:  90, // discovery memories expire after 90 days
@@ -3639,6 +3673,61 @@ func ClassifyTool(toolName string) string {
 // Now returns the current time formatted for SQLite.
 func Now() string {
 	return time.Now().UTC().Format("2006-01-02 15:04:05")
+}
+
+// GetMemoryOutcomesCount returns the count of success, failure, and unknown
+// outcomes for a memory item. This is used for outcome-aware display in
+// context packs and prime output.
+func (s *Store) GetMemoryOutcomesCount(memoryID int64) (success, failure, unknown int, err error) {
+	err = s.db.QueryRow(
+		`SELECT
+			COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END), 0)
+		 FROM memory_outcomes WHERE memory_id = ?`,
+		memoryID,
+	).Scan(&success, &failure, &unknown)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return success, failure, unknown, nil
+}
+
+// GetMemoryOutcomesCountBatch returns outcome counts for multiple memory IDs
+// in a single query. Returns a map keyed by memory ID.
+func (s *Store) GetMemoryOutcomesCountBatch(ids []int64) (map[int64]struct{ Success, Failure, Unknown int }, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		ph = append(ph, "?")
+		args = append(args, id)
+	}
+	rows, err := s.queryItHook(s.db,
+		`SELECT memory_id,
+			COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END), 0)
+		 FROM memory_outcomes WHERE memory_id IN (`+strings.Join(ph, ",")+`)
+		 GROUP BY memory_id`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[int64]struct{ Success, Failure, Unknown int })
+	for rows.Next() {
+		var id int64
+		var s, f, u int
+		if err := rows.Scan(&id, &s, &f, &u); err != nil {
+			continue
+		}
+		result[id] = struct{ Success, Failure, Unknown int }{s, f, u}
+	}
+	return result, rows.Err()
 }
 
 // SchemaVersion returns the current schema version recorded in schema_version.

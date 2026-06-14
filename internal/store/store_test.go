@@ -4200,6 +4200,52 @@ func TestTruncateBodyToTokenLimit_FallsBackSafely(t *testing.T) {
 	}
 }
 
+// ─── TruncateSearchDisplay tests ────────────────────────────────────────────────
+
+func TestTruncateSearchDisplay_ShortBodyUnchanged(t *testing.T) {
+	short := "This is a short body."
+	result := TruncateSearchDisplay(short, 300)
+	if result != short {
+		t.Errorf("short body should not be truncated: %q", result)
+	}
+}
+
+func TestTruncateSearchDisplay_LongBodyTruncated(t *testing.T) {
+	// Build a body that exceeds 50 tokens.
+	long := ""
+	for i := 0; i < 200; i++ {
+		long += "token" + string(rune('a'+i%26)) + " "
+	}
+	result := TruncateSearchDisplay(long, 50)
+	if len(result) >= len(long) {
+		t.Error("long body should be truncated")
+	}
+	if !strings.HasSuffix(result, "... [more]") {
+		t.Errorf("truncated result should end with '... [more]': %q", result)
+	}
+}
+
+func TestTruncateSearchDisplay_EmptyBody(t *testing.T) {
+	result := TruncateSearchDisplay("", 300)
+	if result != "" {
+		t.Errorf("empty body should remain empty: %q", result)
+	}
+}
+
+func TestTruncateSearchDisplay_DefaultLimit(t *testing.T) {
+	long := ""
+	for i := 0; i < 500; i++ {
+		long += "word" + string(rune('a'+i%26)) + " "
+	}
+	result := TruncateSearchDisplay(long, 0)
+	if len(result) >= len(long) {
+		t.Error("default limit should truncate long body")
+	}
+	if !strings.HasSuffix(result, "... [more]") {
+		t.Error("should have '... [more]' suffix")
+	}
+}
+
 // ─── Private-tag stripping on memory save/update ────────────────────────────────
 
 func TestAddMemory_StripsPrivateTags(t *testing.T) {

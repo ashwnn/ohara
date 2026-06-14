@@ -65,7 +65,7 @@ func (s *Store) BuildPack(p PackParams) (*PackResult, error) {
 		reason := "excluded: exceeds remaining token budget"
 
 		if itemTokens > remainingBudget && itemTokens <= remainingBudget+200 && remainingBudget > 60 {
-			truncated := truncateToTokens(cand.Item.Body, remainingBudget-50)
+			truncated := TruncateSearchDisplay(cand.Item.Body, remainingBudget-50)
 			itemSection = formatMemorySectionWithBody(cand.Item, truncated)
 			itemTokens = token.Count(itemSection)
 			if itemTokens <= remainingBudget {
@@ -151,13 +151,25 @@ func memoryActiveAsOf(item MemoryItem, asof string) bool {
 }
 
 // formatMemorySection formats a single memory item as a section.
+// Includes trigger_condition for procedure memories and utility_weight hints.
 func formatMemorySection(item MemoryItem) string {
 	tags := ""
 	if len(item.Tags) > 0 {
 		tags = " [" + joinStrings(item.Tags, ", ") + "]"
 	}
-	return fmt.Sprintf("**%s** (%s)%s\n%s",
-		item.Title, item.Kind, tags, item.Body)
+	annotations := ""
+	if item.Kind == MemoryKindProcedure && item.TriggerCondition != "" {
+		annotations += fmt.Sprintf(" [when: %s]", item.TriggerCondition)
+	}
+	if item.UtilityWeight > 0 {
+		annotations += fmt.Sprintf(" [weight: %.2f]", item.UtilityWeight)
+	}
+	bodyLine := item.Body
+	if token.CountStrict(bodyLine) > 100 {
+		bodyLine = bodyLine + fmt.Sprintf(" [%d tokens]", token.CountStrict(item.Body))
+	}
+	return fmt.Sprintf("**%s** (%s)%s%s\n%s",
+		item.Title, item.Kind, tags, annotations, bodyLine)
 }
 
 // formatMemorySectionWithBody formats a memory item with a custom (truncated) body.
@@ -166,8 +178,19 @@ func formatMemorySectionWithBody(item MemoryItem, body string) string {
 	if len(item.Tags) > 0 {
 		tags = " [" + joinStrings(item.Tags, ", ") + "]"
 	}
-	return fmt.Sprintf("**%s** (%s)%s\n%s",
-		item.Title, item.Kind, tags, body)
+	annotations := ""
+	if item.Kind == MemoryKindProcedure && item.TriggerCondition != "" {
+		annotations += fmt.Sprintf(" [when: %s]", item.TriggerCondition)
+	}
+	if item.UtilityWeight > 0 {
+		annotations += fmt.Sprintf(" [weight: %.2f]", item.UtilityWeight)
+	}
+	bodyLine := body
+	if token.CountStrict(body) > 100 {
+		bodyLine = body + fmt.Sprintf(" [%d tokens truncated]", token.CountStrict(body))
+	}
+	return fmt.Sprintf("**%s** (%s)%s%s\n%s",
+		item.Title, item.Kind, tags, annotations, bodyLine)
 }
 
 // joinStrings joins a slice of strings with a separator.
