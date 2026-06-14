@@ -842,6 +842,7 @@ func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, er
 	}
 
 	cfg := store.FallbackConfig(tmp)
+	cfg.NoJobWorker = true
 	if strings.EqualFold(mode, "hybrid") {
 		cfg.RetrievalMode = "hybrid"
 		cfg.EmbeddingBackend = "deterministic-test"

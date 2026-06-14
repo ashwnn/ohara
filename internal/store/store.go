@@ -586,6 +586,7 @@ type Config struct {
 	OllamaURL         string
 	RerankerBackend   string         // "none", "tfidf" (default), "ollama"
 	Scoring           ScoringWeights // tunable retrieval scoring weights
+	NoJobWorker       bool           // set true to skip the background job worker (e.g. bulk import)
 }
 
 // ScoringWeights centralizes all retrieval scoring parameters.
@@ -963,7 +964,9 @@ func New(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("ohara: repair enrolled sync journal: %w", err)
 	}
 
-	s.startJobWorker()
+	if !cfg.NoJobWorker {
+		s.startJobWorker()
+	}
 
 	return s, nil
 }
