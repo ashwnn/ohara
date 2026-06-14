@@ -741,3 +741,87 @@ func TestUnknownBackendStillFails(t *testing.T) {
 		t.Fatal("expected error for unregistered backend")
 	}
 }
+
+func TestStaticTestBackendRegisteredAndWorks(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "static-test", "")
+	vec, err := s.embedText("any text")
+	if err != nil {
+		t.Fatalf("static-test embedder not registered: %v", err)
+	}
+	if len(vec) != 64 {
+		t.Errorf("expected static-test dim 64, got %d", len(vec))
+	}
+	// All text should produce the same vector (constant).
+	vec2, _ := s.embedText("different text")
+	for i := range vec {
+		if vec[i] != vec2[i] {
+			t.Fatalf("static-test should be constant, mismatch at index %d", i)
+		}
+	}
+}
+
+func TestStaticTestBackendEnablesHybrid(t *testing.T) {
+	// hybridEnabled should return true for registered backends.
+	s := newHybridTestStoreWithBackend(t, "static-test", "")
+	if !s.hybridEnabled() {
+		t.Fatal("expected hybridEnabled=true for static-test backend")
+	}
+}
+
+func TestHybridEnabledForRegisteredCustomBackend(t *testing.T) {
+	RegisterEmbedder("custom-hybrid-check", testEmbedder{dim: 16})
+	s := newHybridTestStoreWithBackend(t, "custom-hybrid-check", "")
+	if !s.hybridEnabled() {
+		t.Fatal("expected hybridEnabled=true for custom registered backend")
+	}
+}
+
+func TestCosineSimilarityDimMismatchReturnsZero(t *testing.T) {
+	// Different dimensions should not silently truncate — return 0.
+	a := []float32{1, 0, 0, 0}
+	b := []float32{1, 0, 0}
+	score := cosineSimilarity(a, b)
+	if score != 0 {
+		t.Errorf("expected 0 for dim mismatch, got %f", score)
+	}
+}
+
+func TestVectorSearchSkipsDimMismatchedEmbeddings(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "static-test", "")
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Dim mismatch test",
+		Body:      "This memory has a wrong-dimension embedding.",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Store a 2-d embedding (static-test produces 64-d, so this is mismatched).
+	if _, err := s.Exec(
+		`INSERT INTO obs_embeddings (obs_id, embedding, model, created_at) VALUES (?, ?, ?, datetime('now'))
+		 ON CONFLICT(obs_id) DO UPDATE SET embedding=excluded.embedding, model=excluded.model, created_at=excluded.created_at`,
+		id, floatsToBytes([]float32{1, 0}), "wrong-model", time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatalf("insert mismatched embedding: %v", err)
+	}
+
+	// Query with 64-d vector (static-test produces 64-d via embedText).
+	queryVec, err := s.embedText("test query")
+	if err != nil {
+		t.Fatalf("embedText: %v", err)
+	}
+	if len(queryVec) != 64 {
+		t.Fatalf("expected 64-d query, got %d", len(queryVec))
+	}
+
+	// vectorSearchMemories should skip the 2-d stored embedding and return no candidates.
+	results, err := s.vectorSearchMemories(queryVec, "ohara", "", "", "", MemoryStatusActive, "", "", temporalFilters{}, 10)
+	if err != nil {
+		t.Fatalf("vectorSearchMemories: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results (mismatched dim should be skipped), got %d", len(results))
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -41,10 +42,15 @@ func (s *Store) hybridEnabled() bool {
 	if !strings.EqualFold(strings.TrimSpace(s.cfg.RetrievalMode), "hybrid") {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend)) {
-	case "ollama", "deterministic-test":
+	backend := strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend))
+	switch backend {
+	case "ollama", "deterministic-test", "static-test":
 		return true
 	default:
+		// Check registered embedders too (extensible path).
+		if _, ok := registeredEmbedders[backend]; ok {
+			return true
+		}
 		return false
 	}
 }
@@ -125,13 +131,10 @@ func bytesToFloats(b []byte) ([]float32, error) {
 }
 
 func cosineSimilarity(a, b []float32) float64 {
-	if len(a) == 0 || len(b) == 0 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
 		return 0
 	}
 	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
 	var dot, na, nb float64
 	for i := 0; i < n; i++ {
 		aa := float64(a[i])
@@ -171,9 +174,24 @@ func (d deterministicEmbedder) Embed(text string) ([]float32, error) {
 	return deterministicTestEmbedding(text, d.dim), nil
 }
 
+// staticEmbedder returns a fixed constant vector — demonstrates the
+// registration pattern with zero configuration and no external deps.
+type staticEmbedder struct{ dim int }
+
+func (s staticEmbedder) Embed(text string) ([]float32, error) {
+	vec := make([]float32, s.dim)
+	// Constant vector with consistent magnitude for predictable similarity.
+	for i := range vec {
+		vec[i] = 0.5 / float32(s.dim)
+	}
+	return vec, nil
+}
+
 func init() {
 	// Register built-in deterministic embedder (always available, no external deps).
 	RegisterEmbedder("deterministic-test", deterministicEmbedder{dim: 128})
+	// Register static embedder as a second additive backend (always available).
+	RegisterEmbedder("static-test", staticEmbedder{dim: 64})
 }
 
 func (s *Store) embedText(text string) ([]float32, error) {
@@ -269,6 +287,11 @@ func (s *Store) indexMemoryEmbedding(memoryID int64, text string) error {
 	vec, err := s.embedText(text)
 	if err != nil {
 		return err
+	}
+	// Warn on dimension mismatch between backend output and config expectation.
+	if s.cfg.EmbeddingDim > 0 && len(vec) != s.cfg.EmbeddingDim {
+		log.Printf("[ohara] warning: embedding dimension %d does not match configured EmbeddingDim=%d (model=%q, backend=%q)",
+			len(vec), s.cfg.EmbeddingDim, s.cfg.EmbeddingModel, s.cfg.EmbeddingBackend)
 	}
 	_, err = s.execHook(s.db,
 		`INSERT INTO obs_embeddings (obs_id, embedding, model, created_at)
@@ -505,6 +528,10 @@ func (s *Store) vectorSearchMemories(
 		}
 		vec, err := bytesToFloats(embeddingBlob)
 		if err != nil || len(vec) == 0 {
+			continue
+		}
+		// Dimension mismatch: skip silently (config or model changed between index and query).
+		if len(vec) != len(queryEmbedding) {
 			continue
 		}
 		score := cosineSimilarity(queryEmbedding, vec)
