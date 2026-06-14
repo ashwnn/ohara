@@ -1032,7 +1032,7 @@ func (s *Store) scanMemoryRow(rows rowScanner) (*MemoryItem, error) {
 // ConflictInfo describes a detected contradiction.
 type ConflictInfo struct {
 	ExistingMemory *MemoryItem `json:"existing_memory"`
-	ConflictType   string      `json:"conflict_type"` // "title_overlap" | "body_contradiction"
+	ConflictType   string      `json:"conflict_type"` // "title_overlap" | "body_similar" | "semantic_contradiction"
 	OverlapScore   float64     `json:"overlap_score"`
 	Message        string      `json:"message"`
 }
@@ -1043,7 +1043,11 @@ func kindsForConflictDetection(kind string) bool {
 }
 
 // DetectConflict checks whether the proposed memory contradicts an existing one.
-// It only applies to decision, pattern, and config kinds. Returns nil if no conflict.
+// Detection runs in two phases:
+//  1. Title overlap: Jaccard similarity of keyword sets (>0.6 threshold).
+//  2. Body similarity: TF-IDF cosine similarity of title+body text (>0.3 threshold).
+//     When hybrid embeddings are enabled, body similarity uses embedding cosine similarity instead.
+// Only applies to decision, pattern, and config kinds. Returns nil if no conflict.
 func (s *Store) DetectConflict(p AddMemoryParams) (*ConflictInfo, error) {
 	if !kindsForConflictDetection(p.Kind) {
 		return nil, nil
@@ -1061,6 +1065,8 @@ func (s *Store) DetectConflict(p AddMemoryParams) (*ConflictInfo, error) {
 	}
 
 	var best *ConflictInfo
+
+	// Phase 1: Title keyword overlap (fast, always available).
 	for i := range existing {
 		existingWords := significantWords(existing[i].Title)
 		score := keywordOverlap(newWords, existingWords)
@@ -1078,6 +1084,67 @@ func (s *Store) DetectConflict(p AddMemoryParams) (*ConflictInfo, error) {
 				best = ci
 			}
 		}
+	}
+
+	// If we already found a strong title match, return it.
+	if best != nil && best.OverlapScore >= 0.85 {
+		return best, nil
+	}
+
+	// Phase 2: Body semantic similarity (title + body combined).
+	// Uses embeddings when hybrid is enabled, otherwise TF-IDF.
+	newBody := p.Title + " " + p.Body
+	newBodyWords := significantWords(newBody)
+	if len(newBodyWords) == 0 {
+		return best, nil
+	}
+
+	bestBodyScore := 0.0
+	var bestBodyMatch *ConflictInfo
+
+	for i := range existing {
+		existingBody := existing[i].Title + " " + existing[i].Body
+		var score float64
+
+		if s.hybridEnabled() {
+			// Use embedding cosine similarity for semantic comparison.
+			newVec, err := s.embedText(newBody)
+			if err != nil {
+				continue
+			}
+			existingVec, err := s.embedText(existingBody)
+			if err != nil {
+				continue
+			}
+			score = cosineSimilarity(newVec, existingVec)
+		} else {
+			// Fall back to TF-IDF body comparison.
+			newVec, docVecs := computeTFIDF(newBody, []string{existingBody})
+			if len(docVecs) > 0 {
+				score = cosineTFIDF(newVec, docVecs[0])
+			}
+		}
+
+		if score > 0.3 {
+			ci := &ConflictInfo{
+				ExistingMemory: &existing[i],
+				ConflictType:   "body_similar",
+				OverlapScore:   score,
+				Message: fmt.Sprintf(
+					"existing %s memory %q has %.0f%% body similarity with new entry",
+					p.Kind, existing[i].Title, score*100,
+				),
+			}
+			if score > bestBodyScore {
+				bestBodyScore = score
+				bestBodyMatch = ci
+			}
+		}
+	}
+
+	// Return body match only if title didn't already find something better.
+	if bestBodyMatch != nil && (best == nil || bestBodyScore > best.OverlapScore+0.1) {
+		return bestBodyMatch, nil
 	}
 
 	return best, nil
