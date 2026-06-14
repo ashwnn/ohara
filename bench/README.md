@@ -107,6 +107,10 @@ Run standalone harness:
 go run ./bench/cmd/run-longmemeval/ -k 5
 go run ./bench/cmd/run-longmemeval/ -k 5 -json
 go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
+# Ollama LLM-based judge (requires local Ollama + model):
+go run ./bench/cmd/run-longmemeval/ -k 5 -ollama-judge -ollama-model qwen3:0.6b
+# Use external JSONL dataset from evals/:
+go run ./bench/cmd/run-longmemeval/ -k 5 -dataset evals/longmemeval/data.jsonl
 ```
 
 The harness report includes:

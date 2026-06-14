@@ -17,20 +17,26 @@ import (
 	"strings"
 
 	"github.com/ashwnn/ohara/bench/longmemeval"
+	longmemevaljudge "github.com/ashwnn/ohara/evals/longmemeval"
 )
 
 func main() {
 	fixturePath := flag.String("fixture", filepath.Join("bench", "longmemeval", "fixture.json"), "path to LongMemEval fixture JSON")
+	datasetPath := flag.String("dataset", "", "path to LongMemEval JSONL dataset (default: evals/longmemeval/data.jsonl)")
 	k := flag.Int("k", 5, "top-k for retrieval")
 	enforce := flag.Bool("enforce", true, "enforce threshold gates and exit non-zero on regression")
 	skipLatency := flag.Bool("skip-latency", false, "skip latency SLO gates")
 	jsonOut := flag.Bool("json", false, "pretty-print full report as JSON")
 	useJudge := flag.Bool("judge", false, "enable overlap-based judge scoring")
+	useOllamaJudge := flag.Bool("ollama-judge", false, "enable Ollama LLM-based judge scoring (offline bench only)")
+	ollamaModel := flag.String("ollama-model", longmemevaljudge.DefaultJudgeModel, "Ollama model name for judge")
+	ollamaURL := flag.String("ollama-url", longmemevaljudge.DefaultOllamaURL, "Ollama API URL")
 	mode := flag.String("mode", "", "retrieval mode: fts5 (default) or hybrid")
 	flag.Parse()
 
 	opts := longmemeval.RunOptions{
 		FixturePath:     *fixturePath,
+		DatasetPath:     *datasetPath,
 		K:               *k,
 		Enforce:         *enforce,
 		SkipLatencyGate: *skipLatency,
@@ -38,6 +44,13 @@ func main() {
 	}
 	if *useJudge {
 		opts.Judge = longmemeval.OverlapJudge{}
+	}
+	if *useOllamaJudge {
+		opts.Judge = longmemevaljudge.NewOllamaJudge(longmemevaljudge.OllamaJudgeConfig{
+			URL:   *ollamaURL,
+			Model: *ollamaModel,
+		})
+		fmt.Fprintf(os.Stderr, "Ollama judge: model=%s url=%s\n", *ollamaModel, *ollamaURL)
 	}
 
 	report, err := longmemeval.RunBenchmark(opts)
@@ -63,7 +76,11 @@ func main() {
 	fmt.Printf("Fixture: %s\n", report.FixtureDescription)
 	fmt.Printf("Mode: %s\n", report.RetrievalMode)
 	if report.JudgeEnabled {
-		fmt.Printf("Judge: overlap (mean score: %.3f)\n", report.JudgeMeanScore)
+		label := "overlap"
+		if *useOllamaJudge {
+			label = fmt.Sprintf("ollama/%s", *ollamaModel)
+		}
+		fmt.Printf("Judge: %s (mean score: %.3f)\n", label, report.JudgeMeanScore)
 	}
 	fmt.Printf("Questions: %d\n", report.TotalQuestions)
 	fmt.Printf("Passed: %d\n", report.PassedQuestions)

@@ -78,6 +78,11 @@ type ThresholdsFixture struct {
 	LatencyMaxMsMax  float64 `json:"latency_max_ms_max"`
 }
 
+// DefaultEvalsDatasetPath is the default path to the LongMemEval JSONL dataset
+// under the evals/ directory. When this file exists, the runner can import it
+// in preference to (or instead of) the built-in fixture.
+const DefaultEvalsDatasetPath = "evals/longmemeval/data.jsonl"
+
 // RunOptions configures a benchmark run.
 type RunOptions struct {
 	FixturePath     string
@@ -86,6 +91,7 @@ type RunOptions struct {
 	SkipLatencyGate bool
 	Judge           JudgeModel // optional answer-quality judge (nil = skip)
 	Mode            string     // retrieval mode: "fts5" (default) or "hybrid"
+	DatasetPath     string     // optional path to JSONL dataset (see ImportFromJSONL)
 }
 
 // Metrics holds computed retrieval quality metrics.
@@ -405,9 +411,33 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		opts.FixturePath = filepath.Join("bench", "longmemeval", "fixture.json")
 	}
 
-	fixture, err := LoadFixture(opts.FixturePath)
-	if err != nil {
-		return Report{}, err
+	// If DatasetPath is set and the JSONL file exists, import from it instead.
+	datasetPath := strings.TrimSpace(opts.DatasetPath)
+	if datasetPath == "" {
+		datasetPath = DefaultEvalsDatasetPath
+	}
+	var importedFromDataset bool
+	var fixture Fixture
+	fixtureFile := opts.FixturePath
+	if _, statErr := os.Stat(datasetPath); statErr == nil {
+		f, openErr := os.Open(datasetPath)
+		if openErr == nil {
+			imported, _, impErr := ImportFromJSONL(f)
+			f.Close()
+			if impErr == nil && len(imported.Facts) > 0 {
+				fixture = imported
+				importedFromDataset = true
+			} else if impErr != nil {
+				return Report{}, fmt.Errorf("dataset import from %s: %w", datasetPath, impErr)
+			}
+		}
+	}
+	if !importedFromDataset {
+		var err error
+		fixture, err = LoadFixture(fixtureFile)
+		if err != nil {
+			return Report{}, err
+		}
 	}
 	thresholds := withDefaultThresholds(fixture.Thresholds)
 
