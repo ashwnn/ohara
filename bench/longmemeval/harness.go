@@ -8,9 +8,15 @@
 // The harness is self-contained with a deterministic fixture — no external dataset
 // or model dependency is required for the baseline spine.
 //
-// For public LongMemEval dataset integration, use ImportFromJSONL to convert
-// JSONL records into a Fixture. A built-in OverlapJudge provides baseline
-// answer evaluation without LLM dependency.
+// For public LongMemEval dataset integration:
+//   - ImportFromJSONL converts JSONL (newline-delimited JSON) records into a Fixture.
+//   - ImportFromJSONArray converts the LongMemEval cleaned JSON array format
+//     (evals/longmemeval/longmemeval_s_cleaned.json) into a Fixture.
+//
+// RunBenchmark auto-detects the input format by checking the first non-whitespace
+// byte: '[' routes to ImportFromJSONArray, anything else routes to ImportFromJSONL.
+//
+// A built-in OverlapJudge provides baseline answer evaluation without LLM dependency.
 package longmemeval
 
 import (
@@ -78,10 +84,13 @@ type ThresholdsFixture struct {
 	LatencyMaxMsMax  float64 `json:"latency_max_ms_max"`
 }
 
-// DefaultEvalsDatasetPath is the default path to the LongMemEval JSONL dataset
-// under the evals/ directory. When this file exists, the runner can import it
+// DefaultEvalsDatasetPath is the default path to the LongMemEval dataset
+// under the evals/ directory. When this file exists, the runner imports it
 // in preference to (or instead of) the built-in fixture.
-const DefaultEvalsDatasetPath = "evals/longmemeval/data.jsonl"
+//
+// The file may be either a JSON array (LongMemEval cleaned format) or
+// JSONL (newline-delimited JSON). The format is auto-detected.
+const DefaultEvalsDatasetPath = "evals/longmemeval/longmemeval_s_cleaned.json"
 
 // RunOptions configures a benchmark run.
 type RunOptions struct {
@@ -273,7 +282,27 @@ type DatasetQuestion struct {
 	AskSessionID     string   `json:"ask_session_id"`
 }
 
-// ImportResult holds the result of importing a JSONL dataset.
+// HaystackMessage is a single message in a haystack session conversation.
+type HaystackMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// LongMemEvalArrayRecord is a single record from the LongMemEval cleaned JSON
+// array dataset format (evals/longmemeval/longmemeval_s_cleaned.json).
+type LongMemEvalArrayRecord struct {
+	QuestionID        string             `json:"question_id"`
+	QuestionType      string             `json:"question_type"`
+	Question          string             `json:"question"`
+	QuestionDate      string             `json:"question_date"`
+	Answer            interface{}        `json:"answer"`
+	AnswerSessionIDs  []string           `json:"answer_session_ids"`
+	HaystackDates     []string           `json:"haystack_dates"`
+	HaystackSessionIDs []string          `json:"haystack_session_ids"`
+	HaystackSessions  [][]HaystackMessage `json:"haystack_sessions"`
+}
+
+// ImportResult holds the result of importing a dataset.
 type ImportResult struct {
 	RecordsRead  int
 	FactsCreated int
@@ -382,6 +411,184 @@ func ImportFromJSONL(r io.Reader) (Fixture, ImportResult, error) {
 	return fixture, result, nil
 }
 
+// ImportFromJSONArray reads a JSON array of LongMemEval cleaned dataset records
+// (evals/longmemeval/longmemeval_s_cleaned.json) and converts them into a Fixture.
+//
+// Each element of the JSON array is a LongMemEvalArrayRecord with fields like
+// question_id, question_type, question, answer, haystack_session_ids, and
+// haystack_sessions. The function creates a Fact for each haystack session's
+// conversation text and maps answer_session_ids to expected fact keys.
+func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
+	result := ImportResult{}
+	fixture := Fixture{
+		Description: "Imported from LongMemEval JSON array dataset",
+		Sessions:    []SessionFixture{},
+		Facts:       []FactFixture{},
+		Questions:   []QuestionFixture{},
+	}
+
+	var records []LongMemEvalArrayRecord
+	if err := json.NewDecoder(r).Decode(&records); err != nil {
+		return fixture, result, fmt.Errorf("decode JSON array: %w", err)
+	}
+	if len(records) == 0 {
+		return fixture, result, fmt.Errorf("no records in JSON array")
+	}
+
+	seenSessions := map[string]int{} // session_id → order
+	sessionOrder := 0
+
+	getOrCreateSession := func(sid string) int {
+		if order, ok := seenSessions[sid]; ok {
+			return order
+		}
+		sessionOrder++
+		seenSessions[sid] = sessionOrder
+		fixture.Sessions = append(fixture.Sessions, SessionFixture{
+			ID:    sid,
+			Label: sid,
+			Order: sessionOrder,
+		})
+		return sessionOrder
+	}
+
+	for _, rec := range records {
+		result.RecordsRead++
+
+		// Validate parallel arrays.
+		if len(rec.HaystackSessionIDs) != len(rec.HaystackSessions) {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("record %s: haystack_session_ids length %d != haystack_sessions length %d",
+					rec.QuestionID, len(rec.HaystackSessionIDs), len(rec.HaystackSessions)))
+			continue
+		}
+
+		// Register all haystack sessions.
+		for _, sid := range rec.HaystackSessionIDs {
+			getOrCreateSession(sid)
+		}
+
+		// Build a map from answer session ID → fact key(s).
+		ansSessionKeys := map[string][]string{}
+		for i, sid := range rec.HaystackSessionIDs {
+			if i >= len(rec.HaystackSessions) {
+				continue
+			}
+			body := buildConversationBody(rec.HaystackSessions[i])
+			if strings.TrimSpace(body) == "" {
+				continue
+			}
+			key := fmt.Sprintf("%s_hs_%d", rec.QuestionID, i)
+			fixture.Facts = append(fixture.Facts, FactFixture{
+				Key:       key,
+				Title:     firstLine(body, 80),
+				Body:      body,
+				Kind:      "discovery",
+				Domain:    rec.QuestionType,
+				SessionID: sid,
+				Turn:      i + 1,
+			})
+			result.FactsCreated++
+
+			// If this session is an answer session, record the key.
+			for _, ansSid := range rec.AnswerSessionIDs {
+				if sid == ansSid {
+					ansSessionKeys[ansSid] = append(ansSessionKeys[ansSid], key)
+				}
+			}
+		}
+
+		// Collect expected fact keys from answer sessions.
+		expectedKeys := make([]string, 0, len(rec.AnswerSessionIDs))
+		for _, ansSid := range rec.AnswerSessionIDs {
+			if keys, ok := ansSessionKeys[ansSid]; ok {
+				expectedKeys = append(expectedKeys, keys...)
+			}
+		}
+		// If no answer session fact was created, create a standalone answer fact.
+		if len(expectedKeys) == 0 {
+			key := fmt.Sprintf("%s_answer", rec.QuestionID)
+			ansStr := fmt.Sprintf("%v", rec.Answer)
+			fixture.Facts = append(fixture.Facts, FactFixture{
+				Key:       key,
+				Title:     truncateText(ansStr, 60),
+				Body:      ansStr,
+				Kind:      "discovery",
+				Domain:    rec.QuestionType,
+				SessionID: rec.AnswerSessionIDs[0],
+				Turn:      0,
+			})
+			result.FactsCreated++
+			expectedKeys = append(expectedKeys, key)
+		}
+
+		// Create question session (synthetic, ordered after all haystack sessions).
+		qSid := rec.QuestionID + "_q"
+		qOrder := getOrCreateSession(qSid)
+
+		// Approximate distance in sessions.
+		distSess := qOrder - 1
+		if distSess < 1 {
+			distSess = 1
+		}
+		distance := "near"
+		if distSess > 10 {
+			distance = "far"
+		} else if distSess > 3 {
+			distance = "medium"
+		}
+
+		fixture.Questions = append(fixture.Questions, QuestionFixture{
+			ID:               rec.QuestionID,
+			Category:         rec.QuestionType,
+			Distance:         distance,
+			DistanceSessions: distSess,
+			Query:            rec.Question,
+			ExpectedFactKeys: expectedKeys,
+			SessionID:        qSid,
+		})
+		result.QuestionsCreated++
+	}
+
+	if result.FactsCreated == 0 && len(result.Errors) == 0 {
+		return fixture, result, fmt.Errorf("no valid records found in input")
+	}
+	return fixture, result, nil
+}
+
+// buildConversationBody concatenates haystack session messages into a single
+// searchable body string.
+func buildConversationBody(messages []HaystackMessage) string {
+	var b strings.Builder
+	for i, msg := range messages {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(strings.ToUpper(msg.Role[:1]) + msg.Role[1:])
+		b.WriteString(": ")
+		b.WriteString(msg.Content)
+	}
+	return b.String()
+}
+
+// firstLine returns the first line of s, truncated to maxLen runes.
+func firstLine(s string, maxLen int) string {
+	idx := strings.IndexAny(s, "\n.")
+	if idx >= 0 {
+		s = s[:idx]
+	}
+	return truncateText(s, maxLen)
+}
+
+// truncateText truncates s to at most maxLen runes.
+func truncateText(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
 // LoadFixture reads and parses a LongMemEval fixture JSON file.
 func LoadFixture(path string) (Fixture, error) {
 	data, err := os.ReadFile(path)
@@ -411,7 +618,8 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		opts.FixturePath = filepath.Join("bench", "longmemeval", "fixture.json")
 	}
 
-	// If DatasetPath is set and the JSONL file exists, import from it instead.
+	// If DatasetPath is set and the dataset file exists, import from it instead.
+	// The format (JSON array or JSONL) is auto-detected from the first byte.
 	datasetPath := strings.TrimSpace(opts.DatasetPath)
 	if datasetPath == "" {
 		datasetPath = DefaultEvalsDatasetPath
@@ -422,13 +630,25 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	if _, statErr := os.Stat(datasetPath); statErr == nil {
 		f, openErr := os.Open(datasetPath)
 		if openErr == nil {
-			imported, _, impErr := ImportFromJSONL(f)
+			// Peek at first non-whitespace byte to detect format.
+			isArray := isJSONArrayFile(f)
 			f.Close()
-			if impErr == nil && len(imported.Facts) > 0 {
-				fixture = imported
-				importedFromDataset = true
-			} else if impErr != nil {
-				return Report{}, fmt.Errorf("dataset import from %s: %w", datasetPath, impErr)
+			f, openErr = os.Open(datasetPath)
+			if openErr == nil {
+				var impErr error
+				var imported Fixture
+				if isArray {
+					imported, _, impErr = ImportFromJSONArray(f)
+				} else {
+					imported, _, impErr = ImportFromJSONL(f)
+				}
+				f.Close()
+				if impErr == nil && len(imported.Facts) > 0 {
+					fixture = imported
+					importedFromDataset = true
+				} else if impErr != nil {
+					return Report{}, fmt.Errorf("dataset import from %s: %w", datasetPath, impErr)
+				}
 			}
 		}
 	}
@@ -784,6 +1004,29 @@ func enforceThresholds(r Report) error {
 }
 
 // -- helpers --
+
+// isJSONArrayFile checks whether the first non-whitespace byte in f is '['.
+// It resets f's read position to 0 on return.
+func isJSONArrayFile(f *os.File) bool {
+	var buf [16]byte
+	n, err := f.Read(buf[:])
+	if err != nil || n == 0 {
+		f.Seek(0, 0)
+		return false
+	}
+	for _, b := range buf[:n] {
+		if b == '[' {
+			f.Seek(0, 0)
+			return true
+		}
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			f.Seek(0, 0)
+			return false
+		}
+	}
+	f.Seek(0, 0)
+	return false
+}
 
 func keysToIDs(keyToID map[string]int64, keys []string) []int64 {
 	out := make([]int64, 0, len(keys))
