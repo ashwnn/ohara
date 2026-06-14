@@ -4,6 +4,7 @@
 //
 //	go run ./bench/run_longmemeval.go -k 5
 //	go run ./bench/run_longmemeval.go -k 5 -json
+//	go run ./bench/run_longmemeval.go -k 5 -judge -mode hybrid
 //	go run ./bench/run_longmemeval.go -k 5 -enforce -skip-latency
 package main
 
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ashwnn/ohara/bench/longmemeval"
 )
@@ -23,14 +25,22 @@ func main() {
 	enforce := flag.Bool("enforce", true, "enforce threshold gates and exit non-zero on regression")
 	skipLatency := flag.Bool("skip-latency", false, "skip latency SLO gates")
 	jsonOut := flag.Bool("json", false, "pretty-print full report as JSON")
+	useJudge := flag.Bool("judge", false, "enable overlap-based judge scoring")
+	mode := flag.String("mode", "", "retrieval mode: fts5 (default) or hybrid")
 	flag.Parse()
 
-	report, err := longmemeval.RunBenchmark(longmemeval.RunOptions{
+	opts := longmemeval.RunOptions{
 		FixturePath:     *fixturePath,
 		K:               *k,
 		Enforce:         *enforce,
 		SkipLatencyGate: *skipLatency,
-	})
+		Mode:            strings.TrimSpace(*mode),
+	}
+	if *useJudge {
+		opts.Judge = longmemeval.OverlapJudge{}
+	}
+
+	report, err := longmemeval.RunBenchmark(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "benchmark error: %v\n\n", err)
 	}
@@ -51,6 +61,10 @@ func main() {
 	fmt.Println("Ohara LongMemEval benchmark")
 	fmt.Println()
 	fmt.Printf("Fixture: %s\n", report.FixtureDescription)
+	fmt.Printf("Mode: %s\n", report.RetrievalMode)
+	if report.JudgeEnabled {
+		fmt.Printf("Judge: overlap (mean score: %.3f)\n", report.JudgeMeanScore)
+	}
 	fmt.Printf("Questions: %d\n", report.TotalQuestions)
 	fmt.Printf("Passed: %d\n", report.PassedQuestions)
 	fmt.Printf("Failed: %d\n", report.FailedQuestions)

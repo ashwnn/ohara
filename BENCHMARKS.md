@@ -53,9 +53,16 @@ Keyword-match precision@k on deterministic fixtures: precision@3 = 0.2222 (22.2%
 
 ## LongMemEval Harness (bench/longmemeval/)
 
-LongMemEval-style session-distance recall benchmark. Seeds 20 facts across 5 sessions and evaluates retrieval quality at near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances using FTS5 search.
+LongMemEval-style session-distance recall benchmark. Seeds 45 facts across 6 sessions and evaluates retrieval quality at near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances using FTS5 search.
 
-Latest run (FTS5 mode, 20 questions): Recall@3=1.000, MRR=1.000, nDCG@5=1.000, near/medium/far Recall@3 all 1.000, p95 latency=9.6ms.
+Latest run (FTS5 mode, 30 questions): Recall@3=0.967, MRR=0.970, nDCG@5=0.967, near Recall@3=1.000, medium Recall@3=1.000, far Recall@3=0.929, p95 latency=37.2ms.
+
+Includes:
+- **Expanded distractor fixture**: 45 facts with overlapping titles and paraphrased bodies across auth, database, api, infra domains
+- **JSONL dataset importer**: `ImportFromJSONL()` converts LongMemEval-style JSONL records to fixture format
+- **Judge model**: `OverlapJudge` provides baseline token-overlap answer evaluation (no LLM dependency); mean judge score: 0.970
+- **Hybrid mode**: `-mode hybrid` tests deterministic embedding retrieval alongside FTS5
+- **25 deterministic tests** covering harness, import, judge, and hybrid modes
 
 ## Running Benchmarks
 

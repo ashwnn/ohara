@@ -7,12 +7,18 @@
 //
 // The harness is self-contained with a deterministic fixture — no external dataset
 // or model dependency is required for the baseline spine.
+//
+// For public LongMemEval dataset integration, use ImportFromJSONL to convert
+// JSONL records into a Fixture. A built-in OverlapJudge provides baseline
+// answer evaluation without LLM dependency.
 package longmemeval
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -78,6 +84,8 @@ type RunOptions struct {
 	K               int
 	Enforce         bool
 	SkipLatencyGate bool
+	Judge           JudgeModel // optional answer-quality judge (nil = skip)
+	Mode            string     // retrieval mode: "fts5" (default) or "hybrid"
 }
 
 // Metrics holds computed retrieval quality metrics.
@@ -114,6 +122,8 @@ type CaseResult struct {
 	ExpectedKeys []string `json:"expected_keys"`
 	DurationMs   float64  `json:"duration_ms"`
 	Query        string   `json:"query"`
+	JudgeScore   float64  `json:"judge_score,omitempty"`
+	TopBodies    []string `json:"top_bodies,omitempty"`
 }
 
 // Report is the full benchmark output.
@@ -131,6 +141,9 @@ type Report struct {
 	RuntimeMs          float64            `json:"runtime_ms"`
 	Thresholds         ThresholdsFixture  `json:"thresholds"`
 	Failures           []QuestionFailure  `json:"failures"`
+	JudgeEnabled       bool               `json:"judge_enabled"`
+	JudgeMeanScore     float64            `json:"judge_mean_score,omitempty"`
+	RetrievalMode      string             `json:"retrieval_mode"`
 }
 
 // QuestionFailure records a failed question with diagnostic info.
@@ -153,6 +166,214 @@ type questionAgg struct {
 	hit5   int
 	rrSum  float64
 	ndcgSum float64
+}
+
+// JudgeModel evaluates whether a retrieved answer matches the expected answer.
+// Implementations range from simple lexical overlap to LLM-based evaluation.
+type JudgeModel interface {
+	// Score returns a score in [0.0, 1.0] indicating how well the retrieved
+	// content matches the expected content.
+	Score(query string, retrievedBodies []string, expectedBodies []string) float64
+}
+
+// OverlapJudge is a baseline judge that computes Jaccard similarity between
+// token sets of retrieved and expected bodies. No LLM dependency.
+type OverlapJudge struct{}
+
+// Score computes token-level Jaccard similarity. Returns 1.0 if any expected
+// body shares ≥50% tokens with any retrieved body, scaled proportionally.
+func (j OverlapJudge) Score(query string, retrievedBodies []string, expectedBodies []string) float64 {
+	if len(expectedBodies) == 0 || len(retrievedBodies) == 0 {
+		return 0
+	}
+	best := 0.0
+	for _, exp := range expectedBodies {
+		expTokens := tokenize(exp)
+		if len(expTokens) == 0 {
+			continue
+		}
+		for _, ret := range retrievedBodies {
+			retTokens := tokenize(ret)
+			if len(retTokens) == 0 {
+				continue
+			}
+			inter := intersectCount(expTokens, retTokens)
+			union := len(expTokens) + len(retTokens) - inter
+			if union > 0 {
+				sim := float64(inter) / float64(union)
+				if sim > best {
+					best = sim
+				}
+			}
+		}
+	}
+	return best
+}
+
+func tokenize(s string) []string {
+	parts := strings.Fields(strings.ToLower(s))
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, p := range parts {
+		token := strings.Trim(p, `"'.,;:!?()[]{}<>`)
+		if len(token) < 2 {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		out = append(out, token)
+	}
+	return out
+}
+
+func intersectCount(a, b []string) int {
+	set := map[string]struct{}{}
+	for _, s := range a {
+		set[s] = struct{}{}
+	}
+	count := 0
+	for _, s := range b {
+		if _, ok := set[s]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+// DatasetRecord is a single record from a LongMemEval-style JSONL dataset file.
+// Each record contains a fact to insert and optional associated questions.
+type DatasetRecord struct {
+	FactKey   string `json:"fact_key"`
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Kind      string `json:"kind"`
+	Domain    string `json:"domain"`
+	Turn      int    `json:"turn"`
+	// Optional: questions associated with this fact.
+	Questions []DatasetQuestion `json:"questions,omitempty"`
+}
+
+// DatasetQuestion is a question tied to a DatasetRecord.
+type DatasetQuestion struct {
+	ID               string   `json:"id"`
+	Category         string   `json:"category"`
+	Distance         string   `json:"distance"`
+	DistanceSessions int      `json:"distance_sessions"`
+	Query            string   `json:"query"`
+	ExpectedFactKeys []string `json:"expected_fact_keys"`
+	AskSessionID     string   `json:"ask_session_id"`
+}
+
+// ImportResult holds the result of importing a JSONL dataset.
+type ImportResult struct {
+	RecordsRead  int
+	FactsCreated int
+	QuestionsCreated int
+	Errors       []string
+}
+
+// ImportFromJSONL reads a JSONL (newline-delimited JSON) stream and converts it
+// into a Fixture. This enables integration with the public LongMemEval dataset
+// hosted on HuggingFace (hf://datasets/...).
+//
+// Each line must be a valid DatasetRecord. Questions are aggregated across all
+// records into the fixture's Questions array.
+func ImportFromJSONL(r io.Reader) (Fixture, ImportResult, error) {
+	result := ImportResult{}
+	fixture := Fixture{
+		Description: "Imported from LongMemEval JSONL dataset",
+		Sessions:    []SessionFixture{},
+		Facts:       []FactFixture{},
+		Questions:   []QuestionFixture{},
+	}
+	seenSessions := map[string]bool{}
+	sessionOrder := 0
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20) // 1MB line buffer
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		result.RecordsRead++
+
+		var record DatasetRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: %v", result.RecordsRead, err))
+			continue
+		}
+
+		// Default kind if unspecified.
+		kind := record.Kind
+		if kind == "" {
+			kind = "discovery"
+		}
+		domain := record.Domain
+		if domain == "" {
+			domain = "general"
+		}
+
+		fixture.Facts = append(fixture.Facts, FactFixture{
+			Key:       record.FactKey,
+			Title:     record.Title,
+			Body:      record.Body,
+			Kind:      kind,
+			Domain:    domain,
+			SessionID: record.SessionID,
+			Turn:      record.Turn,
+		})
+		result.FactsCreated++
+
+		// Register session if new.
+		if !seenSessions[record.SessionID] {
+			seenSessions[record.SessionID] = true
+			sessionOrder++
+			fixture.Sessions = append(fixture.Sessions, SessionFixture{
+				ID:    record.SessionID,
+				Label: record.SessionID,
+				Order: sessionOrder,
+			})
+		}
+
+		// Add questions from this record.
+		for _, q := range record.Questions {
+			askSess := q.AskSessionID
+			if askSess == "" {
+				askSess = record.SessionID
+			}
+			if !seenSessions[askSess] {
+				seenSessions[askSess] = true
+				sessionOrder++
+				fixture.Sessions = append(fixture.Sessions, SessionFixture{
+					ID:    askSess,
+					Label: askSess,
+					Order: sessionOrder,
+				})
+			}
+			fixture.Questions = append(fixture.Questions, QuestionFixture{
+				ID:               q.ID,
+				Category:         q.Category,
+				Distance:         q.Distance,
+				DistanceSessions: q.DistanceSessions,
+				Query:            q.Query,
+				ExpectedFactKeys: q.ExpectedFactKeys,
+				SessionID:        askSess,
+			})
+			result.QuestionsCreated++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fixture, result, fmt.Errorf("scan error: %w", err)
+	}
+	if result.FactsCreated == 0 {
+		return fixture, result, fmt.Errorf("no valid records found in input")
+	}
+	return fixture, result, nil
 }
 
 // LoadFixture reads and parses a LongMemEval fixture JSON file.
@@ -190,8 +411,17 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	}
 	thresholds := withDefaultThresholds(fixture.Thresholds)
 
+	// Determine retrieval mode.
+	retrievalMode := strings.TrimSpace(opts.Mode)
+	if retrievalMode == "" {
+		retrievalMode = strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MODE"))
+	}
+	if retrievalMode == "" {
+		retrievalMode = "fts5"
+	}
+
 	// Seed store with facts.
-	s, keyToID, err := seedStore(fixture)
+	s, keyToID, err := seedStore(fixture, retrievalMode)
 	if err != nil {
 		return Report{}, err
 	}
@@ -245,6 +475,29 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			reason = fmt.Sprintf("no expected facts in top-%d results", opts.K)
 		}
 
+		// Compute judge score if judge is enabled.
+		var judgeScore float64
+		var topBodies []string
+		if opts.Judge != nil {
+			topBodies = make([]string, 0, len(top))
+			for _, item := range results {
+				if len(topBodies) >= opts.K {
+					break
+				}
+				topBodies = append(topBodies, item.Body)
+			}
+			expectedBodies := make([]string, 0, len(q.ExpectedFactKeys))
+			for _, key := range q.ExpectedFactKeys {
+				for _, f := range fixture.Facts {
+					if f.Key == key {
+						expectedBodies = append(expectedBodies, f.Body)
+						break
+					}
+				}
+			}
+			judgeScore = opts.Judge.Score(q.Query, topBodies, expectedBodies)
+		}
+
 		cr := CaseResult{
 			QuestionID:   q.ID,
 			Category:     q.Category,
@@ -258,6 +511,8 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			ExpectedKeys: q.ExpectedFactKeys,
 			DurationMs:   durationMs,
 			Query:        q.Query,
+			JudgeScore:   judgeScore,
+			TopBodies:    topBodies,
 		}
 		caseResults = append(caseResults, cr)
 
@@ -296,6 +551,22 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		RuntimeMs:          float64(time.Since(start)) / float64(time.Millisecond),
 		Thresholds:         thresholds,
 		Failures:           sortFailures(failures),
+		JudgeEnabled:       opts.Judge != nil,
+		RetrievalMode:      retrievalMode,
+	}
+	// Compute mean judge score if enabled.
+	if opts.Judge != nil {
+		var sum float64
+		count := 0
+		for _, cr := range caseResults {
+			if cr.JudgeScore > 0 || cr.Pass {
+				sum += cr.JudgeScore
+				count++
+			}
+		}
+		if count > 0 {
+			report.JudgeMeanScore = sum / float64(count)
+		}
 	}
 	report.Latency = computeLatency(caseResults)
 
@@ -312,13 +583,19 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 }
 
 // seedStore creates a temporary store, inserts all facts, and returns a key→ID map.
-func seedStore(fixture Fixture) (*store.Store, map[string]int64, error) {
+// When mode is "hybrid", configures the store for hybrid retrieval with deterministic
+// test embeddings (no Ollama dependency).
+func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, error) {
 	tmp, err := os.MkdirTemp("", "ohara-bench-longmemeval-")
 	if err != nil {
 		return nil, nil, err
 	}
 
 	cfg := store.FallbackConfig(tmp)
+	if strings.EqualFold(mode, "hybrid") {
+		cfg.RetrievalMode = "hybrid"
+		cfg.EmbeddingBackend = "deterministic-test"
+	}
 	s, err := store.New(cfg)
 	if err != nil {
 		os.RemoveAll(tmp)

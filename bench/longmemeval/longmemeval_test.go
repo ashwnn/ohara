@@ -3,6 +3,7 @@ package longmemeval
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -284,5 +285,196 @@ func BenchmarkLongMemEvalHarness(b *testing.B) {
 		if err != nil {
 			b.Fatalf("benchmark run failed: %v", err)
 		}
+	}
+}
+
+// -- JSONL import tests --
+
+func TestImportFromJSONLBasic(t *testing.T) {
+	input := `{"fact_key":"f1","session_id":"s1","title":"Test fact","body":"This is a test fact about deployments.","kind":"decision","domain":"infra","turn":1,"questions":[{"id":"q1","category":"s1","distance":"near","distance_sessions":1,"query":"deployment fact","expected_fact_keys":["f1"],"ask_session_id":"s2"}]}
+{"fact_key":"f2","session_id":"s2","title":"Another fact","body":"This is a fact about auth tokens.","kind":"pattern","domain":"auth","turn":2,"questions":[{"id":"q2","category":"s2","distance":"medium","distance_sessions":2,"query":"auth token fact","expected_fact_keys":["f2"],"ask_session_id":"s3"}]}
+`
+	fixture, result, err := ImportFromJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if result.RecordsRead != 2 {
+		t.Errorf("records read = %d, want 2", result.RecordsRead)
+	}
+	if result.FactsCreated != 2 {
+		t.Errorf("facts created = %d, want 2", result.FactsCreated)
+	}
+	if result.QuestionsCreated != 2 {
+		t.Errorf("questions created = %d, want 2", result.QuestionsCreated)
+	}
+	if len(fixture.Facts) != 2 {
+		t.Errorf("fixture facts = %d, want 2", len(fixture.Facts))
+	}
+	if len(fixture.Questions) != 2 {
+		t.Errorf("fixture questions = %d, want 2", len(fixture.Questions))
+	}
+	if fixture.Facts[0].Key != "f1" {
+		t.Errorf("fact[0].key = %q, want f1", fixture.Facts[0].Key)
+	}
+	if fixture.Questions[1].Query != "auth token fact" {
+		t.Errorf("question[1].query = %q, want 'auth token fact'", fixture.Questions[1].Query)
+	}
+}
+
+func TestImportFromJSONLEmpty(t *testing.T) {
+	_, _, err := ImportFromJSONL(strings.NewReader(""))
+	if err == nil {
+		t.Fatal("expected error for empty input")
+	}
+}
+
+func TestImportFromJSONLInvalidLines(t *testing.T) {
+	input := `{"fact_key":"f1","session_id":"s1","title":"ok","body":"ok"}
+not valid json
+{"fact_key":"f2","session_id":"s2","title":"also ok","body":"also ok"}
+`
+	fixture, result, err := ImportFromJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("import should succeed with partial errors: %v", err)
+	}
+	if result.RecordsRead != 3 {
+		t.Errorf("records read = %d, want 3", result.RecordsRead)
+	}
+	if result.FactsCreated != 2 {
+		t.Errorf("facts created = %d, want 2", result.FactsCreated)
+	}
+	if len(result.Errors) != 1 {
+		t.Errorf("errors = %d, want 1", len(result.Errors))
+	}
+	if len(fixture.Facts) != 2 {
+		t.Errorf("fixture facts = %d, want 2", len(fixture.Facts))
+	}
+}
+
+func TestImportFromJSONLDefaultKind(t *testing.T) {
+	input := `{"fact_key":"f1","session_id":"s1","title":"No kind field","body":"Should default to discovery kind."}
+`
+	fixture, _, err := ImportFromJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if fixture.Facts[0].Kind != "discovery" {
+		t.Errorf("default kind = %q, want discovery", fixture.Facts[0].Kind)
+	}
+}
+
+// -- Judge model tests --
+
+func TestOverlapJudgeExactMatch(t *testing.T) {
+	j := OverlapJudge{}
+	score := j.Score("test",
+		[]string{"JWT tokens are signed using RS256 with a 2048-bit RSA key."},
+		[]string{"JWT tokens are signed using RS256 with a 2048-bit RSA key."},
+	)
+	if score <= 0.5 {
+		t.Errorf("expected high score for exact match, got %.3f", score)
+	}
+}
+
+func TestOverlapJudgeNoMatch(t *testing.T) {
+	j := OverlapJudge{}
+	score := j.Score("test",
+		[]string{"The database uses WAL journal mode."},
+		[]string{"JWT tokens are signed using RS256 with a 2048-bit RSA key."},
+	)
+	if score > 0.1 {
+		t.Errorf("expected low score for unrelated texts, got %.3f", score)
+	}
+}
+
+func TestOverlapJudgePartialMatch(t *testing.T) {
+	j := OverlapJudge{}
+	score := j.Score("test",
+		[]string{"The login endpoint rate limits to 5 per minute per IP."},
+		[]string{"Login rate limit is 5 attempts per minute per IP address."},
+	)
+	if score < 0.3 {
+		t.Errorf("expected moderate overlap score, got %.3f", score)
+	}
+}
+
+func TestOverlapJudgeEmptyInput(t *testing.T) {
+	j := OverlapJudge{}
+	score := j.Score("test", []string{}, []string{"some content"})
+	if score != 0 {
+		t.Errorf("expected 0 for empty retrieved, got %.3f", score)
+	}
+	score = j.Score("test", []string{"some content"}, []string{})
+	if score != 0 {
+		t.Errorf("expected 0 for empty expected, got %.3f", score)
+	}
+}
+
+// -- Judge scoring in benchmark --
+
+func TestRunBenchmarkWithJudge(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath:     fixturePath(),
+		K:               5,
+		Enforce:         false,
+		SkipLatencyGate: true,
+		Judge:           OverlapJudge{},
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	if !report.JudgeEnabled {
+		t.Fatal("expected judge to be enabled")
+	}
+	if report.JudgeMeanScore <= 0 {
+		t.Error("expected positive mean judge score")
+	}
+	// Verify judge scores are populated in case results.
+	hasScore := false
+	for _, cr := range report.CaseResults {
+		if cr.JudgeScore > 0 {
+			hasScore = true
+			break
+		}
+	}
+	if !hasScore {
+		t.Error("expected at least one case result with judge score > 0")
+	}
+}
+
+// -- Hybrid mode test --
+
+func TestRunBenchmarkHybridMode(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath:     fixturePath(),
+		K:               5,
+		Enforce:         false,
+		SkipLatencyGate: true,
+		Mode:            "hybrid",
+	})
+	if err != nil {
+		t.Fatalf("hybrid benchmark run failed: %v", err)
+	}
+	if report.RetrievalMode != "hybrid" {
+		t.Errorf("retrieval mode = %q, want hybrid", report.RetrievalMode)
+	}
+	// Hybrid mode should still pass most questions.
+	if report.FailedQuestions > report.TotalQuestions/2 {
+		t.Errorf("too many hybrid failures: %d/%d", report.FailedQuestions, report.TotalQuestions)
+	}
+}
+
+func TestRunBenchmarkReportIncludesRetrievalMode(t *testing.T) {
+	report, err := RunBenchmark(RunOptions{
+		FixturePath:     fixturePath(),
+		K:               5,
+		Enforce:         false,
+		SkipLatencyGate: true,
+	})
+	if err != nil {
+		t.Fatalf("benchmark run failed: %v", err)
+	}
+	if report.RetrievalMode != "fts5" {
+		t.Errorf("default retrieval mode = %q, want fts5", report.RetrievalMode)
 	}
 }
