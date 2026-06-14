@@ -5081,3 +5081,167 @@ func TestFilterByTrustLevelPack_LowTrustFilters(t *testing.T) {
 		t.Fatalf("expected 'tl' item, got %q", res.MemoryItems[0].Title)
 	}
 }
+
+// ─── Bi-temporal invalidation and as-of retrieval tests ─────────────────────
+
+func TestInvalidateMemorySetsValidTo(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use JWT for auth",
+		Body:      "All auth uses JWT tokens.",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.ValidTo != nil && *mem.ValidTo != "" {
+		t.Fatalf("expected nil/empty valid_to before invalidation, got %q", *mem.ValidTo)
+	}
+	if mem.Status != MemoryStatusActive {
+		t.Fatalf("expected active status, got %q", mem.Status)
+	}
+
+	// Invalidate.
+	if err := s.InvalidateMemory(id, "knowledge outdated"); err != nil {
+		t.Fatalf("InvalidateMemory: %v", err)
+	}
+
+	mem, err = s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory after invalidation: %v", err)
+	}
+	if mem.ValidTo == nil || *mem.ValidTo == "" {
+		t.Fatal("expected valid_to to be set after invalidation")
+	}
+	// Status should remain active (not archived).
+	if mem.Status != MemoryStatusActive {
+		t.Fatalf("expected active status after invalidation, got %q", mem.Status)
+	}
+}
+
+func TestAsOfRetrievalExcludesInvalidatedMemory(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use PostgreSQL",
+		Body:      "Primary database is PostgreSQL.",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Invalidate the memory.
+	if err := s.InvalidateMemory(id, "switched to SQLite"); err != nil {
+		t.Fatalf("InvalidateMemory: %v", err)
+	}
+
+	// Search with asof: now should NOT return the invalidated memory
+	// because valid_to < now.
+	now := time.Now().UTC().Format(time.RFC3339)
+	results, err := s.SearchMemories("asof:"+now+" PostgreSQL", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories with asof: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == id {
+			t.Fatal("invalidated memory leaked into as-of-now query")
+		}
+	}
+}
+
+func TestAsOfRetrievalIncludesHistoricalMemory(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert a memory.
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Use Node.js for backend",
+		Body:      "Backend implemented in Node.js.",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	// Small delay to ensure valid_to timestamp differs from created_at.
+	time.Sleep(10 * time.Millisecond)
+
+	// Invalidate it.
+	if err := s.InvalidateMemory(id, "migrated to Go"); err != nil {
+		t.Fatalf("InvalidateMemory: %v", err)
+	}
+
+	mem, _ := s.GetMemory(id)
+	validTo := *mem.ValidTo
+
+	// Search with asof: a timestamp BEFORE valid_to should return the memory.
+	// Use created_at as the as-of point.
+	results, err := s.SearchMemories("asof:"+mem.CreatedAt+" Node.js backend", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories with historical asof: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("historical memory not found in as-of-past query")
+	}
+
+	// Search with asof: after valid_to should NOT return it.
+	results, err = s.SearchMemories("asof:"+validTo+" Node.js", "ohara", "", "", "", MemoryStatusActive, 10, "")
+	if err != nil {
+		t.Fatalf("SearchMemories with after-valid-to asof: %v", err)
+	}
+	for _, r := range results {
+		if r.ID == id {
+			t.Fatal("invalidated memory leaked into after-valid-to query")
+		}
+	}
+}
+
+func TestInvalidateMemoryPreservesIngestedAt(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID: "ohara",
+		Kind:      MemoryKindDecision,
+		Title:     "Original decision",
+		Body:      "An original decision that will be invalidated.",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	memBefore, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory before: %v", err)
+	}
+	ingestedBefore := memBefore.IngestedAt
+
+	// Invalidate.
+	if err := s.InvalidateMemory(id, "no longer valid"); err != nil {
+		t.Fatalf("InvalidateMemory: %v", err)
+	}
+
+	memAfter, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory after: %v", err)
+	}
+	// ingested_at should remain unchanged.
+	if memAfter.IngestedAt != ingestedBefore {
+		t.Errorf("ingested_at changed from %q to %q", ingestedBefore, memAfter.IngestedAt)
+	}
+}

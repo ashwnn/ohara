@@ -1356,6 +1356,33 @@ func (s *Store) ForgetMemory(id int64, reason, actorID string) error {
 	})
 }
 
+// InvalidateMemory marks a memory as temporally expired by setting valid_to=now.
+// Unlike ForgetMemory, the status remains active — the memory is still a valid
+// record of what was believed to be true, but temporal filters (asof:) will
+// exclude it from current-knowledge queries.
+//
+// This implements bi-temporal invalidation: the memory's valid_to is set to the
+// current time, while ingested_at remains its original ingestion timestamp.
+// Queries with asof:<past_timestamp> can still retrieve the memory as it was
+// known at that point in time.
+func (s *Store) InvalidateMemory(id int64, reason string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		var oldStatus string
+		if err := tx.QueryRow(`SELECT status FROM memory_items WHERE id = ?`, id).Scan(&oldStatus); err != nil {
+			return fmt.Errorf("invalidate memory %d: %w", id, err)
+		}
+		_, err := s.execHook(tx,
+			`UPDATE memory_items SET
+			 valid_to = strftime('%Y-%m-%dT%H:%M:%f','now'),
+			 updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+			 WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("invalidate memory %d: %w", id, err)
+		}
+		return nil
+	})
+}
+
 // AddRelation creates a typed relation between two memory items.
 func (s *Store) AddRelation(fromID, toID int64, relation string) error {
 	_, err := s.execHook(s.db,
