@@ -88,3 +88,64 @@ The JSON includes a `CaseResults` array with one entry per fixture case:
 | `duration_ms` | float64 | Per-case wall-clock time in milliseconds |
 
 No ranking behavior is changed; the JSON trace is a pure overlay on the existing harness.
+
+## LongMemEval (Session-Distance Recall)
+
+LongMemEval-style benchmark evaluating recall quality across increasing session distances.
+Seeds facts across 5 simulated sessions and measures whether FTS5 retrieval can find facts
+from near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances.
+
+Run deterministic tests:
+
+```bash
+go test ./bench/longmemeval -v
+```
+
+Run standalone harness:
+
+```bash
+go run ./bench/run_longmemeval.go -k 5
+go run ./bench/run_longmemeval.go -k 5 -json
+go run ./bench/run_longmemeval.go -k 5 -enforce -skip-latency
+```
+
+The harness report includes:
+
+- overall metrics (`Recall@1/3/5`, `MRR`, `nDCG@5`)
+- distance-stratified metrics (near, medium, far)
+- per-category metrics (session_distance_1 through session_distance_5)
+- per-case latency metrics (p50, p95, max, mean)
+- threshold SLO gates (overall recall, near/medium/far recall, MRR, latency)
+- per-question failures with expected/actual fact keys
+
+### JSON Replay Output
+
+Pass `-json` to output the full report as pretty-printed JSON:
+
+```bash
+go run ./bench/run_longmemeval.go -k 5 -json
+```
+
+The JSON includes a `CaseResults` array with per-question fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `question_id` | string | Question identifier |
+| `category` | string | Session distance category |
+| `distance` | string | Distance bucket (near/medium/far) |
+| `distance_sessions` | int | Number of sessions between fact insert and question |
+| `pass` | bool | Whether the question passed |
+| `failure_reason` | string | Failure description (empty on pass) |
+| `top_ids` | []int64 | Top returned memory IDs |
+| `expected_ids` | []int64 | Expected memory IDs |
+| `top_keys` | []string | Top returned fact keys |
+| `expected_keys` | []string | Expected fact keys |
+| `duration_ms` | float64 | Per-question wall-clock time in milliseconds |
+| `query` | string | The search query used |
+
+### Fixture Design
+
+The baseline fixture (`bench/longmemeval/fixture.json`) contains 20 facts and 20 questions
+spanning domains: auth, database, api, infra. This is a self-contained deterministic spine
+with no external dataset dependency. T2+ can extend with the full LongMemEval public dataset
+and judge-model integration.

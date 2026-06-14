@@ -180,6 +180,8 @@ go test ./bench/forgetting/ -v
 go run ./bench/precision/ -k 3
 go test ./bench/retrieval/ -v
 go run ./bench/run_retrieval.go -k 5
+go test ./bench/longmemeval/ -v
+go run ./bench/run_longmemeval.go -k 5
 go test ./internal/token/ -bench=. -benchmem -benchtime=1s
 ```
 

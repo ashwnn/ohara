@@ -51,6 +51,12 @@ Keyword-match precision@k on deterministic fixtures: precision@3 = 0.2222 (22.2%
 | CountStrict | ~33K | 30,581 |
 | WithinBudget | ~34K | 29,007 |
 
+## LongMemEval Harness (bench/longmemeval/)
+
+LongMemEval-style session-distance recall benchmark. Seeds 20 facts across 5 sessions and evaluates retrieval quality at near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances using FTS5 search.
+
+Latest run (FTS5 mode, 20 questions): Recall@3=1.000, MRR=1.000, nDCG@5=1.000, near/medium/far Recall@3 all 1.000, p95 latency=9.6ms.
+
 ## Running Benchmarks
 
 ```bash
@@ -69,6 +75,10 @@ go run ./bench/precision/   -k 3
 # Retrieval fixture harness
 go test ./bench/retrieval/ -v
 go run ./bench/run_retrieval.go -k 5
+
+# LongMemEval session-distance recall
+go test ./bench/longmemeval/ -v
+go run ./bench/run_longmemeval.go -k 5
 
 # Token counting
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s

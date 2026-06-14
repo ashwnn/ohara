@@ -1,0 +1,63 @@
+{
+  "description": "LongMemEval-style fixture evaluating session-distance recall for Ohara FTS5 retrieval.",
+  "sessions": [
+    {"id": "s1", "label": "initial-setup", "order": 1},
+    {"id": "s2", "label": "auth-work", "order": 2},
+    {"id": "s3", "label": "database-migration", "order": 3},
+    {"id": "s4", "label": "api-refactor", "order": 4},
+    {"id": "s5", "label": "monitoring-setup", "order": 5}
+  ],
+  "facts": [
+    {"key": "f_jwt_algo", "title": "JWT signing algorithm is RS256", "body": "All JWT tokens are signed using RS256 with a 2048-bit RSA key pair. The public key is available at /.well-known/jwks.json.", "kind": "config", "domain": "auth", "session_id": "s1", "turn": 1},
+    {"key": "f_session_ttl", "title": "Session TTL is 24 hours", "body": "User sessions expire after 24 hours of inactivity. The TTL is configured via SESSION_TTL_HOURS env var, defaulting to 24.", "kind": "config", "domain": "auth", "session_id": "s1", "turn": 2},
+    {"key": "f_rate_limit", "title": "Login rate limit is 5 per minute", "body": "The login endpoint applies a rate limit of 5 attempts per minute per IP address. Exceeding this triggers a 429 response with a Retry-After header.", "kind": "procedure", "domain": "auth", "session_id": "s2", "turn": 3},
+    {"key": "f_oauth_providers", "title": "OAuth providers: Google and GitHub", "body": "The application supports OAuth 2.0 login via Google and GitHub. Provider configuration is stored in the oauth_providers table.", "kind": "config", "domain": "auth", "session_id": "s2", "turn": 4},
+    {"key": "f_token_rotation", "title": "Refresh token rotation enabled", "body": "When a refresh token is used, the old token is invalidated and a new refresh token is issued. Reuse detection triggers revocation of all tokens for that user.", "kind": "pattern", "domain": "auth", "session_id": "s2", "turn": 5},
+    {"key": "f_migration_tool", "title": "Database migrations use golang-migrate", "body": "All schema migrations are managed by golang-migrate v4. Migration files are numbered sequentially and stored in internal/store/migrations/.", "kind": "pattern", "domain": "database", "session_id": "s3", "turn": 6},
+    {"key": "f_wal_mode", "title": "SQLite WAL mode is always enabled", "body": "Every SQLite connection opens with PRAGMA journal_mode=WAL. This is enforced in the connection setup in store.go.", "kind": "decision", "domain": "database", "session_id": "s3", "turn": 7},
+    {"key": "f_fts5_rebuild", "title": "FTS5 index rebuilt on migration 005", "body": "Migration 005 drops and recreates the FTS5 content table to include the new body column. The rebuild is idempotent.", "kind": "bugfix", "domain": "database", "session_id": "s3", "turn": 8},
+    {"key": "f_conn_pool", "title": "Connection pool size is 25", "body": "The sql.DB connection pool is configured with SetMaxOpenConns(25) and SetMaxIdleConns(5). These values were tuned for the 4-core production instances.", "kind": "config", "domain": "database", "session_id": "s3", "turn": 9},
+    {"key": "f_api_versioning", "title": "API versioned via /v1/ prefix", "body": "All REST endpoints are prefixed with /v1/. Breaking changes will introduce /v2/ while keeping /v1/ deprecated for 6 months.", "kind": "decision", "domain": "api", "session_id": "s4", "turn": 10},
+    {"key": "f_error_format", "title": "Error responses use RFC 7807 Problem Details", "body": "All API errors are returned as application/problem+json with type, title, status, and detail fields. Validation errors include an errors array.", "kind": "pattern", "domain": "api", "session_id": "s4", "turn": 11},
+    {"key": "f_pagination", "title": "Cursor-based pagination for list endpoints", "body": "List endpoints use cursor-based pagination with a page_token query parameter. The cursor is an opaque base64-encoded string containing the last item ID.", "kind": "pattern", "domain": "api", "session_id": "s4", "turn": 12},
+    {"key": "f_cache_headers", "title": "Cache-Control headers set on GET responses", "body": "GET responses include Cache-Control: private, max-age=60 for authenticated endpoints. Public endpoints use max-age=300. ETag headers are also included.", "kind": "config", "domain": "api", "session_id": "s4", "turn": 13},
+    {"key": "f_metrics_port", "title": "Prometheus metrics on port 9090", "body": "The application exposes Prometheus metrics on a separate HTTP server listening on port 9090. The /metrics endpoint is not exposed on the main API port.", "kind": "config", "domain": "infra", "session_id": "s5", "turn": 14},
+    {"key": "f_health_check", "title": "Health check endpoint at /healthz", "body": "The /healthz endpoint returns 200 if the database and all upstream dependencies are reachable. It returns 503 otherwise with a JSON body listing failing checks.", "kind": "procedure", "domain": "infra", "session_id": "s5", "turn": 15},
+    {"key": "f_log_levels", "title": "Structured logging with slog levels", "body": "All logging uses Go's slog package with JSON output. Log level is controlled by LOG_LEVEL env var (debug, info, warn, error). Request IDs are injected via middleware.", "kind": "pattern", "domain": "infra", "session_id": "s5", "turn": 16},
+    {"key": "f_graceful_shutdown", "title": "Graceful shutdown with 30s timeout", "body": "On SIGTERM or SIGINT, the server stops accepting new requests, drains in-flight requests with a 30-second timeout, then closes database connections.", "kind": "procedure", "domain": "infra", "session_id": "s5", "turn": 17},
+    {"key": "f_cors_policy", "title": "CORS allows only app.example.com", "body": "The CORS middleware restricts Access-Control-Allow-Origin to https://app.example.com. Preflight OPTIONS requests are cached for 1 hour.", "kind": "config", "domain": "api", "session_id": "s4", "turn": 18},
+    {"key": "f_password_hash", "title": "Passwords hashed with bcrypt cost 12", "body": "User passwords are hashed using bcrypt with cost factor 12. Legacy accounts with cost 10 are re-hashed on next successful login.", "kind": "decision", "domain": "auth", "session_id": "s2", "turn": 19},
+    {"key": "f_mfa_setup", "title": "MFA uses TOTP with 6-digit codes", "body": "Multi-factor authentication uses TOTP (RFC 6238) with 6-digit codes and a 30-second time step. Backup codes are 8-character alphanumeric strings, one-time use.", "kind": "config", "domain": "auth", "session_id": "s2", "turn": 20}
+  ],
+  "questions": [
+    {"id": "q_s1_jwt", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "What algorithm is used for JWT signing?", "expected_fact_keys": ["f_jwt_algo"], "session_id": "s2"},
+    {"id": "q_s1_session", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "How long do user sessions last?", "expected_fact_keys": ["f_session_ttl"], "session_id": "s2"},
+    {"id": "q_s1_rate", "category": "session_distance_2", "distance": "medium", "distance_sessions": 2, "query": "What is the login rate limit per minute?", "expected_fact_keys": ["f_rate_limit"], "session_id": "s3"},
+    {"id": "q_s1_oauth", "category": "session_distance_2", "distance": "medium", "distance_sessions": 2, "query": "Which OAuth providers are supported?", "expected_fact_keys": ["f_oauth_providers"], "session_id": "s3"},
+    {"id": "q_s2_migration", "category": "session_distance_3", "distance": "medium", "distance_sessions": 2, "query": "What tool manages database migrations?", "expected_fact_keys": ["f_migration_tool"], "session_id": "s4"},
+    {"id": "q_s2_wal", "category": "session_distance_3", "distance": "medium", "distance_sessions": 2, "query": "What journal mode does SQLite use?", "expected_fact_keys": ["f_wal_mode"], "session_id": "s4"},
+    {"id": "q_s2_fts5", "category": "session_distance_4", "distance": "far", "distance_sessions": 3, "query": "When was the FTS5 index rebuilt?", "expected_fact_keys": ["f_fts5_rebuild"], "session_id": "s5"},
+    {"id": "q_s2_pool", "category": "session_distance_4", "distance": "far", "distance_sessions": 3, "query": "What is the database connection pool size?", "expected_fact_keys": ["f_conn_pool"], "session_id": "s5"},
+    {"id": "q_s3_api_version", "category": "session_distance_5", "distance": "far", "distance_sessions": 3, "query": "How are API versions handled?", "expected_fact_keys": ["f_api_versioning"], "session_id": "s5"},
+    {"id": "q_s3_error_format", "category": "session_distance_5", "distance": "far", "distance_sessions": 3, "query": "What format are error responses in?", "expected_fact_keys": ["f_error_format"], "session_id": "s5"},
+    {"id": "q_s4_pagination", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "How does pagination work for list endpoints?", "expected_fact_keys": ["f_pagination"], "session_id": "s5"},
+    {"id": "q_s4_metrics", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "On what port are Prometheus metrics exposed?", "expected_fact_keys": ["f_metrics_port"], "session_id": "s5"},
+    {"id": "q_s4_health", "category": "session_distance_2", "distance": "near", "distance_sessions": 1, "query": "What endpoint serves the health check?", "expected_fact_keys": ["f_health_check"], "session_id": "s5"},
+    {"id": "q_s5_cors", "category": "session_distance_2", "distance": "near", "distance_sessions": 1, "query": "What origin is allowed by CORS?", "expected_fact_keys": ["f_cors_policy"], "session_id": "s5"},
+    {"id": "q_s5_password", "category": "session_distance_4", "distance": "far", "distance_sessions": 4, "query": "What is the bcrypt cost factor for passwords?", "expected_fact_keys": ["f_password_hash"], "session_id": "s5"},
+    {"id": "q_s5_mfa", "category": "session_distance_4", "distance": "far", "distance_sessions": 4, "query": "How does multi-factor authentication work?", "expected_fact_keys": ["f_mfa_setup"], "session_id": "s5"},
+    {"id": "q_s5_token", "category": "session_distance_5", "distance": "far", "distance_sessions": 5, "query": "How does refresh token rotation work?", "expected_fact_keys": ["f_token_rotation"], "session_id": "s5"},
+    {"id": "q_s5_cache", "category": "session_distance_5", "distance": "far", "distance_sessions": 5, "query": "What cache headers are set on API responses?", "expected_fact_keys": ["f_cache_headers"], "session_id": "s5"},
+    {"id": "q_s5_log", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "What logging package and format is used?", "expected_fact_keys": ["f_log_levels"], "session_id": "s5"},
+    {"id": "q_s5_shutdown", "category": "session_distance_1", "distance": "near", "distance_sessions": 1, "query": "How does the server handle graceful shutdown?", "expected_fact_keys": ["f_graceful_shutdown"], "session_id": "s5"}
+  ],
+  "thresholds": {
+    "overall_recall_at_3": 0.75,
+    "near_recall_at_3": 0.80,
+    "medium_recall_at_3": 0.70,
+    "far_recall_at_3": 0.60,
+    "mrr_overall": 0.65,
+    "latency_p95_ms_max": 100,
+    "latency_max_ms_max": 500
+  }
+}
