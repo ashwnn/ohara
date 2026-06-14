@@ -64,6 +64,13 @@ func (s *Store) checkHybridAvailability() hybridAvailability {
 	backend := strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend))
 	result := hybridAvailability{Backend: backend}
 
+	// Check registered embedders first (extensible path).
+	if _, ok := registeredEmbedders[backend]; ok {
+		result.Enabled = true
+		result.EmbeddingsAvailable = true
+		return result
+	}
+
 	switch backend {
 	case "deterministic-test":
 		result.Enabled = true
@@ -139,15 +146,50 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
+// Embedder is the interface for text embedding backends.
+// Implementations must be safe for concurrent use.
+type Embedder interface {
+	// Embed returns a float32 embedding vector for the given text.
+	// The dimension should match the configured EmbeddingDim.
+	Embed(text string) ([]float32, error)
+}
+
+// registeredEmbedders holds all registered embedding backend implementations.
+// Keyed by backend name (lowercase). Populated by init-time registration.
+var registeredEmbedders = map[string]Embedder{}
+
+// RegisterEmbedder registers an Embedder implementation for the given backend name.
+// Must be called before store initialization. Not safe for concurrent use.
+func RegisterEmbedder(name string, e Embedder) {
+	registeredEmbedders[strings.ToLower(strings.TrimSpace(name))] = e
+}
+
+// deterministicEmbedder is the built-in deterministic-test embedder (pure Go, no deps).
+type deterministicEmbedder struct{ dim int }
+
+func (d deterministicEmbedder) Embed(text string) ([]float32, error) {
+	return deterministicTestEmbedding(text, d.dim), nil
+}
+
+func init() {
+	// Register built-in deterministic embedder (always available, no external deps).
+	RegisterEmbedder("deterministic-test", deterministicEmbedder{dim: 128})
+}
+
 func (s *Store) embedText(text string) ([]float32, error) {
-	switch strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend)) {
-	case "ollama", "":
-		return s.embedTextOllama(text)
-	case "deterministic-test":
-		return deterministicTestEmbedding(text, s.cfg.EmbeddingDim), nil
-	default:
-		return nil, fmt.Errorf("unsupported embedding backend %q", s.cfg.EmbeddingBackend)
+	backend := strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend))
+
+	// Check registered embedders first (extensible path).
+	if e, ok := registeredEmbedders[backend]; ok {
+		return e.Embed(text)
 	}
+
+	// Legacy ollama path (built-in for backward compat, uses Store state).
+	if backend == "ollama" || backend == "" {
+		return s.embedTextOllama(text)
+	}
+
+	return nil, fmt.Errorf("unsupported embedding backend %q", s.cfg.EmbeddingBackend)
 }
 
 func (s *Store) embedTextOllama(text string) ([]float32, error) {

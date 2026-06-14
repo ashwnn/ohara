@@ -674,3 +674,70 @@ func TestScoringWeightsAllHaveDefaults(t *testing.T) {
 		}
 	}
 }
+
+// -- Embedder interface and registry tests --
+
+// testEmbedder is a mock embedder for testing the registry.
+type testEmbedder struct {
+	dim int
+}
+
+func (t testEmbedder) Embed(text string) ([]float32, error) {
+	vec := make([]float32, t.dim)
+	for i := range vec {
+		vec[i] = float32(i) * 0.001
+	}
+	return vec, nil
+}
+
+func TestRegisterEmbedderAndUse(t *testing.T) {
+	// Register a custom backend.
+	RegisterEmbedder("test-registry", testEmbedder{dim: 64})
+
+	s := newHybridTestStoreWithBackend(t, "test-registry", "")
+	vec, err := s.embedText("hello world")
+	if err != nil {
+		t.Fatalf("embedText with registered backend: %v", err)
+	}
+	if len(vec) != 64 {
+		t.Errorf("expected dim 64 from registered embedder, got %d", len(vec))
+	}
+}
+
+func TestEmbedderInterfaceSatisfied(t *testing.T) {
+	// Verify deterministicEmbedder satisfies the Embedder interface.
+	var _ Embedder = deterministicEmbedder{dim: 128}
+	// Verify testEmbedder satisfies it too.
+	var _ Embedder = testEmbedder{dim: 64}
+}
+
+func TestRegisteredBackendShowsAvailable(t *testing.T) {
+	RegisterEmbedder("available-check", testEmbedder{dim: 32})
+	s := newHybridTestStoreWithBackend(t, "available-check", "")
+	avail := s.checkHybridAvailability()
+	if !avail.Enabled {
+		t.Fatal("expected registered backend to be available")
+	}
+	if !avail.EmbeddingsAvailable {
+		t.Fatal("expected registered backend embeddings to be available")
+	}
+}
+
+func TestDefaultDeterministicIsRegistered(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "deterministic-test", "")
+	vec, err := s.embedText("test")
+	if err != nil {
+		t.Fatalf("deterministic-test embedder not registered: %v", err)
+	}
+	if len(vec) != 128 {
+		t.Errorf("expected default dim 128, got %d", len(vec))
+	}
+}
+
+func TestUnknownBackendStillFails(t *testing.T) {
+	s := newHybridTestStoreWithBackend(t, "nonexistent-vendor-xyz", "")
+	_, err := s.embedText("test")
+	if err == nil {
+		t.Fatal("expected error for unregistered backend")
+	}
+}
