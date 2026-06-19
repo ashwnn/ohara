@@ -1,53 +1,21 @@
-Creative Commons Attribution-NonCommercial 4.0 International Public License
+MIT License
 
-By exercising the Licensed Rights (defined below), You accept and agree to be bound by the terms and conditions of this Creative Commons Attribution-NonCommercial 4.0 International Public License ("Public License"). To the extent this Public License may be interpreted as a contract, You are granted the Licensed Rights in consideration of Your acceptance of these terms and conditions, and the Licensor grants You such rights in consideration of benefits the Licensor receives from making the Licensed Material available under these terms and conditions.
+Copyright (c) 2026 ashwnn
 
-1. Definitions
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-a. "Adapted Material" means material subject to Copyright and Similar Rights that is derived from or based upon the Licensed Material and in which the Licensed Material is translated, altered, arranged, transformed, or otherwise modified in a manner requiring permission under the Copyright and Similar Rights that are held by the Licensor.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-b. "Copyright and Similar Rights" means copyright and/or similar rights closely related to copyright including, without limitation, related rights of authors, performers, and broadcasters, sui generis database rights, and industrial property rights.
-
-c. "Effective Technological Measures" means those measures that, in the absence of proper authority, may not be circumvented under laws fulfilling obligations under Article 11 of the WIPO Copyright Treaty adopted on December 20, 1996, and/or similar international agreements.
-
-d. "Licensed Material" means the artistic or literary work, database, or other material offered under the terms of this Public License.
-
-e. "Licensed Rights" means the rights granted to You subject to the terms and conditions of this Public License, which are limited to Copyright and Similar Rights.
-
-f. "Licensor" means the individual(s) or entity(ies) granting rights under this Public License.
-
-g. "Share" or "Shared" means to provide material to the public by any means or process that requires permission under the Licensed Rights, such as reproduction, public display, public performance, distribution, dissemination, making available, or broadcasting to the public by electronic means.
-
-h. "Sui Generis Database Rights" means rights other than copyright resulting from Directive 96/9/EC of the European Parliament and of the Council on the legal protection of databases, as amended or succeeded, and other equivalent rights.
-
-i. "You" means the individual or entity exercising the Licensed Rights under this Public License.
-
-2. Fair Dealing Rights — Nothing in this Public License is intended to reduce, limit, or restrict any uses free from copyright or similar rights.
-
-3. License Grant — Subject to the terms and conditions of this Public License, the Licensor hereby grants You a worldwide, royalty-free, non-sublicensable, non-exclusive, irrevocable license to exercise the Licensed Rights in the Licensed Material to:
-   a. reproduce and Share the Licensed Material, in whole or in part, for NonCommercial purposes only; and
-   b. produce, reproduce, and Share Adapted Material for NonCommercial purposes only.
-
-4. Restrictions — The license granted in Section 3 is expressly made subject to and limited by the following restrictions:
-   a. You may exercise the Licensed Rights for NonCommercial purposes only. You may not use the Licensed Material for any commercial purpose. This includes:
-      - any use that is directed towards commercial advantage or monetary compensation (such as selling the Licensed Material or products containing it, charging fees for access to the Licensed Material, or using the Licensed Material in a commercial product or service);
-      - any use that is intended to produce revenue or profit.
-   b. You may exercise the Licensed Rights for NonCommercial purposes only. You may not Share or produce Adapted Material for commercial purposes.
-   c. You must include a copyright notice and license notice on every copy of the Licensed Material or Adapted Material You Share. The notice must be in the following format:
-      "Licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0). Source: [URL or description of source]."
-   d. You may not impose any effective technological measures on the Licensed Material or Adapted Material that restrict the ability of recipients to exercise the Licensed Rights.
-   e. You may not hold the Licensor responsible for any use of the Licensed Material or Adapted Material that violates these terms.
-
-5. Additional Terms — If the Licensor specifies an intention for the Licensed Material to be used only for a specific purpose or in a specific field of use, this does not limit the scope of the license.
-
-6. No endorsement — Nothing in this Public License constitutes or may be construed as permission to assert or imply that You are sponsored, endorsed, or recognized by the Licensor as authorized to exercise the Licensed Rights.
-
-7. Disclaimer — THE LICENSED MATERIAL IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGE, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE LICENSED MATERIAL OR THE USE OR OTHER DEALINGS IN THE LICENSED MATERIAL.
-
-8. Limitation of liability — IN NO EVENT WILL THE LICENSOR BE LIABLE TO YOU OR TO ANY OTHER PARTY FOR ANY DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, ARISING OUT OF OR RELATED TO THIS LICENSE OR THE USE OR INABILITY TO USE THE LICENSED MATERIAL, EVEN IF THE LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
-
-9. Language — This Public License is written in English, but the Licensor may provide translations of this Public License for informational purposes only. In the event of any conflict, ambiguity, or inconsistency between the English version and any translation, the English version shall prevail.
-
-10. Termination — This Public License and the rights granted hereunder will terminate automatically upon Your breach of any term of this Public License. Upon termination of this Public License, You are no longer authorized to exercise any of the Licensed Rights, provided that the provisions that, by their nature, should survive termination shall survive, including Sections 4.d, 4.e, 5, 6, 7, 8, and 9.
-
-11. Severability — If any provision of this Public License is invalid or unenforceable under applicable law, it shall not affect the validity or enforceability of the remainder of the terms of this Public License, and without further action by the parties to this agreement, such provision shall be reformed to the minimum extent necessary to make it valid and enforceable.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

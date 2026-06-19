@@ -17,7 +17,7 @@
 | **Web UI** | None (CLI + MCP only) | Web viewer on port 37777 |
 | **Privacy** | `<private>` stripped at 2 layers | `<private>` stripped |
 | **Auto-capture** | No. Agent decides what matters | Captures all tool calls then compresses |
-| **License** | CC BY-NC 4.0 | AGPL-3.0 |
+| **License** | MIT | AGPL-3.0 |
 
 ## Philosophy
 

@@ -70,7 +70,7 @@ Branch names are validated by a GitHub ruleset. Pushes that don't match **will b
 
 ## PR Body Format
 
-The PR template is at `.github/PULL_REQUEST_TEMPLATE.md`. Every PR body MUST contain:
+Every PR body MUST contain:
 
 ### 1. Linked Issue (REQUIRED — unless Issues are disabled)
 

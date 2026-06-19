@@ -4,7 +4,7 @@
   <em>Persistent memory with typed retrieval, conflict detection, and context injection for AI coding agents</em>
 </p>
 
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
@@ -311,20 +311,18 @@ Ohara is production-oriented for local, source-built use:
 - Operational tooling: `ohara check`, `ohara validate`, `ohara doctor`, `ohara backup`, and `ohara maintain`
 - Recovery path: SQLite snapshots plus import/export and git-sync JSONL mirrors
 
-Start with the install section below, then use [Operations](docs/OPERATIONS.md) for service, backup, restore, and migration runbooks.
+Start with the install section below, then see the [docs/](docs/) folder for runbooks and reference material: [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), [Plugins](docs/PLUGINS.md), and [Comparison vs claude-mem](docs/COMPARISON.md).
 
-## Community Ready
+## Project Notes
 
-This is an open project. Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
-
-- **License**: [CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution
+- **License**: [MIT](LICENSE)
 - **Install options**: one-command installer, manual release downloads, or source build fallback
 - **No TUI**: CLI and MCP are the production interface
-- **Battle tested**: see [Production Notes](docs/PRODUCTION_NOTES.md) for testing evidence and known limitations (local single-user contexts)
+- **Docs**: see [docs/](docs/) for architecture, operations, and plugin setup
 
 ## License
 
-[CC BY-NC 4.0](LICENSE) — free to use and share for non-commercial purposes, with attribution. Built on the Engram core memory system (MIT).
+[MIT](LICENSE). Built on the Engram core memory system (MIT).
 
 ## Install
 
