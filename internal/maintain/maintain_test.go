@@ -339,7 +339,7 @@ func TestRunDefaultOptions(t *testing.T) {
 	defer s.Close()
 
 	opts := DefaultOptions(cfg.DataDir)
-	if !opts.ArchiveExpired || !opts.Integrity || !opts.Backup || !opts.OptimizeFTS {
+	if !opts.ArchiveExpired || !opts.Integrity || !opts.Backup || !opts.OptimizeFTS || !opts.Lifecycle {
 		t.Fatalf("DefaultOptions: expected all ops enabled")
 	}
 	if opts.RetainDays != 7 {
@@ -390,6 +390,174 @@ func TestRunDryRunOnly(t *testing.T) {
 	}
 	if stats.BackupPath != "" {
 		t.Fatalf("dry-run: expected no backup, got %q", stats.BackupPath)
+	}
+}
+
+func TestRunLifecycle_DryRun(t *testing.T) {
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+
+	// Create a decayable memory.
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           "pattern",
+		Scope:          "project",
+		Title:          "Old pattern to decay",
+		Body:           "An old pattern",
+		UtilityWeight:  1.0,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	// Age both updated_at and last_accessed so COALESCE picks the old value.
+	_, err = s.Exec(`UPDATE memory_items SET updated_at = datetime('now', '-100 days'), last_accessed = NULL WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("age memory: %v", err)
+	}
+
+	opts := Options{
+		Lifecycle:             true,
+		DryRun:                true,
+		LifecycleDecayAgeDays: 60,
+		LifecycleDecayFactor:  0.5,
+	}
+
+	decayed, stale, err := RunLifecycle(s, opts)
+	if err != nil {
+		t.Fatalf("RunLifecycle dry-run: %v", err)
+	}
+	if decayed != 1 {
+		t.Fatalf("expected 1 decayable, got %d", decayed)
+	}
+	if stale < 0 {
+		t.Fatalf("expected stale >= 0, got %d", stale)
+	}
+}
+
+func TestRunLifecycle_AppliesDecay(t *testing.T) {
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           "pattern",
+		Scope:          "project",
+		Title:          "Old pattern",
+		Body:           "Body",
+		UtilityWeight:  1.0,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	_, err = s.Exec(`UPDATE memory_items SET updated_at = datetime('now', '-100 days'), last_accessed = NULL WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("age memory: %v", err)
+	}
+
+	opts := Options{
+		Lifecycle:             true,
+		LifecycleDecayAgeDays: 60,
+		LifecycleDecayFactor:  0.5,
+	}
+
+	decayed, _, err := RunLifecycle(s, opts)
+	if err != nil {
+		t.Fatalf("RunLifecycle: %v", err)
+	}
+	if decayed != 1 {
+		t.Fatalf("expected 1 decayed, got %d", decayed)
+	}
+
+	var uw float64
+	s.QueryRow(`SELECT utility_weight FROM memory_items WHERE id = ?`, id).Scan(&uw)
+	if uw != 0.5 {
+		t.Fatalf("expected utility_weight=0.5, got %f", uw)
+	}
+}
+
+func TestArchiveStaleCandidates(t *testing.T) {
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+
+	_, err := s.Exec(`
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, source, status, classification, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-60 days'))`,
+		"ohara", "agent", "discovery", "project", "Stale cand", "old", "consolidation", "candidate", "observational",
+	)
+	if err != nil {
+		t.Fatalf("insert candidate: %v", err)
+	}
+
+	count, err := ArchiveStaleCandidates(s, 30, false)
+	if err != nil {
+		t.Fatalf("ArchiveStaleCandidates: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 archived, got %d", count)
+	}
+}
+
+func TestArchiveLowUtilityMemories(t *testing.T) {
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           "pattern",
+		Title:          "Low utility memory",
+		Body:           "Not useful",
+		UtilityWeight:  0.01,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	count, err := ArchiveLowUtilityMemories(s, 0.05, false)
+	if err != nil {
+		t.Fatalf("ArchiveLowUtilityMemories: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 archived, got %d", count)
+	}
+
+	var status string
+	s.QueryRow(`SELECT status FROM memory_items WHERE id = ?`, id).Scan(&status)
+	if status != "archived" {
+		t.Fatalf("expected status=archived, got %q", status)
+	}
+}
+
+func TestArchiveLowUtilityMemories_SkipsFoundational(t *testing.T) {
+	s, cleanup := newTestDB(t)
+	defer cleanup()
+
+	id, err := s.AddMemory(store.AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           "decision",
+		Title:          "Foundational low utility",
+		Body:           "Still important",
+		UtilityWeight:  0.01,
+		Classification: "foundational",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	count, err := ArchiveLowUtilityMemories(s, 0.05, false)
+	if err != nil {
+		t.Fatalf("ArchiveLowUtilityMemories: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 archived (foundational protected), got %d", count)
+	}
+
+	var status string
+	s.QueryRow(`SELECT status FROM memory_items WHERE id = ?`, id).Scan(&status)
+	if status != "active" {
+		t.Fatalf("expected status=active, got %q", status)
 	}
 }
 

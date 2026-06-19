@@ -32,6 +32,36 @@ func TestDefault(t *testing.T) {
 	if cfg.ConflictThreshold != 0.6 {
 		t.Errorf("ConflictThreshold: got %f, want 0.6", cfg.ConflictThreshold)
 	}
+	if cfg.RetrievalAutoMode != "auto" {
+		t.Errorf("RetrievalAutoMode: got %q, want auto", cfg.RetrievalAutoMode)
+	}
+	if cfg.RetrievalMaxResults != 20 {
+		t.Errorf("RetrievalMaxResults: got %d, want 20", cfg.RetrievalMaxResults)
+	}
+	if cfg.RetrievalMinScore != 0.0 {
+		t.Errorf("RetrievalMinScore: got %f, want 0.0", cfg.RetrievalMinScore)
+	}
+	if cfg.SummarizerEnabled {
+		t.Error("SummarizerEnabled: got true, want false")
+	}
+	if cfg.SummarizerBackend != "ollama" {
+		t.Errorf("SummarizerBackend: got %q, want ollama", cfg.SummarizerBackend)
+	}
+	if cfg.SummarizerMaxTokens != 500 {
+		t.Errorf("SummarizerMaxTokens: got %d, want 500", cfg.SummarizerMaxTokens)
+	}
+	if cfg.MaintenanceEnabled {
+		t.Error("MaintenanceEnabled: got true, want false")
+	}
+	if cfg.MaintenanceIntervalMinutes != 60 {
+		t.Errorf("MaintenanceIntervalMinutes: got %d, want 60", cfg.MaintenanceIntervalMinutes)
+	}
+	if cfg.MaintenanceArchiveDays != 90 {
+		t.Errorf("MaintenanceArchiveDays: got %d, want 90", cfg.MaintenanceArchiveDays)
+	}
+	if cfg.MaintenanceBackupEnabled {
+		t.Error("MaintenanceBackupEnabled: got true, want false")
+	}
 }
 
 func TestLoadMissingFile(t *testing.T) {
@@ -249,6 +279,123 @@ func TestLoadAllFields(t *testing.T) {
 	}
 	if cfg.MaxBudgetTokens != 1000 {
 		t.Errorf("MaxBudgetTokens: got %d, want 1000", cfg.MaxBudgetTokens)
+	}
+}
+
+func TestLoadNewConfigFields(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+
+	if err := os.WriteFile(path, []byte(`{
+		"retrieval_auto_mode": "hybrid",
+		"retrieval_max_results": 50,
+		"retrieval_min_score": 0.3,
+		"summarizer_enabled": true,
+		"summarizer_backend": "ollama",
+		"summarizer_model": "qwen3-0.6b",
+		"summarizer_max_tokens": 1000,
+		"maintenance_enabled": true,
+		"maintenance_interval_minutes": 120,
+		"maintenance_archive_days": 30,
+		"maintenance_backup_enabled": true
+	}`), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load new config fields: unexpected error: %v", err)
+	}
+	if cfg.RetrievalAutoMode != "hybrid" {
+		t.Errorf("RetrievalAutoMode: got %q, want hybrid", cfg.RetrievalAutoMode)
+	}
+	if cfg.RetrievalMaxResults != 50 {
+		t.Errorf("RetrievalMaxResults: got %d, want 50", cfg.RetrievalMaxResults)
+	}
+	if cfg.RetrievalMinScore != 0.3 {
+		t.Errorf("RetrievalMinScore: got %f, want 0.3", cfg.RetrievalMinScore)
+	}
+	if !cfg.SummarizerEnabled {
+		t.Error("SummarizerEnabled: got false, want true")
+	}
+	if cfg.SummarizerBackend != "ollama" {
+		t.Errorf("SummarizerBackend: got %q, want ollama", cfg.SummarizerBackend)
+	}
+	if cfg.SummarizerModel != "qwen3-0.6b" {
+		t.Errorf("SummarizerModel: got %q, want qwen3-0.6b", cfg.SummarizerModel)
+	}
+	if cfg.SummarizerMaxTokens != 1000 {
+		t.Errorf("SummarizerMaxTokens: got %d, want 1000", cfg.SummarizerMaxTokens)
+	}
+	if !cfg.MaintenanceEnabled {
+		t.Error("MaintenanceEnabled: got false, want true")
+	}
+	if cfg.MaintenanceIntervalMinutes != 120 {
+		t.Errorf("MaintenanceIntervalMinutes: got %d, want 120", cfg.MaintenanceIntervalMinutes)
+	}
+	if cfg.MaintenanceArchiveDays != 30 {
+		t.Errorf("MaintenanceArchiveDays: got %d, want 30", cfg.MaintenanceArchiveDays)
+	}
+	if !cfg.MaintenanceBackupEnabled {
+		t.Error("MaintenanceBackupEnabled: got false, want true")
+	}
+}
+
+func TestLoadNewFieldsEnvOverrides(t *testing.T) {
+	t.Setenv("OHARA_RETRIEVAL_AUTO_MODE", "embedding")
+	t.Setenv("OHARA_RETRIEVAL_MAX_RESULTS", "100")
+	t.Setenv("OHARA_RETRIEVAL_MIN_SCORE", "0.5")
+	t.Setenv("OHARA_SUMMARIZER_ENABLED", "true")
+	t.Setenv("OHARA_SUMMARIZER_BACKEND", "ollama")
+	t.Setenv("OHARA_SUMMARIZER_MODEL", "test-model")
+	t.Setenv("OHARA_SUMMARIZER_MAX_TOKENS", "800")
+	t.Setenv("OHARA_MAINTENANCE_ENABLED", "true")
+	t.Setenv("OHARA_MAINTENANCE_INTERVAL", "30")
+	t.Setenv("OHARA_MAINTENANCE_ARCHIVE_DAYS", "14")
+	t.Setenv("OHARA_MAINTENANCE_BACKUP_ENABLED", "1")
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load new fields env: unexpected error: %v", err)
+	}
+	if cfg.RetrievalAutoMode != "embedding" {
+		t.Errorf("RetrievalAutoMode: got %q, want embedding", cfg.RetrievalAutoMode)
+	}
+	if cfg.RetrievalMaxResults != 100 {
+		t.Errorf("RetrievalMaxResults: got %d, want 100", cfg.RetrievalMaxResults)
+	}
+	if cfg.RetrievalMinScore != 0.5 {
+		t.Errorf("RetrievalMinScore: got %f, want 0.5", cfg.RetrievalMinScore)
+	}
+	if !cfg.SummarizerEnabled {
+		t.Error("SummarizerEnabled: got false, want true")
+	}
+	if cfg.SummarizerBackend != "ollama" {
+		t.Errorf("SummarizerBackend: got %q, want ollama", cfg.SummarizerBackend)
+	}
+	if cfg.SummarizerModel != "test-model" {
+		t.Errorf("SummarizerModel: got %q, want test-model", cfg.SummarizerModel)
+	}
+	if cfg.SummarizerMaxTokens != 800 {
+		t.Errorf("SummarizerMaxTokens: got %d, want 800", cfg.SummarizerMaxTokens)
+	}
+	if !cfg.MaintenanceEnabled {
+		t.Error("MaintenanceEnabled: got false, want true")
+	}
+	if cfg.MaintenanceIntervalMinutes != 30 {
+		t.Errorf("MaintenanceIntervalMinutes: got %d, want 30", cfg.MaintenanceIntervalMinutes)
+	}
+	if cfg.MaintenanceArchiveDays != 14 {
+		t.Errorf("MaintenanceArchiveDays: got %d, want 14", cfg.MaintenanceArchiveDays)
+	}
+	if !cfg.MaintenanceBackupEnabled {
+		t.Error("MaintenanceBackupEnabled: got false, want true")
 	}
 }
 

@@ -64,6 +64,18 @@ The retrieval harness report includes:
 - worst failures with expected/actual IDs and scoring-source hints
 - explicit embedding mode (`real-ollama`, `deterministic-test`, `fts-fallback`)
 
+### Sweep Mode
+
+Pass `-sweep` to run across all supported retrieval modes and compare:
+
+```bash
+go run ./bench/cmd/run-retrieval/ -k 5 -sweep
+go run ./bench/cmd/run-retrieval/ -k 5 -sweep -json
+```
+
+The sweep runs FTS5, hybrid-deterministic, and hybrid-ollama-fallback modes,
+printing a comparison table. With `-json`, outputs a structured `SweepResult` array.
+
 ### JSON Replay Output
 
 Pass `-json` to output the full report as pretty-printed JSON:
@@ -111,6 +123,13 @@ go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
 go run ./bench/cmd/run-longmemeval/ -k 5 -ollama-judge -ollama-model qwen3:0.6b
 # Use external JSONL dataset from evals/:
 go run ./bench/cmd/run-longmemeval/ -k 5 -dataset evals/longmemeval/data.jsonl
+```
+
+Sweep mode (compare FTS5 + hybrid):
+
+```bash
+go run ./bench/cmd/run-longmemeval/ -k 5 -sweep
+go run ./bench/cmd/run-longmemeval/ -k 5 -sweep -json
 ```
 
 The harness report includes:

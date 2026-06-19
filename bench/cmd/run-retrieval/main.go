@@ -16,7 +16,45 @@ func main() {
 	k := flag.Int("k", 5, "top-k for reporting")
 	enforce := flag.Bool("enforce", true, "enforce threshold gates and exit non-zero on regression")
 	jsonOut := flag.Bool("json", false, "pretty-print full report as JSON")
+	sweep := flag.Bool("sweep", false, "run across all supported modes and compare")
 	flag.Parse()
+
+	if *sweep {
+		baseOpts := retrieval.RunOptions{
+			FixturePath: *fixturePath,
+			K:           *k,
+			Enforce:     false,
+		}
+		results := retrieval.RunSweep(baseOpts, nil)
+		fmt.Println("Ohara retrieval benchmark — sweep results")
+		fmt.Println()
+		fmt.Printf("%-24s %-10s %-10s %-10s %-10s %-10s %-10s %-10s\n",
+			"Mode", "Recall@1", "Recall@3", "MRR", "nDCG@5", "P95(ms)", "Passed", "Total")
+		fmt.Println(strings.Repeat("-", 110))
+		for _, r := range results {
+			errTag := ""
+			if r.Error != "" {
+				errTag = " ERROR"
+			}
+			fmt.Printf("%-24s %-10.3f %-10.3f %-10.3f %-10.3f %-10.1f %-10d %-10d%s\n",
+				r.Name,
+				r.Report.Metrics.RecallAt1,
+				r.Report.Metrics.RecallAt3,
+				r.Report.Metrics.MRR,
+				r.Report.Metrics.NDCGAt5,
+				r.Report.Latency.P95Ms,
+				r.Report.PassedCases,
+				r.Report.TotalCases,
+				errTag,
+			)
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(results)
+		}
+		return
+	}
 
 	report, err := retrieval.RunBenchmark(retrieval.RunOptions{
 		FixturePath: *fixturePath,

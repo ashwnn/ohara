@@ -101,6 +101,52 @@ type RunOptions struct {
 	Judge           JudgeModel // optional answer-quality judge (nil = skip)
 	Mode            string     // retrieval mode: "fts5" (default) or "hybrid"
 	DatasetPath     string     // optional path to JSONL dataset (see ImportFromJSONL)
+	QuestionsLimit  int        // if > 0, evaluate only first N questions (debug/diagnostic)
+	Sweep           bool       // when true, runs across all supported modes
+}
+
+// SweepMode defines a single mode config for LongMemEval sweeps.
+type LmeSweepMode struct {
+	Name string
+	Mode string
+}
+
+// DefaultLmeSweepModes returns the standard sweep modes for LongMemEval.
+func DefaultLmeSweepModes() []LmeSweepMode {
+	return []LmeSweepMode{
+		{Name: "fts5", Mode: "fts5"},
+		{Name: "hybrid-deterministic", Mode: "hybrid"},
+	}
+}
+
+// LmeSweepResult holds results for one mode in a sweep.
+type LmeSweepResult struct {
+	Name   string `json:"name"`
+	Mode   string `json:"mode"`
+	Report Report `json:"report"`
+	Error  string `json:"error,omitempty"`
+}
+
+// RunLmeSweep runs the benchmark across all sweep modes.
+func RunLmeSweep(baseOpts RunOptions, modes []LmeSweepMode) []LmeSweepResult {
+	if modes == nil {
+		modes = DefaultLmeSweepModes()
+	}
+	results := make([]LmeSweepResult, 0, len(modes))
+	for _, sm := range modes {
+		opts := baseOpts
+		opts.Mode = sm.Mode
+		opts.Sweep = false
+
+		report, err := RunBenchmark(opts)
+		sr := LmeSweepResult{Name: sm.Name, Mode: sm.Mode}
+		if err != nil {
+			sr.Error = err.Error()
+		}
+		sr.Report = report
+		results = append(results, sr)
+	}
+	return results
 }
 
 // Metrics holds computed retrieval quality metrics.
@@ -671,24 +717,53 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	}
 
 	// Seed store with facts.
+	seedStart := time.Now()
 	s, keyToID, err := seedStore(fixture, retrievalMode)
 	if err != nil {
 		return Report{}, err
 	}
 	defer s.Close()
+	seedDuration := time.Since(seedStart)
+	fmt.Fprintf(os.Stderr, "[ohara-bench] seeding complete in %v\n", seedDuration.Round(time.Millisecond))
+
+	questions := fixture.Questions
+	if opts.QuestionsLimit > 0 && opts.QuestionsLimit < len(questions) {
+		questions = questions[:opts.QuestionsLimit]
+		fmt.Fprintf(os.Stderr, "[ohara-bench] evaluating first %d of %d questions (questions-limit set)\n", opts.QuestionsLimit, len(fixture.Questions))
+	}
 
 	globalAgg := &questionAgg{}
 	distanceAggs := map[string]*questionAgg{}
 	categoryAggs := map[string]*questionAgg{}
 	failures := make([]QuestionFailure, 0, 8)
-	caseResults := make([]CaseResult, 0, len(fixture.Questions))
+	caseResults := make([]CaseResult, 0, len(questions))
 
-	for _, q := range fixture.Questions {
+	totalQuestions := len(questions)
+	queryStart := time.Now()
+	progressEvery := maxInt(1, totalQuestions/20) // log ~20 progress lines regardless of dataset size
+	if progressEvery > 50 {
+		progressEvery = 50 // but cap at every 50 for very large datasets
+	}
+	fmt.Fprintf(os.Stderr, "[ohara-bench] evaluating %d questions...\n", totalQuestions)
+
+	for qi, q := range questions {
 		caseStart := time.Now()
 
 		// Run search.
 		results, searchErr := s.SearchMemories(q.Query, "longmemeval", "", "", "", store.MemoryStatusActive, opts.K, "")
 		durationMs := float64(time.Since(caseStart)) / float64(time.Millisecond)
+
+		// Query-phase progress: log every progressEvery questions with elapsed and ETA.
+		if (qi+1)%progressEvery == 0 || qi == totalQuestions-1 {
+			elapsed := time.Since(queryStart)
+			avgPerQ := elapsed / time.Duration(qi+1)
+			remaining := avgPerQ * time.Duration(totalQuestions-(qi+1))
+			fmt.Fprintf(os.Stderr, "[ohara-bench] querying: %d/%d (%.0f%%) | elapsed %v | ETA %v\n",
+				qi+1, totalQuestions,
+				float64(qi+1)/float64(totalQuestions)*100,
+				elapsed.Round(time.Millisecond),
+				remaining.Round(time.Second))
+		}
 
 		if searchErr != nil {
 			cr := CaseResult{
@@ -788,6 +863,10 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		}
 	}
 
+	queryDuration := time.Since(queryStart)
+	fmt.Fprintf(os.Stderr, "[ohara-bench] querying complete in %v | results: %d passed / %d failed\n",
+		queryDuration.Round(time.Millisecond), globalAgg.passed, globalAgg.count-globalAgg.passed)
+
 	report := Report{
 		FixtureDescription: fixture.Description,
 		TotalQuestions:     len(fixture.Questions),
@@ -853,8 +932,17 @@ func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, er
 		return nil, nil, err
 	}
 
+	logProgress := func(step, total int, label string) {
+		if step%1000 == 0 || step == total {
+			pct := float64(step) / float64(total) * 100
+			fmt.Fprintf(os.Stderr, "[ohara-bench] seeding %s: %d/%d (%.0f%%)\n", label, step, total, pct)
+		}
+	}
+
 	keyToID := map[string]int64{}
-	for _, fact := range fixture.Facts {
+	totalFacts := len(fixture.Facts)
+	fmt.Fprintf(os.Stderr, "[ohara-bench] seeding %d facts...\n", totalFacts)
+	for i, fact := range fixture.Facts {
 		id, err := s.AddMemory(store.AddMemoryParams{
 			ProjectID: "longmemeval",
 			Kind:      fact.Kind,
@@ -869,6 +957,7 @@ func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, er
 			return nil, nil, fmt.Errorf("seed fact %s: %w", fact.Key, err)
 		}
 		keyToID[fact.Key] = id
+		logProgress(i+1, totalFacts, "facts")
 	}
 
 	return s, keyToID, nil
@@ -1124,6 +1213,13 @@ func containsInt64(list []int64, value int64) bool {
 
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

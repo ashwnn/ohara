@@ -87,6 +87,41 @@ type RuntimeConfig struct {
 	MCPBearerToken     string
 	MCPAllowedOrigins  string
 	MCPTrustLevel      string // low | trusted
+
+	// RetrievalAutoMode controls whether the search mode is selected automatically.
+	// "auto" (default) picks the best mode per query; "fts5", "hybrid", "embedding"
+	// force a specific mode.
+	RetrievalAutoMode string
+	// RetrievalMaxResults caps the default number of search results.
+	// Default: 20.
+	RetrievalMaxResults int
+	// RetrievalMinScore is the minimum relevance threshold for search results (0.0-1.0).
+	// Default: 0.0 (no filtering by score).
+	RetrievalMinScore float64
+
+	// SummarizerEnabled controls whether memory summarization is enabled.
+	// Default: false.
+	SummarizerEnabled bool
+	// SummarizerBackend is the summarization provider ("ollama" default).
+	SummarizerBackend string
+	// SummarizerModel is the model name for summaries (empty lets the backend choose).
+	SummarizerModel string
+	// SummarizerMaxTokens caps the output length for summaries.
+	// Default: 500.
+	SummarizerMaxTokens int
+
+	// MaintenanceEnabled controls whether the scheduler runs periodic maintenance.
+	// Default: false.
+	MaintenanceEnabled bool
+	// MaintenanceIntervalMinutes is the interval between scheduled maintenance runs.
+	// Default: 60.
+	MaintenanceIntervalMinutes int
+	// MaintenanceArchiveDays is the age threshold in days for archiving expired items.
+	// Default: 90.
+	MaintenanceArchiveDays int
+	// MaintenanceBackupEnabled controls automatic snapshot creation during maintenance.
+	// Default: false.
+	MaintenanceBackupEnabled bool
 }
 
 // fileConfig is the JSONC shape of the config file (before env overrides).
@@ -121,6 +156,18 @@ type fileConfig struct {
 	MCPBearerToken      string   `json:"mcp_bearer_token"`
 	MCPAllowedOrigins   string   `json:"mcp_allowed_origins"`
 	MCPTrustLevel       string   `json:"mcp_trust_level"`
+
+	RetrievalAutoMode           string   `json:"retrieval_auto_mode"`
+	RetrievalMaxResults         int      `json:"retrieval_max_results"`
+	RetrievalMinScore           *float64 `json:"retrieval_min_score"`
+	SummarizerEnabled           *bool    `json:"summarizer_enabled"`
+	SummarizerBackend           string   `json:"summarizer_backend"`
+	SummarizerModel             string   `json:"summarizer_model"`
+	SummarizerMaxTokens         int      `json:"summarizer_max_tokens"`
+	MaintenanceEnabled          *bool    `json:"maintenance_enabled"`
+	MaintenanceIntervalMinutes  int      `json:"maintenance_interval_minutes"`
+	MaintenanceArchiveDays      int      `json:"maintenance_archive_days"`
+	MaintenanceBackupEnabled    *bool    `json:"maintenance_backup_enabled"`
 }
 
 // Default returns a RuntimeConfig with all sensible defaults.
@@ -162,6 +209,18 @@ func Default() RuntimeConfig {
 		MCPBearerToken:      "",
 		MCPAllowedOrigins:   "",
 		MCPTrustLevel:       "low",
+
+		RetrievalAutoMode:           "auto",
+		RetrievalMaxResults:         20,
+		RetrievalMinScore:           0.0,
+		SummarizerEnabled:           false,
+		SummarizerBackend:           "ollama",
+		SummarizerModel:             "",
+		SummarizerMaxTokens:         500,
+		MaintenanceEnabled:          false,
+		MaintenanceIntervalMinutes:  60,
+		MaintenanceArchiveDays:      90,
+		MaintenanceBackupEnabled:    false,
 	}
 }
 
@@ -283,6 +342,39 @@ func Load(path string) (RuntimeConfig, error) {
 		if fc.MCPTrustLevel != "" {
 			cfg.MCPTrustLevel = strings.ToLower(fc.MCPTrustLevel)
 		}
+		if fc.RetrievalAutoMode != "" {
+			cfg.RetrievalAutoMode = fc.RetrievalAutoMode
+		}
+		if fc.RetrievalMaxResults > 0 {
+			cfg.RetrievalMaxResults = fc.RetrievalMaxResults
+		}
+		if fc.RetrievalMinScore != nil && *fc.RetrievalMinScore >= 0.0 && *fc.RetrievalMinScore <= 1.0 {
+			cfg.RetrievalMinScore = *fc.RetrievalMinScore
+		}
+		if fc.SummarizerEnabled != nil {
+			cfg.SummarizerEnabled = *fc.SummarizerEnabled
+		}
+		if fc.SummarizerBackend != "" {
+			cfg.SummarizerBackend = fc.SummarizerBackend
+		}
+		if fc.SummarizerModel != "" {
+			cfg.SummarizerModel = fc.SummarizerModel
+		}
+		if fc.SummarizerMaxTokens > 0 {
+			cfg.SummarizerMaxTokens = fc.SummarizerMaxTokens
+		}
+		if fc.MaintenanceEnabled != nil {
+			cfg.MaintenanceEnabled = *fc.MaintenanceEnabled
+		}
+		if fc.MaintenanceIntervalMinutes > 0 {
+			cfg.MaintenanceIntervalMinutes = fc.MaintenanceIntervalMinutes
+		}
+		if fc.MaintenanceArchiveDays > 0 {
+			cfg.MaintenanceArchiveDays = fc.MaintenanceArchiveDays
+		}
+		if fc.MaintenanceBackupEnabled != nil {
+			cfg.MaintenanceBackupEnabled = *fc.MaintenanceBackupEnabled
+		}
 	}
 
 	applyEnvOverrides(&cfg)
@@ -375,6 +467,56 @@ func applyEnvOverrides(cfg *RuntimeConfig) {
 	}
 	if v := os.Getenv("OHARA_MCP_TRUST_LEVEL"); v != "" {
 		cfg.MCPTrustLevel = strings.ToLower(strings.TrimSpace(v))
+	}
+
+	if v := os.Getenv("OHARA_RETRIEVAL_AUTO_MODE"); v != "" {
+		cfg.RetrievalAutoMode = v
+	}
+	if v := os.Getenv("OHARA_RETRIEVAL_MAX_RESULTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.RetrievalMaxResults = n
+		}
+	}
+	if v := os.Getenv("OHARA_RETRIEVAL_MIN_SCORE"); v != "" {
+		if s, err := strconv.ParseFloat(v, 64); err == nil && s >= 0 && s <= 1 {
+			cfg.RetrievalMinScore = s
+		}
+	}
+	if v := os.Getenv("OHARA_SUMMARIZER_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.SummarizerEnabled = b
+		}
+	}
+	if v := os.Getenv("OHARA_SUMMARIZER_BACKEND"); v != "" {
+		cfg.SummarizerBackend = v
+	}
+	if v := os.Getenv("OHARA_SUMMARIZER_MODEL"); v != "" {
+		cfg.SummarizerModel = v
+	}
+	if v := os.Getenv("OHARA_SUMMARIZER_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SummarizerMaxTokens = n
+		}
+	}
+	if v := os.Getenv("OHARA_MAINTENANCE_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MaintenanceEnabled = b
+		}
+	}
+	if v := os.Getenv("OHARA_MAINTENANCE_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaintenanceIntervalMinutes = n
+		}
+	}
+	if v := os.Getenv("OHARA_MAINTENANCE_ARCHIVE_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaintenanceArchiveDays = n
+		}
+	}
+	if v := os.Getenv("OHARA_MAINTENANCE_BACKUP_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MaintenanceBackupEnabled = b
+		}
 	}
 
 	// Legacy compatibility: `OHARA_MCP_HTTP=true` implies remote MCP exposure.

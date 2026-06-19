@@ -883,6 +883,18 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 			}
 		}
 	}
+
+	// Apply RetrievalMinScore threshold if set (> 0).
+	if s.cfg.RetrievalMinScore > 0 && len(items) > 0 {
+		filtered := make([]MemoryItem, 0, len(items))
+		for _, item := range items {
+			if item.RelevanceScore >= s.cfg.RetrievalMinScore {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+
 	return items, nil
 }
 
@@ -1712,13 +1724,197 @@ func (s *Store) MarkConsolidated(candidateID, consolidatedMemoryID int64) error 
 			}
 		}
 
-		_, err = s.execHook(tx,
-			`INSERT OR IGNORE INTO memory_relations (from_obs_id, to_obs_id, relation) VALUES (?, ?, ?)`,
-			consolidatedMemoryID, candidateID, RelationImplements,
-		)
-		if err != nil {
-			return fmt.Errorf("link consolidated memory %d to candidate %d: %w", consolidatedMemoryID, candidateID, err)
-		}
-		return nil
+	_, err = s.execHook(tx,
+		`INSERT OR IGNORE INTO memory_relations (from_obs_id, to_obs_id, relation) VALUES (?, ?, ?)`,
+		consolidatedMemoryID, candidateID, RelationImplements,
+	)
+	if err != nil {
+		return fmt.Errorf("link consolidated memory %d to candidate %d: %w", consolidatedMemoryID, candidateID, err)
+	}
+	return nil
 	})
+}
+
+// ─── Lifecycle/Decay Primitives ──────────────────────────────────────────────────
+
+// LifecycleDecayConfig controls how DecayMemories operates.
+type LifecycleDecayConfig struct {
+	// MaxAgeDays: memories older than this (by updated_at) are eligible for decay.
+	// 0 = default (90 days).
+	MaxAgeDays int
+	// DecayFactor: multiplier applied to utility_weight per decay pass (0.0-1.0).
+	// 0.0 = default (0.9). Lower = more aggressive decay.
+	DecayFactor float64
+	// MinUtilityWeight: floor below which memories become stale candidates for archive.
+	// 0.0 = default (0.1).
+	MinUtilityWeight float64
+	// DryRun: report counts without making changes.
+	DryRun bool
+}
+
+// DefaultLifecycleDecayConfig returns a LifecycleDecayConfig with sensible defaults.
+func DefaultLifecycleDecayConfig() LifecycleDecayConfig {
+	return LifecycleDecayConfig{
+		MaxAgeDays:       90,
+		DecayFactor:      0.9,
+		MinUtilityWeight: 0.1,
+		DryRun:           false,
+	}
+}
+
+// DecayMemories reduces utility_weight for old, unaccessed memories.
+// Foundational-classification memories are always protected from decay.
+// Returns (decayedCount, staleCount) — staleCount is the number of memories
+// whose utility_weight fell below MinUtilityWeight as a result of this pass.
+func (s *Store) DecayMemories(cfg LifecycleDecayConfig) (int, int, error) {
+	if cfg.MaxAgeDays <= 0 {
+		cfg.MaxAgeDays = 90
+	}
+	if cfg.DecayFactor <= 0 || cfg.DecayFactor > 1 {
+		cfg.DecayFactor = 0.9
+	}
+	if cfg.MinUtilityWeight <= 0 {
+		cfg.MinUtilityWeight = 0.1
+	}
+
+	if cfg.DryRun {
+		// Count decayable memories (active, non-foundational, older than maxAgeDays, utility_weight > 0).
+		var decayable int
+		err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND datetime(updated_at) < datetime('now', ?)`,
+			fmt.Sprintf("-%d days", cfg.MaxAgeDays),
+		).Scan(&decayable)
+		if err != nil {
+			return 0, 0, fmt.Errorf("decay dry-run count: %w", err)
+		}
+
+		// Count how many would fall below MinUtilityWeight after decay.
+		var stale int
+		err = s.db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND utility_weight * ? < ?
+			   AND datetime(updated_at) < datetime('now', ?)`,
+			cfg.DecayFactor, cfg.MinUtilityWeight,
+			fmt.Sprintf("-%d days", cfg.MaxAgeDays),
+		).Scan(&stale)
+		if err != nil {
+			return 0, 0, fmt.Errorf("decay stale dry-run count: %w", err)
+		}
+		return decayable, stale, nil
+	}
+
+	// Apply decay: utility_weight = utility_weight * DecayFactor.
+	res, err := s.db.Exec(
+		`UPDATE memory_items
+		 SET utility_weight = ROUND(utility_weight * ?, 4),
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND datetime(updated_at) < datetime('now', ?)`,
+		cfg.DecayFactor,
+		fmt.Sprintf("-%d days", cfg.MaxAgeDays),
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("decay memories: %w", err)
+	}
+	decayed, _ := res.RowsAffected()
+
+	// Count how many became stale (now below min utility weight).
+	var stale int
+	err = s.db.QueryRow(
+		`SELECT COUNT(*) FROM memory_items
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND utility_weight < ?`,
+		cfg.MinUtilityWeight,
+	).Scan(&stale)
+	if err != nil {
+		return int(decayed), 0, fmt.Errorf("stale count: %w", err)
+	}
+
+	return int(decayed), stale, nil
+}
+
+// ArchiveStaleCandidates archives candidate-status memories older than maxAgeDays.
+// Candidate memories that were never promoted to active by agent review are
+// auto-archived to prevent accumulation of unreviewed candidate noise.
+// Skips if DryRun is set. Returns count of archived candidates.
+func (s *Store) ArchiveStaleCandidates(maxAgeDays int, dryRun bool) (int, error) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = 30
+	}
+
+	ageExpr := fmt.Sprintf("-%d days", maxAgeDays)
+
+	if dryRun {
+		var count int
+		err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'candidate'
+			   AND datetime(updated_at) < datetime('now', ?)`,
+			ageExpr,
+		).Scan(&count)
+		return count, err
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE memory_items
+		 SET status = 'archived',
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'candidate'
+		   AND datetime(updated_at) < datetime('now', ?)`,
+		ageExpr,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("archive stale candidates: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ArchiveLowUtilityMemories archives active memories whose utility_weight has
+// decayed below minWeight. Foundational memories are always protected.
+// Returns the count of archived memories.
+func (s *Store) ArchiveLowUtilityMemories(minWeight float64, dryRun bool) (int, error) {
+	if minWeight <= 0 {
+		minWeight = 0.05
+	}
+
+	if dryRun {
+		var count int
+		err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND utility_weight < ?`,
+			minWeight,
+		).Scan(&count)
+		return count, err
+	}
+
+	res, err := s.db.Exec(
+		`UPDATE memory_items
+		 SET status = 'archived',
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND utility_weight < ?`,
+		minWeight,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("archive low utility memories: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

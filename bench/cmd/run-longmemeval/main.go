@@ -6,6 +6,8 @@
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -json
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -judge -mode hybrid
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
+//	go run ./bench/cmd/run-longmemeval/ -questions-limit 50      (debug: first 50 questions only)
+//	go run ./bench/cmd/run-longmemeval/ -k 5 -json 2>&1          (stderr has live progress)
 package main
 
 import (
@@ -32,7 +34,48 @@ func main() {
 	ollamaModel := flag.String("ollama-model", longmemevaljudge.DefaultJudgeModel, "Ollama model name for judge")
 	ollamaURL := flag.String("ollama-url", longmemevaljudge.DefaultOllamaURL, "Ollama API URL")
 	mode := flag.String("mode", "", "retrieval mode: fts5 (default) or hybrid")
+	questionsLimit := flag.Int("questions-limit", 0, "evaluate only first N questions (0 = all, for debug/diagnostic runs)")
+	sweep := flag.Bool("sweep", false, "run across all supported modes and compare")
 	flag.Parse()
+
+	if *sweep {
+		baseOpts := longmemeval.RunOptions{
+			FixturePath:     *fixturePath,
+			DatasetPath:     *datasetPath,
+			K:               *k,
+			Enforce:         false,
+			SkipLatencyGate: true,
+			QuestionsLimit:  *questionsLimit,
+		}
+		results := longmemeval.RunLmeSweep(baseOpts, nil)
+		fmt.Println("Ohara LongMemEval benchmark — sweep results")
+		fmt.Println()
+		fmt.Printf("%-28s %-10s %-10s %-10s %-10s %-10s %-10s\n",
+			"Mode", "Recall@1", "Recall@3", "MRR", "nDCG@5", "P95(ms)", "Passed/Total")
+		fmt.Println(strings.Repeat("-", 100))
+		for _, r := range results {
+			errTag := ""
+			if r.Error != "" {
+				errTag = " ERROR"
+			}
+			fmt.Printf("%-28s %-10.3f %-10.3f %-10.3f %-10.3f %-10.1f %d/%-10d%s\n",
+				r.Name,
+				r.Report.OverallMetrics.RecallAt1,
+				r.Report.OverallMetrics.RecallAt3,
+				r.Report.OverallMetrics.MRR,
+				r.Report.OverallMetrics.NDCGAt5,
+				r.Report.Latency.P95Ms,
+				r.Report.PassedQuestions, r.Report.TotalQuestions,
+				errTag,
+			)
+		}
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(results)
+		}
+		return
+	}
 
 	opts := longmemeval.RunOptions{
 		FixturePath:     *fixturePath,
@@ -41,6 +84,7 @@ func main() {
 		Enforce:         *enforce,
 		SkipLatencyGate: *skipLatency,
 		Mode:            strings.TrimSpace(*mode),
+		QuestionsLimit:  *questionsLimit,
 	}
 	if *useJudge {
 		opts.Judge = longmemeval.OverlapJudge{}

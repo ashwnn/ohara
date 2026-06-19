@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ var checkForUpdates = versionpkg.CheckLatest
 var storeNew = store.New
 
 // socketPath is empty when TCP mode is used.
-var newHTTPServer = func(s *store.Store, port int, bindAddr, socketPath string, allowedOrigins []string, packCfg server.PackConfig, conflictCfg server.ConflictConfig) *server.Server {
+var newHTTPServer = func(s *store.Store, port int, bindAddr, socketPath string, allowedOrigins []string, packCfg server.PackConfig, conflictCfg server.ConflictConfig, summarizerCfg server.SummarizerConfig) *server.Server {
 	opts := []server.ServerOption{}
 	if socketPath != "" {
 		opts = append(opts, server.WithSocketPath(socketPath))
@@ -56,6 +57,7 @@ var newHTTPServer = func(s *store.Store, port int, bindAddr, socketPath string, 
 	if conflictCfg.Enabled == server.ConflictEnabledOn {
 		opts = append(opts, server.WithConflictConfig(conflictCfg))
 	}
+	opts = append(opts, server.WithSummarizerConfig(summarizerCfg))
 	return server.New(s, port, opts...)
 }
 
@@ -155,6 +157,8 @@ var storeConsolidateCandidates = func(s *store.Store, project, domain string, dr
 }
 
 var newObsidianWatcher = func(c interface{}) interface{} { return nil }
+
+var newMaintainScheduler = maintain.NewScheduler
 
 var loadRuntimeConfig = func(cfgPath string) (config.RuntimeConfig, error) {
 	return config.Load(cfgPath)
@@ -543,6 +547,16 @@ func realCmdServe(cfg store.Config) {
 	if cfg2.OllamaURL != "" {
 		cfg.OllamaURL = cfg2.OllamaURL
 	}
+	// Apply new retrieval knobs from RuntimeConfig to store.Config.
+	if cfg2.RetrievalMaxResults > 0 {
+		cfg.MaxSearchResults = cfg2.RetrievalMaxResults
+	}
+	if cfg2.RetrievalAutoMode != "" {
+		cfg.RetrievalAutoMode = cfg2.RetrievalAutoMode
+	}
+	if cfg2.RetrievalMinScore > 0 {
+		cfg.RetrievalMinScore = cfg2.RetrievalMinScore
+	}
 
 	s, err := storeNew(cfg)
 	if err != nil {
@@ -561,7 +575,13 @@ func realCmdServe(cfg store.Config) {
 	if cfg2.ConflictEnabled {
 		conflictCfg.Enabled = server.ConflictEnabledOn
 	}
-	srv := newHTTPServer(s, port, bindAddr, socketPath, splitCSV(cfg2.MCPAllowedOrigins), packCfg, conflictCfg)
+	summarizerCfg := server.SummarizerConfig{
+		Enabled:   cfg2.SummarizerEnabled,
+		Backend:   cfg2.SummarizerBackend,
+		Model:     cfg2.SummarizerModel,
+		MaxTokens: cfg2.SummarizerMaxTokens,
+	}
+	srv := newHTTPServer(s, port, bindAddr, socketPath, splitCSV(cfg2.MCPAllowedOrigins), packCfg, conflictCfg, summarizerCfg)
 
 	// Legacy HTTP API auth mode (unchanged unless remote MCP mode is explicitly configured).
 	if cfg2.AuthEnabled && !remoteEnabled {
@@ -614,9 +634,43 @@ func realCmdServe(cfg store.Config) {
 			fatal("serve: unsupported OHARA_MCP_TRANSPORT value: " + transport)
 		}
 	}
+	// Start the maintenance scheduler if enabled.
+	var maintSched *maintain.Scheduler
+	if cfg2.MaintenanceEnabled {
+		maintSched = startMaintenanceScheduler(s, cfg, cfg2)
+	}
+	if maintSched != nil {
+		defer maintSched.Stop()
+	}
+
 	if err := startHTTP(srv); err != nil {
 		fatal("serve: " + err.Error())
 	}
+}
+
+// startMaintenanceScheduler creates and starts a background maintenance scheduler.
+// Returns the scheduler so the caller can call Stop() before the store closes.
+func startMaintenanceScheduler(s *store.Store, cfg store.Config, cfg2 config.RuntimeConfig) *maintain.Scheduler {
+	mOpts := maintain.DefaultOptions(cfg.DataDir)
+	mOpts.ArchiveExpired = true
+	mOpts.Integrity = true
+	mOpts.Backup = cfg2.MaintenanceBackupEnabled
+	mOpts.OptimizeFTS = true
+	mOpts.RetainDays = cfg2.MaintenanceArchiveDays
+	if cfg2.SnapshotDir != "" {
+		mOpts.SnapshotDir = cfg2.SnapshotDir
+	}
+	interval := time.Duration(cfg2.MaintenanceIntervalMinutes) * time.Minute
+
+	sched := newMaintainScheduler(maintain.SchedulerConfig{
+		DB:       s,
+		Options:  mOpts,
+		Interval: interval,
+	})
+	sched.Start()
+	log.Printf("[ohara] maintenance scheduler started (interval=%d min, backup=%v, archive_days=%d)",
+		cfg2.MaintenanceIntervalMinutes, cfg2.MaintenanceBackupEnabled, cfg2.MaintenanceArchiveDays)
+	return sched
 }
 
 func realCmdMCP(cfg store.Config) {
@@ -1384,14 +1438,17 @@ func realCmdDoctor(cfg store.Config) {
 		}
 	}
 
-	// Check 2: stuck lifecycle (active but never accessed in 180+ days)
+	// Check 2: stuck lifecycle (active but never accessed in 180+ days).
+	// Uses the most recent of last_accessed or updated_at so that a memory
+	// accessed recently via a read (which bumps last_accessed but not updated_at)
+	// is not spuriously expired.
 	{
 		var count int
 		row := s.QueryRow(`
 			SELECT COUNT(*) FROM memory_items
 			WHERE status = 'active'
 			AND access_count = 0
-			AND updated_at < datetime('now', '-180 days')`)
+			AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', '-180 days')`)
 		row.Scan(&count)
 		if count > 0 {
 			fmt.Printf("[WARN] %d memories not accessed in 180+ days — run with --fix to expire.\n", count)
@@ -1401,7 +1458,7 @@ func realCmdDoctor(cfg store.Config) {
 					UPDATE memory_items
 					SET status = 'archived', updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
 					WHERE status = 'active' AND access_count = 0
-					AND updated_at < datetime('now', '-180 days')`)
+					AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', '-180 days')`)
 				fmt.Printf("[PASS] Stuck memories expired.\n")
 				warnings--
 			}
@@ -1410,17 +1467,18 @@ func realCmdDoctor(cfg store.Config) {
 		}
 	}
 
-	// Check 3: stale procedures/config (not updated in 90+ days)
+	// Check 3: stale procedures/config (not accessed/updated in 90+ days).
+	// Uses the most recent of last_accessed or updated_at.
 	{
 		var count int
 		row := s.QueryRow(`
 			SELECT COUNT(*) FROM memory_items
 			WHERE kind IN ('procedure', 'config')
 			AND status = 'active'
-			AND updated_at < datetime('now', '-90 days')`)
+			AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', '-90 days')`)
 		row.Scan(&count)
 		if count > 0 {
-			fmt.Printf("[WARN] %d stale procedure/config memories not updated in 90+ days.\n", count)
+			fmt.Printf("[WARN] %d stale procedure/config memories not accessed in 90+ days.\n", count)
 			warnings++
 		} else {
 			fmt.Println("[PASS] No stale procedure/config memories.")

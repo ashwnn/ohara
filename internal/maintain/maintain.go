@@ -30,12 +30,16 @@ type DB interface {
 
 // Stats holds the outcome of a maintenance run.
 type Stats struct {
-	Archived        int      `json:"archived"`
-	IntegrityOK     bool     `json:"integrity_ok"`
-	IntegrityResult string   `json:"integrity_result,omitempty"`
-	BackupPath      string   `json:"backup_path,omitempty"`
-	FTSSOptimized   int      `json:"fts_optimized"`
-	Errors          []string `json:"errors,omitempty"`
+	Archived           int      `json:"archived"`
+	IntegrityOK        bool     `json:"integrity_ok"`
+	IntegrityResult    string   `json:"integrity_result,omitempty"`
+	BackupPath         string   `json:"backup_path,omitempty"`
+	FTSSOptimized      int      `json:"fts_optimized"`
+	Decayed            int      `json:"decayed,omitempty"`
+	Stale              int      `json:"stale,omitempty"`
+	StaleCandidates    int      `json:"stale_candidates_archived,omitempty"`
+	LowUtilityArchived int      `json:"low_utility_archived,omitempty"`
+	Errors             []string `json:"errors,omitempty"`
 }
 
 // Options controls which maintenance operations run.
@@ -48,6 +52,16 @@ type Options struct {
 	Backup bool
 	// OptimizeFTS runs FTS5 optimize on all FTS tables.
 	OptimizeFTS bool
+	// Lifecycle runs decay, stale candidate archive, and low-utility archive.
+	Lifecycle bool
+	// LifecycleDecayAgeDays: max age in days before decay applies (default 90).
+	LifecycleDecayAgeDays int
+	// LifecycleDecayFactor: multiplier per pass (default 0.9).
+	LifecycleDecayFactor float64
+	// LifecycleStaleCandidateDays: max age in days for candidates (default 30).
+	LifecycleStaleCandidateDays int
+	// LifecycleMinUtilityWeight: floor below which memories are archived (default 0.05).
+	LifecycleMinUtilityWeight float64
 	// SnapshotDir is the directory to write snapshots into.
 	// Defaults to "{dataDir}/snapshots".
 	SnapshotDir string
@@ -63,14 +77,19 @@ type Options struct {
 // DefaultOptions returns an Options with all operations enabled.
 func DefaultOptions(dataDir string) Options {
 	return Options{
-		ArchiveExpired: true,
-		Integrity:      true,
-		Backup:         true,
-		OptimizeFTS:    true,
-		DataDir:        dataDir,
-		SnapshotDir:    filepath.Join(dataDir, DefaultSnapshotDir),
-		RetainDays:     DefaultRetainDays,
-		DryRun:         false,
+		ArchiveExpired:              true,
+		Integrity:                   true,
+		Backup:                      true,
+		OptimizeFTS:                 true,
+		Lifecycle:                   true,
+		LifecycleDecayAgeDays:       90,
+		LifecycleDecayFactor:        0.9,
+		LifecycleStaleCandidateDays: 30,
+		LifecycleMinUtilityWeight:   0.05,
+		DataDir:                     dataDir,
+		SnapshotDir:                 filepath.Join(dataDir, DefaultSnapshotDir),
+		RetainDays:                  DefaultRetainDays,
+		DryRun:                      false,
 	}
 }
 
@@ -103,6 +122,30 @@ func Run(db DB, opts Options) (*Stats, error) {
 			stats.Errors = append(stats.Errors, fmt.Sprintf("fts optimize: %v", err))
 		} else {
 			stats.FTSSOptimized = n
+		}
+	}
+
+	if opts.Lifecycle {
+		decayed, stale, err := RunLifecycle(db, opts)
+		if err != nil {
+			stats.Errors = append(stats.Errors, fmt.Sprintf("lifecycle: %v", err))
+		} else {
+			stats.Decayed = decayed
+			stats.Stale = stale
+		}
+
+		// Archive stale candidates (unreviewed candidate memories past their shelf life).
+		if n, err := ArchiveStaleCandidates(db, opts.LifecycleStaleCandidateDays, opts.DryRun); err != nil {
+			stats.Errors = append(stats.Errors, fmt.Sprintf("stale candidates: %v", err))
+		} else {
+			stats.StaleCandidates = n
+		}
+
+		// Archive low-utility memories (decayed below threshold).
+		if n, err := ArchiveLowUtilityMemories(db, opts.LifecycleMinUtilityWeight, opts.DryRun); err != nil {
+			stats.Errors = append(stats.Errors, fmt.Sprintf("low utility: %v", err))
+		} else {
+			stats.LowUtilityArchived = n
 		}
 	}
 
@@ -281,6 +324,171 @@ func Backup(db DB, snapshotDir string) (string, error) {
 
 	os.Remove(tempPath)
 	return snapshotPath, nil
+}
+
+// lifecycleDB is the interface subset needed by lifecycle operations.
+// It extends DB with QueryRowContext capability.
+type lifecycleDB interface {
+	DB
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// RunLifecycle runs the memory lifecycle pass: utility_weight decay.
+// It requires the underlying DB to have a DecayMemories-compatible schema
+// (memory_items table with utility_weight and classification columns).
+// Returns (decayedCount, staleCount).
+func RunLifecycle(db lifecycleDB, opts Options) (int, int, error) {
+	if opts.LifecycleDecayAgeDays <= 0 {
+		opts.LifecycleDecayAgeDays = 90
+	}
+	if opts.LifecycleDecayFactor <= 0 || opts.LifecycleDecayFactor > 1 {
+		opts.LifecycleDecayFactor = 0.9
+	}
+
+	if opts.DryRun {
+		// Count decayable using most recent of updated_at or last_accessed.
+		var decayable int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', ?)`,
+			fmt.Sprintf("-%d days", opts.LifecycleDecayAgeDays),
+		).Scan(&decayable)
+		if err != nil {
+			return 0, 0, fmt.Errorf("lifecycle dry-run count: %w", err)
+		}
+
+		// Count stale after decay.
+		minWeight := opts.LifecycleMinUtilityWeight
+		if minWeight <= 0 {
+			minWeight = 0.1
+		}
+		var stale int
+		err = db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND utility_weight * ? < ?
+			   AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', ?)`,
+			opts.LifecycleDecayFactor, minWeight,
+			fmt.Sprintf("-%d days", opts.LifecycleDecayAgeDays),
+		).Scan(&stale)
+		if err != nil {
+			return 0, 0, fmt.Errorf("lifecycle stale dry-run: %w", err)
+		}
+		return decayable, stale, nil
+	}
+
+	// Apply decay using most recent of updated_at or last_accessed.
+	res, err := db.Exec(
+		`UPDATE memory_items
+		 SET utility_weight = ROUND(utility_weight * ?, 4),
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', ?)`,
+		opts.LifecycleDecayFactor,
+		fmt.Sprintf("-%d days", opts.LifecycleDecayAgeDays),
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lifecycle decay: %w", err)
+	}
+	decayed, _ := res.RowsAffected()
+
+	// Count stale.
+	minWeight := opts.LifecycleMinUtilityWeight
+	if minWeight <= 0 {
+		minWeight = 0.1
+	}
+	var stale int
+	err = db.QueryRow(
+		`SELECT COUNT(*) FROM memory_items
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND utility_weight < ?`,
+		minWeight,
+	).Scan(&stale)
+	if err != nil {
+		return int(decayed), 0, fmt.Errorf("lifecycle stale count: %w", err)
+	}
+
+	return int(decayed), stale, nil
+}
+
+// ArchiveStaleCandidates archives candidate-status memories older than maxAgeDays.
+func ArchiveStaleCandidates(db lifecycleDB, maxAgeDays int, dryRun bool) (int, error) {
+	if maxAgeDays <= 0 {
+		maxAgeDays = 30
+	}
+	ageExpr := fmt.Sprintf("-%d days", maxAgeDays)
+
+	if dryRun {
+		var count int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'candidate'
+			   AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', ?)`,
+			ageExpr,
+		).Scan(&count)
+		return count, err
+	}
+
+	res, err := db.Exec(
+		`UPDATE memory_items
+		 SET status = 'archived',
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'candidate'
+		   AND datetime(COALESCE(NULLIF(last_accessed, ''), updated_at)) < datetime('now', ?)`,
+		ageExpr,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("archive stale candidates: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ArchiveLowUtilityMemories archives active, non-foundational memories below minWeight.
+func ArchiveLowUtilityMemories(db lifecycleDB, minWeight float64, dryRun bool) (int, error) {
+	if minWeight <= 0 {
+		minWeight = 0.05
+	}
+
+	if dryRun {
+		var count int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM memory_items
+			 WHERE status = 'active'
+			   AND classification != 'foundational'
+			   AND utility_weight > 0
+			   AND utility_weight < ?`,
+			minWeight,
+		).Scan(&count)
+		return count, err
+	}
+
+	res, err := db.Exec(
+		`UPDATE memory_items
+		 SET status = 'archived',
+		     updated_at = strftime('%Y-%m-%dT%H:%M:%f','now')
+		 WHERE status = 'active'
+		   AND classification != 'foundational'
+		   AND utility_weight > 0
+		   AND utility_weight < ?`,
+		minWeight,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("archive low utility: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // pruneOldSnapshots removes gzipped snapshots older than retainDays.

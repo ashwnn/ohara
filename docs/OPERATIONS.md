@@ -29,6 +29,46 @@ Retention config in `~/.local/share/ohara/config.json`:
 { "snapshot_dir": "~/.local/share/ohara/snapshots", "retain_snapshots": 7 }
 ```
 
+## Lifecycle (Forgetting/Decay)
+
+The maintenance lifecycle automatically decays old, unaccessed memories and archives stale candidates:
+
+### What happens during lifecycle
+
+| Operation | Effect | Protection |
+|-----------|--------|------------|
+| Utility decay | Reduces `utility_weight` of active memories older than 90 days by 0.9x | Foundational memories never decay |
+| Stale candidate archive | Archives candidate-status memories older than 30 days (never reviewed) | N/A |
+| Low-utility archive | Archives active memories whose utility_weight fell below 0.05 | Foundational memories never archived |
+
+### Manual trigger
+
+```bash
+ohara maintain                        # Full maintenance (includes lifecycle)
+ohara maintain --dry-run              # Preview without writes
+```
+
+### Programmatic access (Go SDK)
+
+The `maintain.Scheduler` struct can be started programmatically:
+
+```go
+sched := maintain.NewScheduler(maintain.SchedulerConfig{
+    DB:       store,
+    Options:  maintain.DefaultOptions(dataDir),
+    Interval: 60 * time.Minute,
+})
+sched.Start()
+// ... later
+sched.Stop()
+```
+
+Or trigger a single lifecycle run:
+
+```go
+decayed, stale, err := maintain.RunLifecycle(db, opts)
+```
+
 ## Restore
 
 1. Stop server. 2. Copy aside current data dir. 3. Replace DB with snapshot. 4. Start server. 5. Run `ohara check && ohara validate`.

@@ -38,21 +38,59 @@ type ollamaChatResponse struct {
 	} `json:"message"`
 }
 
+// hybridEnabled returns true when the store should use hybrid (FTS5 + vector) retrieval.
+// It checks both explicit "hybrid" mode and "auto" mode (when embeddings are reachable).
 func (s *Store) hybridEnabled() bool {
-	if !strings.EqualFold(strings.TrimSpace(s.cfg.RetrievalMode), "hybrid") {
-		return false
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.RetrievalMode))
+	autoMode := strings.ToLower(strings.TrimSpace(s.cfg.RetrievalAutoMode))
+
+	// Explicit "hybrid" mode — always use hybrid if backend is available.
+	if mode == "hybrid" {
+		return s.hybridBackendAvailable()
 	}
+
+	// "auto" mode — use hybrid if embeddings are reachable.
+	if mode == "auto" || autoMode == "auto" || autoMode == "" {
+		avail := s.checkHybridAvailability()
+		return avail.EmbeddingsAvailable
+	}
+
+	return false
+}
+
+// hybridBackendAvailable returns true if the configured embedding backend is
+// available (registered or supported), without making a network call.
+func (s *Store) hybridBackendAvailable() bool {
 	backend := strings.ToLower(strings.TrimSpace(s.cfg.EmbeddingBackend))
 	switch backend {
 	case "ollama", "deterministic-test", "static-test":
 		return true
 	default:
-		// Check registered embedders too (extensible path).
 		if _, ok := registeredEmbedders[backend]; ok {
 			return true
 		}
 		return false
 	}
+}
+
+// ResolvedRetrievalMode returns the effective retrieval mode after auto-detection.
+// For "auto" mode, it probes the embedding backend and returns "hybrid" if reachable,
+// or "fts5" if not. For explicit modes ("fts5", "hybrid"), it returns the mode as-is.
+func (s *Store) ResolvedRetrievalMode() string {
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.RetrievalMode))
+	autoMode := strings.ToLower(strings.TrimSpace(s.cfg.RetrievalAutoMode))
+
+	if mode == "auto" || autoMode == "auto" || autoMode == "" {
+		avail := s.checkHybridAvailability()
+		if avail.EmbeddingsAvailable {
+			return "hybrid"
+		}
+		return "fts5"
+	}
+	if mode == "hybrid" || mode == "fts5" {
+		return mode
+	}
+	return "fts5"
 }
 
 // hybridAvailability describes whether hybrid retrieval is operational.

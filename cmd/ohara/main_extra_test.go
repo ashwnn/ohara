@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ashwnn/ohara/internal/config"
+	"github.com/ashwnn/ohara/internal/maintain"
 	"github.com/ashwnn/ohara/internal/mcp"
 	oharasrv "github.com/ashwnn/ohara/internal/server"
 	"github.com/ashwnn/ohara/internal/setup"
@@ -102,9 +103,10 @@ func stubRuntimeHooks(t *testing.T) {
 	oldStoreConsolidate := storeConsolidate
 	oldLoadRuntimeConfig := loadRuntimeConfig
 	oldLoadRuntimeMaintain := loadRuntimeMaintain
+	oldNewMaintainScheduler := newMaintainScheduler
 
 	storeNew = store.New
-	newHTTPServer = func(s *store.Store, _ int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+	newHTTPServer = func(s *store.Store, _ int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 		return oharasrv.New(s, 0)
 	}
 	startHTTP = func(_ *oharasrv.Server) error { return nil }
@@ -147,6 +149,7 @@ func stubRuntimeHooks(t *testing.T) {
 			RetainSnapshots: 7,
 		}, nil
 	}
+	newMaintainScheduler = maintain.NewScheduler
 	jsonMarshalIndent = json.MarshalIndent
 	syncStatus = func(sy *oharasync.Syncer) (localChunks int, remoteChunks int, pendingImport int, err error) {
 		return sy.Status()
@@ -187,6 +190,7 @@ func stubRuntimeHooks(t *testing.T) {
 		storeConsolidate = oldStoreConsolidate
 		loadRuntimeConfig = oldLoadRuntimeConfig
 		loadRuntimeMaintain = oldLoadRuntimeMaintain
+		newMaintainScheduler = oldNewMaintainScheduler
 	})
 }
 
@@ -240,7 +244,7 @@ func TestCmdServeParsesPortAndErrors(t *testing.T) {
 			withArgs(t, args...)
 
 			seenPort := -1
-			newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+			newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 				seenPort = port
 				return oharasrv.New(s, 0)
 			}
@@ -281,7 +285,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":9999", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}
@@ -302,7 +306,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":1111", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}
@@ -324,7 +328,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 		}
 		seenPort := -1
 		seenSocket := ""
-		newHTTPServer = func(s *store.Store, port int, _ string, socketPath string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, socketPath string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 			seenPort = port
 			seenSocket = socketPath
 			return oharasrv.New(s, 0)
@@ -350,7 +354,7 @@ func TestCmdServeUsesConfigLoader(t *testing.T) {
 			return config.RuntimeConfig{HTTPAddr: ":5555", SocketPath: ""}, nil
 		}
 		seenPort := -1
-		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig) *oharasrv.Server {
+		newHTTPServer = func(s *store.Store, port int, _ string, _ string, _ []string, _ oharasrv.PackConfig, _ oharasrv.ConflictConfig, _ oharasrv.SummarizerConfig) *oharasrv.Server {
 			seenPort = port
 			return oharasrv.New(s, 0)
 		}
@@ -1487,5 +1491,70 @@ func TestRealCmdJobsRunOnceDrainsOneJob(t *testing.T) {
 	}
 	if attempts < 1 {
 		t.Fatalf("expected attempts >= 1, got %d", attempts)
+	}
+}
+
+func TestStartMaintenanceScheduler(t *testing.T) {
+	cfg := testConfig(t)
+	runtimeCfg := config.RuntimeConfig{
+		HTTPAddr:                   ":9999",
+		MaintenanceEnabled:         true,
+		MaintenanceIntervalMinutes: 60,
+		MaintenanceArchiveDays:     90,
+		MaintenanceBackupEnabled:   true,
+	}
+
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+
+	// Should create and start a scheduler without panicking.
+	sched := startMaintenanceScheduler(s, cfg, runtimeCfg)
+	if sched == nil {
+		t.Fatal("expected non-nil scheduler")
+	}
+	if !sched.Running() {
+		t.Fatal("expected scheduler to be running after start")
+	}
+	// Stop cleanly.
+	sched.Stop()
+}
+
+func TestServeThreadsRetrievalMaxResults(t *testing.T) {
+	cfg := testConfig(t)
+	stubRuntimeHooks(t)
+	stubExitWithPanic(t)
+
+	loadRuntimeConfig = func(string) (config.RuntimeConfig, error) {
+		return config.RuntimeConfig{
+			HTTPAddr:            ":9999",
+			RetrievalAutoMode:   "hybrid",
+			RetrievalMaxResults: 50,
+			RetrievalMinScore:   0.3,
+			MaintenanceEnabled:  false,
+		}, nil
+	}
+
+	var capturedCfg store.Config
+	storeNew = func(c store.Config) (*store.Store, error) {
+		capturedCfg = c
+		return store.New(c)
+	}
+
+	withArgs(t, "ohara", "serve")
+	_, _, recovered := captureOutputAndRecover(t, func() { cmdServe(cfg) })
+	if recovered != nil {
+		t.Fatalf("unexpected panic: %v", recovered)
+	}
+	if capturedCfg.MaxSearchResults != 50 {
+		t.Errorf("MaxSearchResults: got %d, want 50", capturedCfg.MaxSearchResults)
+	}
+	if capturedCfg.RetrievalAutoMode != "hybrid" {
+		t.Errorf("RetrievalAutoMode: got %q, want hybrid", capturedCfg.RetrievalAutoMode)
+	}
+	if capturedCfg.RetrievalMinScore != 0.3 {
+		t.Errorf("RetrievalMinScore: got %f, want 0.3", capturedCfg.RetrievalMinScore)
 	}
 }

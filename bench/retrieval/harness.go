@@ -86,6 +86,34 @@ type RunOptions struct {
 	Mode            string
 	Embedding       string
 	OllamaURL       string
+	Sweep           bool // when true, runs across all supported modes
+}
+
+// SweepMode defines a single mode configuration for benchmark sweeps.
+type SweepMode struct {
+	Name      string
+	Mode      string
+	Embedding string
+	OllamaURL string
+	SkipEnv   bool // skip modes that require external services (ollama)
+}
+
+// DefaultSweepModes returns the standard set of modes to sweep.
+func DefaultSweepModes() []SweepMode {
+	return []SweepMode{
+		{Name: "fts5", Mode: "fts5"},
+		{Name: "hybrid-deterministic", Mode: "hybrid", Embedding: "deterministic-test"},
+		{Name: "hybrid-ollama-fallback", Mode: "hybrid", OllamaURL: "http://127.0.0.1:1", SkipEnv: false},
+	}
+}
+
+// SweepResult holds a single mode's report in a sweep run.
+type SweepResult struct {
+	Name      string `json:"name"`
+	Mode      string `json:"mode"`
+	Embedding string `json:"embedding,omitempty"`
+	Report    Report `json:"report"`
+	Error     string `json:"error,omitempty"`
 }
 
 type Metrics struct {
@@ -430,6 +458,35 @@ func withDefaultThresholds(in ThresholdsFixture) ThresholdsFixture {
 		out.FixtureHighOverlapRateMax = 0.35
 	}
 	return out
+}
+
+// RunSweep runs the benchmark across all default sweep modes and returns results.
+// If a mode fails to initialize, its Error field is set but sweep continues.
+func RunSweep(baseOpts RunOptions, modes []SweepMode) []SweepResult {
+	if modes == nil {
+		modes = DefaultSweepModes()
+	}
+	results := make([]SweepResult, 0, len(modes))
+	for _, sm := range modes {
+		opts := baseOpts
+		opts.Mode = sm.Mode
+		opts.Embedding = sm.Embedding
+		opts.OllamaURL = sm.OllamaURL
+		opts.Sweep = false
+
+		report, err := RunBenchmark(opts)
+		sr := SweepResult{
+			Name:      sm.Name,
+			Mode:      sm.Mode,
+			Embedding: sm.Embedding,
+		}
+		if err != nil {
+			sr.Error = err.Error()
+		}
+		sr.Report = report
+		results = append(results, sr)
+	}
+	return results
 }
 
 func seededStore(fixture Fixture, mutator func(store.Config) store.Config) (*store.Store, map[string]int64, error) {

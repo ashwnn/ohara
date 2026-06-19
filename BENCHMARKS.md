@@ -91,4 +91,16 @@ go run ./bench/cmd/run-longmemeval/ -k 5
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s
 ```
 
+### Sweep Mode
+
+Both `run-retrieval` and `run-longmemeval` support `-sweep` flag to run across all
+supported retrieval modes (FTS5, hybrid-deterministic, hybrid-ollama-fallback) and
+print a comparison table. Pass `-json` for structured output:
+
+```bash
+go run ./bench/cmd/run-retrieval/ -k 5 -sweep
+go run ./bench/cmd/run-retrieval/ -k 5 -sweep -json
+go run ./bench/cmd/run-longmemeval/ -k 5 -sweep
+```
+
 Full details: [bench/README.md](bench/README.md), [bench/store/README.md](bench/store/README.md).

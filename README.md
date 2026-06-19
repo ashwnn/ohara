@@ -220,6 +220,12 @@ Each feature was motivated by a specific failure mode identified through compara
 
 **Why**: Mulch's `prime` emits compact markdown designed for direct injection into a system prompt. The two-tier model (Knowledge tier injected by default, Episode tier opt-in) prevents session noise from crowding out high-signal decisions and patterns.
 
+### Lifecycle forgetting and consolidation maintenance
+
+**Problem**: Old, unused memories accumulate and never get cleaned up. Candidate memories from consolidation sit unreviewed and pile up.
+
+**Why**: The `ohara maintain` lifecycle pass decays `utility_weight` for old, unaccessed memories (non-foundational), archives stale consolidation candidates, and archives memories whose utility dropped too low. An opt-in `Scheduler` runs this on a background goroutine at configurable intervals. Foundational memories are always protected from decay and archive.
+
 ### Relevance scoring with temporal decay
 
 **Problem**: Two `active` memories treated as equally relevant regardless of access patterns. An 8-month-old unaccessed memory ranks the same as one used yesterday.

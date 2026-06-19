@@ -579,6 +579,8 @@ type Config struct {
 	MaxSearchResults  int
 	DedupeWindow      time.Duration
 	RetrievalMode     string
+	RetrievalAutoMode string // "auto" (default): hybrid if embedder reachable, fts5 fallback; "fts5", "hybrid", or "embedding"
+	RetrievalMinScore float64 // minimum relevance score threshold (0.0 = no filter, range 0.0-1.0)
 	EmbeddingBackend  string
 	EmbeddingModel    string
 	EmbeddingDim      int
@@ -644,6 +646,8 @@ func DefaultConfig() (Config, error) {
 		MaxSearchResults:  20,
 		DedupeWindow:      15 * time.Minute,
 		RetrievalMode:     "fts5",
+		RetrievalAutoMode: "auto",
+		RetrievalMinScore: 0.0,
 		EmbeddingBackend:  "ollama",
 		EmbeddingModel:    "nomic-embed-text",
 		EmbeddingDim:      768,
@@ -653,6 +657,14 @@ func DefaultConfig() (Config, error) {
 	}
 	if mode := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MODE")); mode != "" {
 		cfg.RetrievalMode = mode
+	}
+	if autoMode := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_AUTO_MODE")); autoMode != "" {
+		cfg.RetrievalAutoMode = autoMode
+	}
+	if minScore := strings.TrimSpace(os.Getenv("OHARA_RETRIEVAL_MIN_SCORE")); minScore != "" {
+		if score, convErr := strconv.ParseFloat(minScore, 64); convErr == nil && score >= 0 && score <= 1 {
+			cfg.RetrievalMinScore = score
+		}
 	}
 	if backend := strings.TrimSpace(os.Getenv("OHARA_EMBEDDING_BACKEND")); backend != "" {
 		cfg.EmbeddingBackend = backend
@@ -778,6 +790,8 @@ func FallbackConfig(dataDir string) Config {
 		MaxSearchResults:  20,
 		DedupeWindow:      15 * time.Minute,
 		RetrievalMode:     "fts5",
+		RetrievalAutoMode: "auto",
+		RetrievalMinScore: 0.0,
 		EmbeddingBackend:  "ollama",
 		EmbeddingModel:    "nomic-embed-text",
 		EmbeddingDim:      768,

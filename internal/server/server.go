@@ -112,6 +112,26 @@ func WithConflictConfig(cfg ConflictConfig) ServerOption {
 	return func(s *Server) { s.conflictConfig = cfg }
 }
 
+// SummarizerConfig holds configurable knobs for session summarization.
+type SummarizerConfig struct {
+	// Enabled controls whether the server should generate a summary text.
+	// When false, GeneratedSummary is still populated with a minimal template
+	// so the field is never nil (API compatibility).
+	Enabled bool
+	// Backend is the summarization provider ("ollama" etc.) — reserved for future use.
+	Backend string
+	// Model is the LLM model name — reserved for future use.
+	Model string
+	// MaxTokens caps the output length of generated summaries.
+	// Applied by the handler as a simple truncation for template summaries.
+	MaxTokens int
+}
+
+// WithSummarizerConfig sets the summarizer configuration.
+func WithSummarizerConfig(cfg SummarizerConfig) ServerOption {
+	return func(s *Server) { s.summarizerConfig = cfg }
+}
+
 // WithAllowedOrigins configures optional CORS policy for HTTP responses.
 // Pass an empty list to disable CORS headers.
 func WithAllowedOrigins(origins []string) ServerOption {
@@ -150,9 +170,10 @@ type Server struct {
 	serve          func(net.Listener, http.Handler) error
 	onWrite        func() // called after successful local writes (for autosync notification)
 	syncStatus     SyncStatusProvider
-	packConfig     PackConfig
-	conflictConfig ConflictConfig
-	authenticator  auth.Authenticator
+	packConfig       PackConfig
+	conflictConfig   ConflictConfig
+	summarizerConfig SummarizerConfig
+	authenticator    auth.Authenticator
 	mcpRoutes      map[string]http.Handler
 	mcpRegistered  map[string]bool
 	allowedOrigins map[string]struct{}
@@ -471,6 +492,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleEndSession)    // spec-aligned
 	s.mux.HandleFunc("POST /sessions/{id}/end", s.handleEndSession) // legacy alias
 	s.mux.HandleFunc("GET /sessions/{id}/context", s.handleGetSessionContext)
+	s.mux.HandleFunc("GET /sessions/{id}/summarize", s.handleSessionSummarize)
 	s.mux.HandleFunc("GET /sessions/recent", s.handleRecentSessions)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 
@@ -702,6 +724,104 @@ func (s *Server) handleGetSessionContext(w http.ResponseWriter, r *http.Request)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{"context": prevSummary})
+}
+
+// handleSessionSummarize implements GET /sessions/{id}/summarize.
+// Returns session metadata, prompt/memory counts, and a server-side generated
+// summary text. The summary is template-based (no LLM dependency required).
+// When summarizer config disables summarization, the generated summary is a
+// minimal placeholder instead of a detailed template.
+func (s *Server) handleSessionSummarize(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+
+	// Look up session to check project scope before returning data.
+	sess, err := s.store.GetSession(id)
+	if err != nil {
+		jsonError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err := s.checkProjectScope(r, sess.Project); err != nil {
+		jsonError(w, http.StatusForbidden, "project not allowed")
+		return
+	}
+
+	maxPrompts := queryInt(r, "max_prompts", 10)
+
+	result, err := s.store.SessionSummarize(id, maxPrompts)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Generate server-side summary text from session data.
+	// Config knobs are consumed here:
+	//   - SummarizerConfig.Enabled: when false, emit a minimal placeholder
+	//   - SummarizerConfig.MaxTokens: caps the output length
+	sc := s.summarizerConfig
+	summary := generateSessionSummary(result, sc)
+	result.GeneratedSummary = &summary
+
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// generateSessionSummary produces a human-readable summary string from the
+// session data returned by SessionSummarize. It does not require an LLM.
+// When cfg.Enabled is false, a minimal placeholder is returned instead of
+// the full template. MaxTokens caps output length.
+func generateSessionSummary(result *store.SessionSummarizeResult, cfg SummarizerConfig) string {
+	// When summarization is disabled, emit a minimal placeholder.
+	if !cfg.Enabled {
+		placeholder := fmt.Sprintf("Session %q for project %q (%d memories, %d prompts)",
+			result.ID, result.Project, result.MemoryCount, result.PromptCount)
+		return truncateSummary(placeholder, cfg.MaxTokens)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Session %q for project %q", result.ID, result.Project))
+	if result.EndedAt != nil {
+		sb.WriteString(" (completed)")
+	} else {
+		sb.WriteString(" (active)")
+	}
+	sb.WriteString(fmt.Sprintf(". Started %s.", result.StartedAt))
+	if result.CurrentSummary != nil && *result.CurrentSummary != "" {
+		sb.WriteString(fmt.Sprintf(" Stored summary: %s.", *result.CurrentSummary))
+	}
+	sb.WriteString(fmt.Sprintf(" Created %d memory item(s) and exchanged %d prompt(s).", result.MemoryCount, result.PromptCount))
+	if len(result.RecentPrompts) > 0 {
+		sb.WriteString(fmt.Sprintf(" Recent prompts (%d):", len(result.RecentPrompts)))
+		for _, p := range result.RecentPrompts {
+			// Truncate long prompts for readability.
+			trunc := p
+			if len(trunc) > 120 {
+				trunc = trunc[:120] + "..."
+			}
+			sb.WriteString(" " + trunc + " |")
+		}
+		// Remove trailing pipe.
+		o := sb.String()
+		sb.Reset()
+		sb.WriteString(o[:len(o)-2])
+		sb.WriteString(".")
+	}
+	return truncateSummary(sb.String(), cfg.MaxTokens)
+}
+
+// truncateSummary applies a character-based cap approximating MaxTokens.
+// 1 token ≈ 4 chars, so MaxTokens*4 is the char limit.
+func truncateSummary(s string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return s
+	}
+	maxChars := maxTokens * 4
+	if len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars] + "..."
 }
 
 func (s *Server) handleAddPrompt(w http.ResponseWriter, r *http.Request) {
@@ -965,20 +1085,36 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
-	scope := r.URL.Query().Get("scope")
 
 	if err := s.checkProjectScope(r, project); err != nil {
 		jsonError(w, http.StatusForbidden, "project not allowed")
 		return
 	}
 
-	context, err := s.store.FormatContext(project, scope)
+	// Use config-driven defaults for token budget, matching handlePack behavior.
+	defaultBudget := s.packConfig.DefaultBudgetTokens
+	if defaultBudget <= 0 {
+		defaultBudget = 400
+	}
+	maxBudget := s.packConfig.MaxBudgetTokens
+	if maxBudget <= 0 {
+		maxBudget = 800
+	}
+	budgetTokens := queryInt(r, "budget_tokens", defaultBudget)
+	if budgetTokens > maxBudget {
+		budgetTokens = maxBudget
+	}
+
+	result, err := s.store.BuildPack(store.PackParams{
+		ProjectID:    project,
+		BudgetTokens: budgetTokens,
+	})
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]string{"context": context})
+	jsonResponse(w, http.StatusOK, map[string]string{"context": result.Pack})
 }
 
 func (s *Server) handleFileHistory(w http.ResponseWriter, r *http.Request) {

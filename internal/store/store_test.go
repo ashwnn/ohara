@@ -5291,3 +5291,248 @@ func TestInvalidateMemoryPreservesIngestedAt(t *testing.T) {
 		t.Errorf("ingested_at changed from %q to %q", ingestedBefore, memAfter.IngestedAt)
 	}
 }
+
+// ─── Lifecycle/Decay tests ────────────────────────────────────────────────────────
+
+func TestDecayMemories_DryRun(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create a memory with utility_weight > 0, old updated_at.
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID:     "ohara",
+		Kind:          MemoryKindPattern,
+		Title:         "Old pattern",
+		Body:          "An old pattern ready for decay",
+		UtilityWeight: 1.0,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	// Set updated_at to 100 days ago.
+	_, err = s.db.Exec(`UPDATE memory_items SET updated_at = datetime('now', '-100 days') WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("age memory: %v", err)
+	}
+
+	cfg := DefaultLifecycleDecayConfig()
+	cfg.MaxAgeDays = 60
+	cfg.DryRun = true
+	decayed, stale, err := s.DecayMemories(cfg)
+	if err != nil {
+		t.Fatalf("DecayMemories dry-run: %v", err)
+	}
+	if decayed != 1 {
+		t.Fatalf("expected 1 decayable, got %d", decayed)
+	}
+	if stale < 0 {
+		t.Fatalf("expected stale >= 0, got %d", stale)
+	}
+
+	// Utility should not have changed (dry run).
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.UtilityWeight != 1.0 {
+		t.Fatalf("dry-run: expected utility_weight=1.0, got %f", mem.UtilityWeight)
+	}
+}
+
+func TestDecayMemories_AppliesDecay(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           MemoryKindPattern,
+		Title:          "Old pattern to decay",
+		Body:           "Body",
+		UtilityWeight:  1.0,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	_, err = s.db.Exec(`UPDATE memory_items SET updated_at = datetime('now', '-100 days') WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("age memory: %v", err)
+	}
+
+	cfg := DefaultLifecycleDecayConfig()
+	cfg.MaxAgeDays = 60
+	cfg.DecayFactor = 0.5
+	decayed, _, err := s.DecayMemories(cfg)
+	if err != nil {
+		t.Fatalf("DecayMemories: %v", err)
+	}
+	if decayed != 1 {
+		t.Fatalf("expected 1 decayed, got %d", decayed)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.UtilityWeight != 0.5 {
+		t.Fatalf("expected utility_weight=0.5, got %f", mem.UtilityWeight)
+	}
+}
+
+func TestDecayMemories_ProtectsFoundational(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           MemoryKindDecision,
+		Title:          "Foundational decision",
+		Body:           "This should not decay",
+		UtilityWeight:  1.0,
+		Classification: "foundational",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	_, err = s.db.Exec(`UPDATE memory_items SET updated_at = datetime('now', '-200 days') WHERE id = ?`, id)
+	if err != nil {
+		t.Fatalf("age memory: %v", err)
+	}
+
+	cfg := DefaultLifecycleDecayConfig()
+	cfg.MaxAgeDays = 30
+	decayed, _, err := s.DecayMemories(cfg)
+	if err != nil {
+		t.Fatalf("DecayMemories: %v", err)
+	}
+	if decayed != 0 {
+		t.Fatalf("expected 0 decayed (foundational protected), got %d", decayed)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.UtilityWeight != 1.0 {
+		t.Fatalf("expected utility_weight=1.0 unchanged, got %f", mem.UtilityWeight)
+	}
+}
+
+func TestArchiveStaleCandidates_DryRun(t *testing.T) {
+	s := newTestStore(t)
+
+	// Manually insert a candidate memory with old updated_at.
+	_, err := s.db.Exec(`
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, source, status, classification, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-60 days'))`,
+		"ohara", "agent", "discovery", "project", "Stale candidate", "old", "consolidation", "candidate", "observational",
+	)
+	if err != nil {
+		t.Fatalf("insert stale candidate: %v", err)
+	}
+
+	count, err := s.ArchiveStaleCandidates(30, true)
+	if err != nil {
+		t.Fatalf("ArchiveStaleCandidates dry-run: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 stale candidate (dry-run), got %d", count)
+	}
+
+	// Status should still be 'candidate'.
+	var status string
+	s.db.QueryRow(`SELECT status FROM memory_items WHERE status = 'candidate'`).Scan(&status)
+	if status != "candidate" {
+		t.Fatal("dry-run should not change status")
+	}
+}
+
+func TestArchiveStaleCandidates_Executes(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.db.Exec(`
+		INSERT INTO memory_items (project_id, actor_id, kind, scope, title, body, source, status, classification, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-60 days'))`,
+		"ohara", "agent", "discovery", "project", "Stale candidate", "old", "consolidation", "candidate", "observational",
+	)
+	if err != nil {
+		t.Fatalf("insert stale candidate: %v", err)
+	}
+
+	count, err := s.ArchiveStaleCandidates(30, false)
+	if err != nil {
+		t.Fatalf("ArchiveStaleCandidates: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 archived, got %d", count)
+	}
+
+	var status string
+	s.db.QueryRow(`SELECT status FROM memory_items WHERE title = 'Stale candidate'`).Scan(&status)
+	if status != "archived" {
+		t.Fatalf("expected status=archived, got %q", status)
+	}
+}
+
+func TestArchiveLowUtilityMemories_Executes(t *testing.T) {
+	s := newTestStore(t)
+
+	// Create a memory with very low utility_weight, tactical classification.
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           MemoryKindPattern,
+		Title:          "Low utility pattern",
+		Body:           "Not useful anymore",
+		UtilityWeight:  0.01,
+		Classification: "tactical",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	count, err := s.ArchiveLowUtilityMemories(0.05, false)
+	if err != nil {
+		t.Fatalf("ArchiveLowUtilityMemories: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 archived, got %d", count)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.Status != "archived" {
+		t.Fatalf("expected status=archived, got %q", mem.Status)
+	}
+}
+
+func TestArchiveLowUtilityMemories_ProtectsFoundational(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.AddMemory(AddMemoryParams{
+		ProjectID:      "ohara",
+		Kind:           MemoryKindDecision,
+		Title:          "Foundational low utility",
+		Body:           "Still important despite low utility",
+		UtilityWeight:  0.01,
+		Classification: "foundational",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	count, err := s.ArchiveLowUtilityMemories(0.05, false)
+	if err != nil {
+		t.Fatalf("ArchiveLowUtilityMemories: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 archived (foundational protected), got %d", count)
+	}
+
+	mem, err := s.GetMemory(id)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem.Status != "active" {
+		t.Fatalf("expected status=active for foundational, got %q", mem.Status)
+	}
+}
