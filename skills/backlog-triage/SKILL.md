@@ -108,7 +108,7 @@ Look for maintainer responses (MEMBER or OWNER association) in issue comments. E
 
 - What the maintainer approved and how they framed it
 - What the maintainer redirected (Questions → Discussions, etc.)
-- What the maintainer scoped down ("Best place for it: add a section in DOCS.md")
+- What the maintainer scoped down ("Best place for it: add a section in docs/")
 - What the maintainer welcomed vs deferred ("I'll keep this issue open to track that")
 
 Use these patterns to calibrate your triage against the actual maintainer stance, not just the written philosophy.

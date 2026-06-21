@@ -6,6 +6,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -589,6 +590,10 @@ type Config struct {
 	RerankerBackend   string         // "none", "tfidf" (default), "ollama"
 	Scoring           ScoringWeights // tunable retrieval scoring weights
 	NoJobWorker       bool           // set true to skip the background job worker (e.g. bulk import)
+	MaxOpenConns      int            // optional SQLite connection cap for concurrent benchmark-style reads
+	SQLiteCacheSizeKB int            // optional per-connection page cache size in KiB (uses negative PRAGMA cache_size form)
+	SQLiteMmapSizeBytes int64        // optional PRAGMA mmap_size for large read-heavy scans
+	SQLiteTempStoreMemory bool       // optional PRAGMA temp_store=MEMORY
 }
 
 // ScoringWeights centralizes all retrieval scoring parameters.
@@ -953,6 +958,10 @@ func New(cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ohara: open database: %w", err)
 	}
+	if cfg.MaxOpenConns > 0 {
+		db.SetMaxOpenConns(cfg.MaxOpenConns)
+		db.SetMaxIdleConns(cfg.MaxOpenConns)
+	}
 
 	// SQLite performance pragmas
 	pragmas := []string{
@@ -964,9 +973,23 @@ func New(cfg Config) (*Store, error) {
 		// This ensures the WAL file doesn't grow unbounded on a busy machine.
 		"PRAGMA wal_autocheckpoint = 1000",
 	}
+	if cfg.SQLiteCacheSizeKB > 0 {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA cache_size = -%d", cfg.SQLiteCacheSizeKB))
+	}
+	if cfg.SQLiteMmapSizeBytes > 0 {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA mmap_size = %d", cfg.SQLiteMmapSizeBytes))
+	}
+	if cfg.SQLiteTempStoreMemory {
+		pragmas = append(pragmas, "PRAGMA temp_store = MEMORY")
+	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
 			return nil, fmt.Errorf("ohara: pragma %q: %w", p, err)
+		}
+	}
+	if cfg.MaxOpenConns > 1 && len(pragmas) > 0 {
+		if err := primeSQLiteConnections(db, cfg.MaxOpenConns, pragmas); err != nil {
+			return nil, fmt.Errorf("ohara: prime benchmark sqlite connections: %w", err)
 		}
 	}
 
@@ -983,6 +1006,36 @@ func New(cfg Config) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+func primeSQLiteConnections(db *sql.DB, count int, pragmas []string) error {
+	if count <= 1 || len(pragmas) == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 0, count)
+	for i := 0; i < count; i++ {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			for _, c := range conns {
+				c.Close()
+			}
+			return err
+		}
+		conns = append(conns, conn)
+		for _, pragma := range pragmas {
+			if _, err := conn.ExecContext(ctx, pragma); err != nil {
+				for _, c := range conns {
+					c.Close()
+				}
+				return err
+			}
+		}
+	}
+	for _, conn := range conns {
+		conn.Close()
+	}
+	return nil
 }
 
 func (s *Store) Close() error {

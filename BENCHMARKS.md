@@ -86,6 +86,7 @@ go run ./bench/cmd/run-retrieval/ -k 5
 # LongMemEval session-distance recall
 go test ./bench/longmemeval/ -v
 go run ./bench/cmd/run-longmemeval/ -k 5
+./bench/run-benchmark-build.sh
 
 # Token counting
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s
@@ -104,3 +105,8 @@ go run ./bench/cmd/run-longmemeval/ -k 5 -sweep
 ```
 
 Full details: [bench/README.md](bench/README.md), [bench/store/README.md](bench/store/README.md).
+
+For the official cleaned 500-question LongMemEval dataset, use the local
+benchmark-build path in [bench/run-benchmark-build.sh](bench/run-benchmark-build.sh).
+It defaults to `bench/longmemeval/data/longmemeval_s_cleaned.json` when present
+and keeps the exhaustive run out of GitHub Actions.

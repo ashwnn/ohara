@@ -380,3 +380,14 @@ git push origin v1
 ```
 
 The release workflow runs tests, builds archives for supported targets, writes `checksums.txt`, and uploads all artifacts to GitHub Releases.
+
+For exhaustive benchmark validation, use the local benchmark-build path instead
+of GitHub Actions:
+
+```bash
+./bench/run-benchmark-build.sh
+```
+
+That script uses the official cleaned LongMemEval dataset from
+`bench/longmemeval/data/longmemeval_s_cleaned.json` when present and runs both
+`fts5` and deterministic `hybrid` modes locally.

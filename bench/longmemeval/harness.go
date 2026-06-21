@@ -11,7 +11,7 @@
 // For public LongMemEval dataset integration:
 //   - ImportFromJSONL converts JSONL (newline-delimited JSON) records into a Fixture.
 //   - ImportFromJSONArray converts the LongMemEval cleaned JSON array format
-//     (evals/longmemeval/longmemeval_s_cleaned.json) into a Fixture.
+//     (bench/longmemeval/data/longmemeval_s_cleaned.json) into a Fixture.
 //
 // RunBenchmark auto-detects the input format by checking the first non-whitespace
 // byte: '[' routes to ImportFromJSONArray, anything else routes to ImportFromJSONL.
@@ -21,6 +21,7 @@ package longmemeval
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,8 +29,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ashwnn/ohara/internal/store"
@@ -70,6 +74,7 @@ type QuestionFixture struct {
 	DistanceSessions int      `json:"distance_sessions"`
 	Query            string   `json:"query"`
 	ExpectedFactKeys []string `json:"expected_fact_keys"`
+	ExpectedAnswers  []string `json:"expected_answers,omitempty"`
 	SessionID        string   `json:"session_id"`
 }
 
@@ -84,13 +89,13 @@ type ThresholdsFixture struct {
 	LatencyMaxMsMax  float64 `json:"latency_max_ms_max"`
 }
 
-// DefaultEvalsDatasetPath is the default path to the LongMemEval dataset
-// under the evals/ directory. When this file exists, the runner imports it
-// in preference to (or instead of) the built-in fixture.
+// DefaultEvalsDatasetPath is the default path to the checked-in LongMemEval
+// cleaned dataset used for local exhaustive benchmark runs. When this file
+// exists, the runner imports it in preference to the built-in fixture.
 //
 // The file may be either a JSON array (LongMemEval cleaned format) or
 // JSONL (newline-delimited JSON). The format is auto-detected.
-const DefaultEvalsDatasetPath = "evals/longmemeval/longmemeval_s_cleaned.json"
+const DefaultEvalsDatasetPath = "bench/longmemeval/data/longmemeval_s_cleaned.json"
 
 // RunOptions configures a benchmark run.
 type RunOptions struct {
@@ -103,6 +108,8 @@ type RunOptions struct {
 	DatasetPath     string     // optional path to JSONL dataset (see ImportFromJSONL)
 	QuestionsLimit  int        // if > 0, evaluate only first N questions (debug/diagnostic)
 	Sweep           bool       // when true, runs across all supported modes
+	Workers         int        // number of concurrent query workers (0 = runtime default)
+	JudgePassScore  float64    // minimum score needed for judge-based pass (0 = default)
 }
 
 // SweepMode defines a single mode config for LongMemEval sweeps.
@@ -271,6 +278,37 @@ func (j OverlapJudge) Score(query string, retrievedBodies []string, expectedBodi
 	return best
 }
 
+// ContainmentJudge measures how completely an expected answer is present in any
+// retrieved body without penalizing long transcript bodies.
+type ContainmentJudge struct{}
+
+func (j ContainmentJudge) Score(query string, retrievedBodies []string, expectedBodies []string) float64 {
+	if len(expectedBodies) == 0 || len(retrievedBodies) == 0 {
+		return 0
+	}
+	best := 0.0
+	for _, exp := range expectedBodies {
+		expTokens := tokenize(exp)
+		if len(expTokens) == 0 {
+			continue
+		}
+		for _, ret := range retrievedBodies {
+			retText := strings.ToLower(ret)
+			matched := 0
+			for _, token := range expTokens {
+				if strings.Contains(retText, token) {
+					matched++
+				}
+			}
+			score := float64(matched) / float64(len(expTokens))
+			if score > best {
+				best = score
+			}
+		}
+	}
+	return best
+}
+
 func tokenize(s string) []string {
 	parts := strings.Fields(strings.ToLower(s))
 	out := make([]string, 0, len(parts))
@@ -335,7 +373,7 @@ type HaystackMessage struct {
 }
 
 // LongMemEvalArrayRecord is a single record from the LongMemEval cleaned JSON
-// array dataset format (evals/longmemeval/longmemeval_s_cleaned.json).
+// array dataset format (bench/longmemeval/data/longmemeval_s_cleaned.json).
 type LongMemEvalArrayRecord struct {
 	QuestionID        string             `json:"question_id"`
 	QuestionType      string             `json:"question_type"`
@@ -458,7 +496,7 @@ func ImportFromJSONL(r io.Reader) (Fixture, ImportResult, error) {
 }
 
 // ImportFromJSONArray reads a JSON array of LongMemEval cleaned dataset records
-// (evals/longmemeval/longmemeval_s_cleaned.json) and converts them into a Fixture.
+// (bench/longmemeval/data/longmemeval_s_cleaned.json) and converts them into a Fixture.
 //
 // Each element of the JSON array is a LongMemEvalArrayRecord with fields like
 // question_id, question_type, question, answer, haystack_session_ids, and
@@ -482,6 +520,8 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 	}
 
 	seenSessions := map[string]int{} // session_id → order
+	factKeyBySessionID := map[string]string{}
+	factKeyByBodyHash := map[string]string{}
 	sessionOrder := 0
 
 	getOrCreateSession := func(sid string) int {
@@ -524,17 +564,30 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 			if strings.TrimSpace(body) == "" {
 				continue
 			}
-			key := fmt.Sprintf("%s_hs_%d", rec.QuestionID, i)
-			fixture.Facts = append(fixture.Facts, FactFixture{
-				Key:       key,
-				Title:     firstLine(body, 80),
-				Body:      body,
-				Kind:      "discovery",
-				Domain:    rec.QuestionType,
-				SessionID: sid,
-				Turn:      i + 1,
-			})
-			result.FactsCreated++
+			bodyHash := hashConversationBody(body)
+			key := ""
+			switch {
+			case sid != "" && factKeyBySessionID[sid] != "":
+				key = factKeyBySessionID[sid]
+			case factKeyByBodyHash[bodyHash] != "":
+				key = factKeyByBodyHash[bodyHash]
+			default:
+				key = fmt.Sprintf("%s_hs_%d", rec.QuestionID, i)
+				fixture.Facts = append(fixture.Facts, FactFixture{
+					Key:       key,
+					Title:     firstLine(body, 80),
+					Body:      body,
+					Kind:      "discovery",
+					Domain:    rec.QuestionType,
+					SessionID: sid,
+					Turn:      i + 1,
+				})
+				result.FactsCreated++
+				if sid != "" {
+					factKeyBySessionID[sid] = key
+				}
+				factKeyByBodyHash[bodyHash] = key
+			}
 
 			// If this session is an answer session, record the key.
 			for _, ansSid := range rec.AnswerSessionIDs {
@@ -551,6 +604,7 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 				expectedKeys = append(expectedKeys, keys...)
 			}
 		}
+		expectedAnswers := stringifyAnswers(rec.Answer)
 		// If no answer session fact was created, create a standalone answer fact.
 		if len(expectedKeys) == 0 {
 			key := fmt.Sprintf("%s_answer", rec.QuestionID)
@@ -570,17 +624,18 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 
 		// Create question session (synthetic, ordered after all haystack sessions).
 		qSid := rec.QuestionID + "_q"
-		qOrder := getOrCreateSession(qSid)
+		getOrCreateSession(qSid)
 
-		// Approximate distance in sessions.
-		distSess := qOrder - 1
-		if distSess < 1 {
-			distSess = 1
+		// Approximate distance from the latest answer-bearing session to the
+		// query point within this record's local haystack timeline.
+		distSess := 1
+		if gap, ok := answerGapWithinRecord(rec); ok {
+			distSess = gap
 		}
 		distance := "near"
-		if distSess > 10 {
+		if distSess > 3 {
 			distance = "far"
-		} else if distSess > 3 {
+		} else if distSess > 1 {
 			distance = "medium"
 		}
 
@@ -591,6 +646,7 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 			DistanceSessions: distSess,
 			Query:            rec.Question,
 			ExpectedFactKeys: expectedKeys,
+			ExpectedAnswers:  expectedAnswers,
 			SessionID:        qSid,
 		})
 		result.QuestionsCreated++
@@ -605,23 +661,79 @@ func ImportFromJSONArray(r io.Reader) (Fixture, ImportResult, error) {
 // buildConversationBody concatenates haystack session messages into a single
 // searchable body string.
 func buildConversationBody(messages []HaystackMessage) string {
-	var b strings.Builder
-	for i, msg := range messages {
-		if i > 0 {
-			b.WriteString("\n")
+	parts := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		content := normalizeConversationText(msg.Content)
+		if content == "" {
+			continue
 		}
-		b.WriteString(strings.ToUpper(msg.Role[:1]) + msg.Role[1:])
-		b.WriteString(": ")
-		b.WriteString(msg.Content)
+		parts = append(parts, content)
 	}
-	return b.String()
+	return strings.Join(parts, "\n")
+}
+
+func normalizeConversationText(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+func hashConversationBody(body string) string {
+	return fmt.Sprintf("%x", sha1.Sum([]byte(strings.ToLower(body))))
+}
+
+func stringifyAnswers(answer interface{}) []string {
+	switch v := answer.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s := strings.TrimSpace(fmt.Sprintf("%v", item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		s := strings.TrimSpace(fmt.Sprintf("%v", answer))
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	}
+}
+
+func answerGapWithinRecord(rec LongMemEvalArrayRecord) (int, bool) {
+	if len(rec.HaystackSessionIDs) == 0 || len(rec.AnswerSessionIDs) == 0 {
+		return 0, false
+	}
+	answerIndex := -1
+	for _, ansSid := range rec.AnswerSessionIDs {
+		for i, sid := range rec.HaystackSessionIDs {
+			if sid == ansSid && i > answerIndex {
+				answerIndex = i
+			}
+		}
+	}
+	if answerIndex < 0 {
+		return 0, false
+	}
+	gap := len(rec.HaystackSessionIDs) - 1 - answerIndex
+	if gap < 1 {
+		gap = 1
+	}
+	return gap, true
 }
 
 // firstLine returns the first line of s, truncated to maxLen runes.
 func firstLine(s string, maxLen int) string {
+	original := s
+	s = strings.TrimSpace(s)
+	s = strings.TrimLeft(s, " .,:;!?-")
 	idx := strings.IndexAny(s, "\n.")
-	if idx >= 0 {
+	if idx > 0 {
 		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = strings.TrimSpace(strings.TrimLeft(normalizeConversationText(original), " .,:;!?-"))
 	}
 	return truncateText(s, maxLen)
 }
@@ -660,14 +772,17 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	if opts.K <= 0 {
 		opts.K = 5
 	}
+	fixturePathExplicit := strings.TrimSpace(opts.FixturePath) != ""
 	if opts.FixturePath == "" {
 		opts.FixturePath = filepath.Join("bench", "longmemeval", "fixture.json")
 	}
 
-	// If DatasetPath is set and the dataset file exists, import from it instead.
-	// The format (JSON array or JSONL) is auto-detected from the first byte.
+	// If DatasetPath is explicitly set, import from it instead. When the caller
+	// leaves DatasetPath empty, only auto-use the checked-in official dataset when
+	// the default fixture path is also in use. This keeps explicit fixture runs
+	// deterministic and prevents the local gate from silently switching datasets.
 	datasetPath := strings.TrimSpace(opts.DatasetPath)
-	if datasetPath == "" {
+	if datasetPath == "" && !fixturePathExplicit {
 		datasetPath = DefaultEvalsDatasetPath
 	}
 	var importedFromDataset bool
@@ -705,6 +820,9 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			return Report{}, err
 		}
 	}
+	if opts.Judge == nil && fixtureHasExpectedAnswers(fixture) {
+		opts.Judge = ContainmentJudge{}
+	}
 	thresholds := withDefaultThresholds(fixture.Thresholds)
 
 	// Determine retrieval mode.
@@ -718,13 +836,15 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 
 	// Seed store with facts.
 	seedStart := time.Now()
-	s, keyToID, err := seedStore(fixture, retrievalMode)
+	workers := resolveWorkerCount(opts.Workers)
+	s, keyToID, err := seedStore(fixture, retrievalMode, workers)
 	if err != nil {
 		return Report{}, err
 	}
 	defer s.Close()
 	seedDuration := time.Since(seedStart)
 	fmt.Fprintf(os.Stderr, "[ohara-bench] seeding complete in %v\n", seedDuration.Round(time.Millisecond))
+	idToKey := invertKeyMap(keyToID)
 
 	questions := fixture.Questions
 	if opts.QuestionsLimit > 0 && opts.QuestionsLimit < len(questions) {
@@ -736,7 +856,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	distanceAggs := map[string]*questionAgg{}
 	categoryAggs := map[string]*questionAgg{}
 	failures := make([]QuestionFailure, 0, 8)
-	caseResults := make([]CaseResult, 0, len(questions))
+	caseResults := make([]CaseResult, len(questions))
 
 	totalQuestions := len(questions)
 	queryStart := time.Now()
@@ -745,62 +865,37 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 		progressEvery = 50 // but cap at every 50 for very large datasets
 	}
 	fmt.Fprintf(os.Stderr, "[ohara-bench] evaluating %d questions...\n", totalQuestions)
+	factBodyByKey := mapFactBodiesByKey(fixture.Facts)
+	var completed atomic.Int64
+	workCh := make(chan int)
+	var wg sync.WaitGroup
 
-	for qi, q := range questions {
+	evaluateQuestion := func(q QuestionFixture) CaseResult {
 		caseStart := time.Now()
-
-		// Run search.
 		results, searchErr := s.SearchMemories(q.Query, "longmemeval", "", "", "", store.MemoryStatusActive, opts.K, "")
 		durationMs := float64(time.Since(caseStart)) / float64(time.Millisecond)
-
-		// Query-phase progress: log every progressEvery questions with elapsed and ETA.
-		if (qi+1)%progressEvery == 0 || qi == totalQuestions-1 {
-			elapsed := time.Since(queryStart)
-			avgPerQ := elapsed / time.Duration(qi+1)
-			remaining := avgPerQ * time.Duration(totalQuestions-(qi+1))
-			fmt.Fprintf(os.Stderr, "[ohara-bench] querying: %d/%d (%.0f%%) | elapsed %v | ETA %v\n",
-				qi+1, totalQuestions,
-				float64(qi+1)/float64(totalQuestions)*100,
-				elapsed.Round(time.Millisecond),
-				remaining.Round(time.Second))
-		}
+		expectedIDs := keysToIDs(keyToID, q.ExpectedFactKeys)
 
 		if searchErr != nil {
-			cr := CaseResult{
+			return CaseResult{
 				QuestionID:   q.ID,
 				Category:     q.Category,
 				Distance:     q.Distance,
 				DistanceSess: q.DistanceSessions,
 				Pass:         false,
 				Reason:       searchErr.Error(),
+				ExpectedIDs:  expectedIDs,
 				ExpectedKeys: q.ExpectedFactKeys,
 				DurationMs:   durationMs,
 				Query:        q.Query,
 			}
-			caseResults = append(caseResults, cr)
-			failures = append(failures, QuestionFailure{
-				QuestionID:   q.ID,
-				Category:     q.Category,
-				Distance:     q.Distance,
-				Query:        q.Query,
-				ExpectedKeys: q.ExpectedFactKeys,
-				Reason:       searchErr.Error(),
-			})
-			continue
 		}
 
-		expectedIDs := keysToIDs(keyToID, q.ExpectedFactKeys)
 		top := topIDs(results, opts.K)
-		topKeys := idsToKeys(keyToID, top)
-
-		hits := countHitsInTop(top, expectedIDs)
-		passed := hits > 0
+		topKeys := idsToKeys(idToKey, top)
+		passed := countHitsInTop(top, expectedIDs) > 0
 		reason := ""
-		if !passed {
-			reason = fmt.Sprintf("no expected facts in top-%d results", opts.K)
-		}
 
-		// Compute judge score if judge is enabled.
 		var judgeScore float64
 		var topBodies []string
 		if opts.Judge != nil {
@@ -811,19 +906,19 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 				}
 				topBodies = append(topBodies, item.Body)
 			}
-			expectedBodies := make([]string, 0, len(q.ExpectedFactKeys))
-			for _, key := range q.ExpectedFactKeys {
-				for _, f := range fixture.Facts {
-					if f.Key == key {
-						expectedBodies = append(expectedBodies, f.Body)
-						break
-					}
-				}
-			}
+			expectedBodies := expectedBodiesForQuestion(q, factBodyByKey)
 			judgeScore = opts.Judge.Score(q.Query, topBodies, expectedBodies)
 		}
+		if len(q.ExpectedAnswers) > 0 && opts.Judge != nil {
+			passed = judgeScore >= judgePassScore(opts)
+			if !passed {
+				reason = fmt.Sprintf("judge score %.3f < %.3f", judgeScore, judgePassScore(opts))
+			}
+		} else if !passed {
+			reason = fmt.Sprintf("no expected facts in top-%d results", opts.K)
+		}
 
-		cr := CaseResult{
+		return CaseResult{
 			QuestionID:   q.ID,
 			Category:     q.Category,
 			Distance:     q.Distance,
@@ -839,26 +934,51 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 			JudgeScore:   judgeScore,
 			TopBodies:    topBodies,
 		}
-		caseResults = append(caseResults, cr)
+	}
 
-		// Update aggregators.
-		updateAggFromResults(globalAgg, passed, results, expectedIDs, opts.K)
-		if agg := getOrCreateAgg(distanceAggs, q.Distance); agg != nil {
-			updateAggFromResults(agg, passed, results, expectedIDs, opts.K)
-		}
-		if agg := getOrCreateAgg(categoryAggs, q.Category); agg != nil {
-			updateAggFromResults(agg, passed, results, expectedIDs, opts.K)
-		}
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for qi := range workCh {
+				caseResults[qi] = evaluateQuestion(questions[qi])
+				done := completed.Add(1)
+				if done%int64(progressEvery) == 0 || done == int64(totalQuestions) {
+					elapsed := time.Since(queryStart)
+					avgPerQ := elapsed / time.Duration(done)
+					remaining := avgPerQ * time.Duration(totalQuestions-int(done))
+					fmt.Fprintf(os.Stderr, "[ohara-bench] querying: %d/%d (%.0f%%) | elapsed %v | ETA %v\n",
+						done, totalQuestions,
+						float64(done)/float64(totalQuestions)*100,
+						elapsed.Round(time.Millisecond),
+						remaining.Round(time.Second))
+				}
+			}
+		}()
+	}
+	for qi := range questions {
+		workCh <- qi
+	}
+	close(workCh)
+	wg.Wait()
 
-		if !passed {
+	for _, cr := range caseResults {
+		updateAggFromTopIDs(globalAgg, cr.Pass, cr.TopIDs, cr.ExpectedIDs, opts.K)
+		if agg := getOrCreateAgg(distanceAggs, cr.Distance); agg != nil {
+			updateAggFromTopIDs(agg, cr.Pass, cr.TopIDs, cr.ExpectedIDs, opts.K)
+		}
+		if agg := getOrCreateAgg(categoryAggs, cr.Category); agg != nil {
+			updateAggFromTopIDs(agg, cr.Pass, cr.TopIDs, cr.ExpectedIDs, opts.K)
+		}
+		if cr.Reason != "" {
 			failures = append(failures, QuestionFailure{
-				QuestionID:   q.ID,
-				Category:     q.Category,
-				Distance:     q.Distance,
-				Query:        q.Query,
-				ExpectedKeys: q.ExpectedFactKeys,
-				ActualKeys:   topKeys,
-				Reason:       reason,
+				QuestionID:   cr.QuestionID,
+				Category:     cr.Category,
+				Distance:     cr.Distance,
+				Query:        cr.Query,
+				ExpectedKeys: cr.ExpectedKeys,
+				ActualKeys:   cr.TopKeys,
+				Reason:       cr.Reason,
 			})
 		}
 	}
@@ -869,7 +989,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 
 	report := Report{
 		FixtureDescription: fixture.Description,
-		TotalQuestions:     len(fixture.Questions),
+		TotalQuestions:     len(questions),
 		PassedQuestions:    globalAgg.passed,
 		FailedQuestions:    globalAgg.count - globalAgg.passed,
 		OverallMetrics:     aggToMetrics(globalAgg),
@@ -914,7 +1034,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 // seedStore creates a temporary store, inserts all facts, and returns a key→ID map.
 // When mode is "hybrid", configures the store for hybrid retrieval with deterministic
 // test embeddings (no Ollama dependency).
-func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, error) {
+func seedStore(fixture Fixture, mode string, workers int) (*store.Store, map[string]int64, error) {
 	tmp, err := os.MkdirTemp("", "ohara-bench-longmemeval-")
 	if err != nil {
 		return nil, nil, err
@@ -922,6 +1042,10 @@ func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, er
 
 	cfg := store.FallbackConfig(tmp)
 	cfg.NoJobWorker = true
+	cfg.MaxOpenConns = workers
+	cfg.SQLiteCacheSizeKB = 200 * 1024
+	cfg.SQLiteMmapSizeBytes = 512 << 20
+	cfg.SQLiteTempStoreMemory = true
 	if strings.EqualFold(mode, "hybrid") {
 		cfg.RetrievalMode = "hybrid"
 		cfg.EmbeddingBackend = "deterministic-test"
@@ -963,7 +1087,7 @@ func seedStore(fixture Fixture, mode string) (*store.Store, map[string]int64, er
 	return s, keyToID, nil
 }
 
-func updateAggFromResults(agg *questionAgg, passed bool, results []store.MemoryItem, expectedIDs []int64, k int) {
+func updateAggFromTopIDs(agg *questionAgg, passed bool, topIDs []int64, expectedIDs []int64, k int) {
 	if agg == nil {
 		return
 	}
@@ -972,7 +1096,7 @@ func updateAggFromResults(agg *questionAgg, passed bool, results []store.MemoryI
 		agg.passed++
 	}
 
-	firstRank := firstRelevantRank(results, expectedIDs)
+	firstRank := firstRelevantRank(topIDs, expectedIDs)
 	if firstRank == 1 {
 		agg.hit1++
 	}
@@ -985,7 +1109,7 @@ func updateAggFromResults(agg *questionAgg, passed bool, results []store.MemoryI
 	if firstRank > 0 {
 		agg.rrSum += 1.0 / float64(firstRank)
 	}
-	agg.ndcgSum += ndcgAtK(results, expectedIDs, minInt(5, k))
+	agg.ndcgSum += ndcgAtK(topIDs, expectedIDs, minInt(5, k))
 }
 
 func aggToMetrics(agg *questionAgg) Metrics {
@@ -1128,11 +1252,7 @@ func keysToIDs(keyToID map[string]int64, keys []string) []int64 {
 	return out
 }
 
-func idsToKeys(keyToID map[string]int64, ids []int64) []string {
-	idToKey := map[int64]string{}
-	for k, v := range keyToID {
-		idToKey[v] = k
-	}
+func idsToKeys(idToKey map[int64]string, ids []int64) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if key, ok := idToKey[id]; ok {
@@ -1163,29 +1283,29 @@ func countHitsInTop(top []int64, expected []int64) int {
 	return count
 }
 
-func firstRelevantRank(results []store.MemoryItem, expectedIDs []int64) int {
+func firstRelevantRank(topIDs []int64, expectedIDs []int64) int {
 	if len(expectedIDs) == 0 {
 		return 0
 	}
-	for i, item := range results {
-		if containsInt64(expectedIDs, item.ID) {
+	for i, id := range topIDs {
+		if containsInt64(expectedIDs, id) {
 			return i + 1
 		}
 	}
 	return 0
 }
 
-func ndcgAtK(results []store.MemoryItem, expectedIDs []int64, k int) float64 {
+func ndcgAtK(topIDs []int64, expectedIDs []int64, k int) float64 {
 	if k <= 0 || len(expectedIDs) == 0 {
 		return 0
 	}
-	if k > len(results) {
-		k = len(results)
+	if k > len(topIDs) {
+		k = len(topIDs)
 	}
 	dcg := 0.0
 	for i := 0; i < k; i++ {
 		relevant := 0.0
-		if containsInt64(expectedIDs, results[i].ID) {
+		if containsInt64(expectedIDs, topIDs[i]) {
 			relevant = 1.0
 		}
 		if relevant > 0 {
@@ -1223,6 +1343,65 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func invertKeyMap(keyToID map[string]int64) map[int64]string {
+	idToKey := make(map[int64]string, len(keyToID))
+	for key, id := range keyToID {
+		idToKey[id] = key
+	}
+	return idToKey
+}
+
+func mapFactBodiesByKey(facts []FactFixture) map[string]string {
+	out := make(map[string]string, len(facts))
+	for _, fact := range facts {
+		out[fact.Key] = fact.Body
+	}
+	return out
+}
+
+func expectedBodiesForKeys(factBodyByKey map[string]string, keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if body := factBodyByKey[key]; body != "" {
+			out = append(out, body)
+		}
+	}
+	return out
+}
+
+func expectedBodiesForQuestion(q QuestionFixture, factBodyByKey map[string]string) []string {
+	if len(q.ExpectedAnswers) > 0 {
+		return append([]string(nil), q.ExpectedAnswers...)
+	}
+	return expectedBodiesForKeys(factBodyByKey, q.ExpectedFactKeys)
+}
+
+func resolveWorkerCount(explicit int) int {
+	if explicit > 0 {
+		return explicit
+	}
+	if n := runtime.GOMAXPROCS(0); n > 0 {
+		return n
+	}
+	return 1
+}
+
+func judgePassScore(opts RunOptions) float64 {
+	if opts.JudgePassScore > 0 {
+		return opts.JudgePassScore
+	}
+	return 0.8
+}
+
+func fixtureHasExpectedAnswers(f Fixture) bool {
+	for _, q := range f.Questions {
+		if len(q.ExpectedAnswers) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func percentileSorted(sorted []float64, p float64) float64 {

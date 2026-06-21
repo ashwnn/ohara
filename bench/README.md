@@ -119,17 +119,55 @@ Run standalone harness:
 go run ./bench/cmd/run-longmemeval/ -k 5
 go run ./bench/cmd/run-longmemeval/ -k 5 -json
 go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
+go run ./bench/cmd/run-longmemeval/ -k 5 -workers 4
 # Ollama LLM-based judge (requires local Ollama + model):
 go run ./bench/cmd/run-longmemeval/ -k 5 -ollama-judge -ollama-model qwen3:0.6b
-# Use external JSONL dataset from evals/:
-go run ./bench/cmd/run-longmemeval/ -k 5 -dataset evals/longmemeval/data.jsonl
+# Use the official cleaned 500-question dataset explicitly:
+go run ./bench/cmd/run-longmemeval/ -k 5 -dataset bench/longmemeval/data/longmemeval_s_cleaned.json
 ```
+
+When `bench/longmemeval/data/longmemeval_s_cleaned.json` exists, the runner
+uses it by default for local exhaustive runs. If it is missing, the harness
+falls back to the built-in deterministic fixture.
 
 Sweep mode (compare FTS5 + hybrid):
 
 ```bash
 go run ./bench/cmd/run-longmemeval/ -k 5 -sweep
 go run ./bench/cmd/run-longmemeval/ -k 5 -sweep -json
+```
+
+### Local Benchmark Build
+
+Run the exhaustive local benchmark-build path instead of pushing this workload
+into GitHub Actions:
+
+```bash
+./bench/run-benchmark-build.sh
+```
+
+This script:
+
+- builds a stripped local benchmark binary with a repo-safe Go cache/tmp dir
+- runs the lightweight deterministic LongMemEval fixture as the enforced gate
+- runs official LongMemEval 500Q in `fts5` as a report-only pass
+- runs official LongMemEval 500Q in deterministic `hybrid` as a report-only pass
+
+For the official cleaned dataset, the harness uses an answer-containment judge by
+default. That keeps the public dataset in answer-aware reporting mode instead of
+treating it as exact session-ID retrieval.
+
+Useful overrides:
+
+```bash
+# Dry-run a smaller slice while iterating locally
+OHARA_LONGMEMEVAL_QUESTIONS_LIMIT=25 ./bench/run-benchmark-build.sh
+
+# Pin worker count explicitly
+OHARA_LONGMEMEVAL_WORKERS=4 ./bench/run-benchmark-build.sh
+
+# Point at a different cleaned dataset file
+OHARA_LONGMEMEVAL_DATASET=bench/longmemeval/data/longmemeval_m_cleaned.json ./bench/run-benchmark-build.sh
 ```
 
 The harness report includes:
@@ -168,7 +206,6 @@ The JSON includes a `CaseResults` array with per-question fields:
 
 ### Fixture Design
 
-The baseline fixture (`bench/longmemeval/fixture.json`) contains 20 facts and 20 questions
-spanning domains: auth, database, api, infra. This is a self-contained deterministic spine
-with no external dataset dependency. T2+ can extend with the full LongMemEval public dataset
-and judge-model integration.
+The baseline fixture (`bench/longmemeval/fixture.json`) is still the lightweight
+deterministic spine for tests. The official cleaned datasets now live under
+`bench/longmemeval/data/` for local exhaustive runs without depending on GitHub CI.

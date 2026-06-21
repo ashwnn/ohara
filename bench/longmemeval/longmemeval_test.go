@@ -560,6 +560,9 @@ func TestImportFromJSONArrayBasic(t *testing.T) {
 	if len(q0.ExpectedFactKeys) != 1 {
 		t.Errorf("q[0].expected_fact_keys = %v, want [e47becba_hs_0]", q0.ExpectedFactKeys)
 	}
+	if len(q0.ExpectedAnswers) != 1 || q0.ExpectedAnswers[0] != "Business Administration" {
+		t.Errorf("q[0].expected_answers = %v, want [Business Administration]", q0.ExpectedAnswers)
+	}
 	// Answer session sharegpt_yywfIrx_0 maps to fact key e47becba_hs_0.
 	if q0.ExpectedFactKeys[0] != "e47becba_hs_0" {
 		t.Errorf("q[0].expected_fact_keys[0] = %q, want e47becba_hs_0", q0.ExpectedFactKeys[0])
@@ -569,12 +572,105 @@ func TestImportFromJSONArrayBasic(t *testing.T) {
 	if !strings.Contains(factBody, "fox") {
 		t.Errorf("fact[0] body should contain 'fox', got %q", factBody)
 	}
-	if !strings.Contains(factBody, "User:") {
-		t.Errorf("fact[0] body should contain 'User:', got %q", factBody)
+	if strings.Contains(factBody, "User:") {
+		t.Errorf("fact[0] body should not contain role prefixes, got %q", factBody)
 	}
 	// Verify sessions were registered.
 	if len(fixture.Sessions) < 2 {
 		t.Errorf("expected at least 2 sessions, got %d", len(fixture.Sessions))
+	}
+	if q0.Distance != "near" {
+		t.Errorf("q[0].distance = %q, want near", q0.Distance)
+	}
+}
+
+func TestImportFromJSONArrayDeduplicatesRepeatedHaystackSessions(t *testing.T) {
+	input := `[
+  {
+    "question_id": "q1",
+    "question_type": "test",
+    "question": "where did I study?",
+    "answer": "University",
+    "answer_session_ids": ["shared_1"],
+    "haystack_dates": ["2023/05/20"],
+    "haystack_session_ids": ["shared_1"],
+    "haystack_sessions": [
+      [
+        {"role":"user","content":"I studied business administration."},
+        {"role":"assistant","content":"You graduated with a business degree."}
+      ]
+    ]
+  },
+  {
+    "question_id": "q2",
+    "question_type": "test",
+    "question": "what degree did I finish?",
+    "answer": "Business",
+    "answer_session_ids": ["shared_1"],
+    "haystack_dates": ["2023/05/21"],
+    "haystack_session_ids": ["shared_1"],
+    "haystack_sessions": [
+      [
+        {"role":"user","content":"I studied business administration."},
+        {"role":"assistant","content":"You graduated with a business degree."}
+      ]
+    ]
+  }
+]`
+
+	fixture, result, err := ImportFromJSONArray(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if result.FactsCreated != 1 {
+		t.Fatalf("facts created = %d, want 1", result.FactsCreated)
+	}
+	if len(fixture.Facts) != 1 {
+		t.Fatalf("fixture facts = %d, want 1", len(fixture.Facts))
+	}
+	if got, want := fixture.Questions[0].ExpectedFactKeys[0], fixture.Questions[1].ExpectedFactKeys[0]; got != want {
+		t.Fatalf("expected reused fact key, got %q and %q", got, want)
+	}
+}
+
+func TestBuildConversationBodyNormalizesWhitespaceAndRoles(t *testing.T) {
+	body := buildConversationBody([]HaystackMessage{
+		{Role: "user", Content: "  What   degree did I graduate with?  "},
+		{Role: "assistant", Content: "\nBusiness   Administration \n"},
+	})
+
+	if strings.Contains(body, "User:") || strings.Contains(body, "Assistant:") {
+		t.Fatalf("body should not include role labels: %q", body)
+	}
+	if strings.Contains(body, "  ") {
+		t.Fatalf("body should normalize repeated whitespace: %q", body)
+	}
+	if !strings.Contains(body, "Business Administration") {
+		t.Fatalf("body should preserve semantic content: %q", body)
+	}
+}
+
+func TestContainmentJudgeFindsAnswerInsideLongTranscript(t *testing.T) {
+	score := ContainmentJudge{}.Score(
+		"What degree did I graduate with?",
+		[]string{"I studied for years and eventually graduated with a Business Administration degree after moving cities."},
+		[]string{"Business Administration"},
+	)
+	if score < 1.0 {
+		t.Fatalf("containment score = %.3f, want 1.0", score)
+	}
+}
+
+func TestFirstLineSkipsLeadingPunctuation(t *testing.T) {
+	title := firstLine(". What happens if a candidate placed by OODA Team doesn't work out?\n\nMore text follows.", 80)
+	if title == "" {
+		t.Fatal("title should not be empty")
+	}
+	if strings.HasPrefix(title, ".") {
+		t.Fatalf("title should trim leading punctuation: %q", title)
+	}
+	if !strings.Contains(title, "What happens if a candidate") {
+		t.Fatalf("unexpected title: %q", title)
 	}
 }
 
@@ -689,5 +785,54 @@ func TestImportFromJSONArrayRunBenchmark(t *testing.T) {
 	}
 	if len(report.CaseResults) != 2 {
 		t.Errorf("case results = %d, want 2", len(report.CaseResults))
+	}
+}
+
+func TestRunBenchmarkParallelMatchesSerial(t *testing.T) {
+	opts := RunOptions{
+		FixturePath:     fixturePath(),
+		K:               5,
+		Enforce:         false,
+		SkipLatencyGate: true,
+	}
+
+	serial, err := RunBenchmark(opts)
+	if err != nil {
+		t.Fatalf("serial benchmark failed: %v", err)
+	}
+
+	parallel, err := RunBenchmark(RunOptions{
+		FixturePath:     fixturePath(),
+		K:               5,
+		Enforce:         false,
+		SkipLatencyGate: true,
+		Workers:         4,
+	})
+	if err != nil {
+		t.Fatalf("parallel benchmark failed: %v", err)
+	}
+
+	if serial.TotalQuestions != parallel.TotalQuestions {
+		t.Fatalf("total questions mismatch: %d != %d", serial.TotalQuestions, parallel.TotalQuestions)
+	}
+	if serial.PassedQuestions != parallel.PassedQuestions {
+		t.Fatalf("passed questions mismatch: %d != %d", serial.PassedQuestions, parallel.PassedQuestions)
+	}
+	if len(serial.CaseResults) != len(parallel.CaseResults) {
+		t.Fatalf("case results length mismatch: %d != %d", len(serial.CaseResults), len(parallel.CaseResults))
+	}
+	for i := range serial.CaseResults {
+		if serial.CaseResults[i].QuestionID != parallel.CaseResults[i].QuestionID {
+			t.Fatalf("question order mismatch at %d: %q != %q", i, serial.CaseResults[i].QuestionID, parallel.CaseResults[i].QuestionID)
+		}
+		if serial.CaseResults[i].Pass != parallel.CaseResults[i].Pass {
+			t.Fatalf("pass mismatch for %s: %v != %v", serial.CaseResults[i].QuestionID, serial.CaseResults[i].Pass, parallel.CaseResults[i].Pass)
+		}
+		if strings.Join(serial.CaseResults[i].ExpectedKeys, ",") != strings.Join(parallel.CaseResults[i].ExpectedKeys, ",") {
+			t.Fatalf("expected keys mismatch for %s", serial.CaseResults[i].QuestionID)
+		}
+		if strings.Join(serial.CaseResults[i].TopKeys, ",") != strings.Join(parallel.CaseResults[i].TopKeys, ",") {
+			t.Fatalf("top keys mismatch for %s", serial.CaseResults[i].QuestionID)
+		}
 	}
 }

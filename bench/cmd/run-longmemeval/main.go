@@ -6,6 +6,7 @@
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -json
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -judge -mode hybrid
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency
+//	go run ./bench/cmd/run-longmemeval/ -k 5 -dataset bench/longmemeval/data/longmemeval_s_cleaned.json
 //	go run ./bench/cmd/run-longmemeval/ -questions-limit 50      (debug: first 50 questions only)
 //	go run ./bench/cmd/run-longmemeval/ -k 5 -json 2>&1          (stderr has live progress)
 package main
@@ -24,7 +25,7 @@ import (
 
 func main() {
 	fixturePath := flag.String("fixture", filepath.Join("bench", "longmemeval", "fixture.json"), "path to LongMemEval fixture JSON")
-	datasetPath := flag.String("dataset", "", "path to LongMemEval JSONL dataset (default: evals/longmemeval/data.jsonl)")
+	datasetPath := flag.String("dataset", "", "path to LongMemEval dataset (default: bench/longmemeval/data/longmemeval_s_cleaned.json when present)")
 	k := flag.Int("k", 5, "top-k for retrieval")
 	enforce := flag.Bool("enforce", true, "enforce threshold gates and exit non-zero on regression")
 	skipLatency := flag.Bool("skip-latency", false, "skip latency SLO gates")
@@ -34,6 +35,7 @@ func main() {
 	ollamaModel := flag.String("ollama-model", longmemevaljudge.DefaultJudgeModel, "Ollama model name for judge")
 	ollamaURL := flag.String("ollama-url", longmemevaljudge.DefaultOllamaURL, "Ollama API URL")
 	mode := flag.String("mode", "", "retrieval mode: fts5 (default) or hybrid")
+	workers := flag.Int("workers", 0, "number of concurrent query workers (default: GOMAXPROCS)")
 	questionsLimit := flag.Int("questions-limit", 0, "evaluate only first N questions (0 = all, for debug/diagnostic runs)")
 	sweep := flag.Bool("sweep", false, "run across all supported modes and compare")
 	flag.Parse()
@@ -46,6 +48,7 @@ func main() {
 			Enforce:         false,
 			SkipLatencyGate: true,
 			QuestionsLimit:  *questionsLimit,
+			Workers:         *workers,
 		}
 		results := longmemeval.RunLmeSweep(baseOpts, nil)
 		fmt.Println("Ohara LongMemEval benchmark — sweep results")
@@ -85,6 +88,7 @@ func main() {
 		SkipLatencyGate: *skipLatency,
 		Mode:            strings.TrimSpace(*mode),
 		QuestionsLimit:  *questionsLimit,
+		Workers:         *workers,
 	}
 	if *useJudge {
 		opts.Judge = longmemeval.OverlapJudge{}
@@ -120,10 +124,7 @@ func main() {
 	fmt.Printf("Fixture: %s\n", report.FixtureDescription)
 	fmt.Printf("Mode: %s\n", report.RetrievalMode)
 	if report.JudgeEnabled {
-		label := "overlap"
-		if *useOllamaJudge {
-			label = fmt.Sprintf("ollama/%s", *ollamaModel)
-		}
+		label := judgeLabel(report, *useOllamaJudge, *ollamaModel)
 		fmt.Printf("Judge: %s (mean score: %.3f)\n", label, report.JudgeMeanScore)
 	}
 	fmt.Printf("Questions: %d\n", report.TotalQuestions)
@@ -185,4 +186,14 @@ func main() {
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+func judgeLabel(report longmemeval.Report, useOllama bool, ollamaModel string) string {
+	if useOllama {
+		return fmt.Sprintf("ollama/%s", ollamaModel)
+	}
+	if strings.Contains(strings.ToLower(report.FixtureDescription), "json array dataset") {
+		return "containment"
+	}
+	return "overlap"
 }
