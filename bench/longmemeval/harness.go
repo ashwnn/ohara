@@ -1380,14 +1380,25 @@ func expectedBodiesForQuestion(q QuestionFixture, factBodyByKey map[string]strin
 	return expectedBodiesForKeys(factBodyByKey, q.ExpectedFactKeys)
 }
 
+// maxAutoWorkers caps the auto-selected query worker count. The pure-Go SQLite
+// engine (modernc.org/sqlite) contends heavily on shared page-cache/mmap state
+// for concurrent FTS5 reads: throughput peaks around 4 readers and degrades
+// beyond that (8 workers measured slower than 4). Capping avoids that regression
+// while still getting the ~2x parallel speedup. An explicit -workers flag overrides.
+const maxAutoWorkers = 4
+
 func resolveWorkerCount(explicit int) int {
 	if explicit > 0 {
 		return explicit
 	}
-	if n := runtime.GOMAXPROCS(0); n > 0 {
-		return n
+	n := runtime.GOMAXPROCS(0)
+	if n <= 0 {
+		return 1
 	}
-	return 1
+	if n > maxAutoWorkers {
+		return maxAutoWorkers
+	}
+	return n
 }
 
 func judgePassScore(opts RunOptions) float64 {
