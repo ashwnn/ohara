@@ -1918,3 +1918,82 @@ func (s *Store) ArchiveLowUtilityMemories(minWeight float64, dryRun bool) (int, 
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
+
+// BulkSeedMemoryParams is a lean parameter set for bulk benchmark seeding.
+// It omits fields that are irrelevant during seeding (tags, evidence, applies-to,
+// idempotency keys, etc.) to minimise per-row overhead.
+type BulkSeedMemoryParams struct {
+	ProjectID string
+	Kind      string
+	Title     string
+	Body      string
+	Domain    string
+	SessionID string
+}
+
+// BulkSeedMemories inserts all params in a single SQLite transaction using a
+// prepared statement, returning the assigned IDs in the same order.
+//
+// It intentionally skips:
+//   - memory_revisions entries (audit trail not needed for benchmarks)
+//   - audit log entries
+//   - derived-job enqueueing
+//   - body token-limit truncation (benchmarks want the full haystack content)
+//
+// FTS5 triggers (mem_fts_insert) still fire per-row inside the transaction,
+// so the search index is fully populated when the call returns.
+// This path is not intended for production writes.
+func (s *Store) BulkSeedMemories(params []BulkSeedMemoryParams) ([]int64, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, 0, len(params))
+	err := s.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`
+			INSERT INTO memory_items
+				(project_id, actor_id, kind, scope, title, body, tags, source, status, expires_at,
+				 domain, evidence_json, applies_to_json, related_json, session_id, trust_level,
+				 classification, written_by, trigger_condition, utility_weight, consolidated_from, idempotency_key)
+			VALUES (?, 'bench', ?, ?, ?, ?, '[]', 'bench', ?, ?,
+			        ?, '{}', '[]', '[]', ?, 'system',
+			        ?, 'bench', '', 1.0, '', '')`)
+		if err != nil {
+			return fmt.Errorf("BulkSeedMemories prepare: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, p := range params {
+			projectID, _ := NormalizeProject(p.ProjectID)
+			kind := p.Kind
+			if !ValidMemoryKinds[kind] {
+				kind = MemoryKindDiscovery
+			}
+			scope := MemoryScopeProject
+			if isGlobalKind(kind) {
+				scope = MemoryScopeGlobal
+			}
+			title := stripPrivateTags(p.Title)
+			body := stripPrivateTags(p.Body)
+			expiresAt := MemoryExpiresAt(kind)
+			classification := defaultClassificationForKind(kind)
+
+			res, err := stmt.Exec(
+				projectID, kind, scope, title, body,
+				MemoryStatusActive, expiresAt,
+				p.Domain, p.SessionID,
+				classification,
+			)
+			if err != nil {
+				return fmt.Errorf("BulkSeedMemories insert %q: %w", p.Title, err)
+			}
+			id, err := res.LastInsertId()
+			if err != nil {
+				return err
+			}
+			ids = append(ids, id)
+		}
+		return nil
+	})
+	return ids, err
+}

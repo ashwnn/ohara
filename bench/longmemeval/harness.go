@@ -1056,33 +1056,35 @@ func seedStore(fixture Fixture, mode string, workers int) (*store.Store, map[str
 		return nil, nil, err
 	}
 
-	logProgress := func(step, total int, label string) {
-		if step%1000 == 0 || step == total {
-			pct := float64(step) / float64(total) * 100
-			fmt.Fprintf(os.Stderr, "[ohara-bench] seeding %s: %d/%d (%.0f%%)\n", label, step, total, pct)
-		}
-	}
-
-	keyToID := map[string]int64{}
 	totalFacts := len(fixture.Facts)
 	fmt.Fprintf(os.Stderr, "[ohara-bench] seeding %d facts...\n", totalFacts)
+
+	bulkParams := make([]store.BulkSeedMemoryParams, totalFacts)
+	keys := make([]string, totalFacts)
 	for i, fact := range fixture.Facts {
-		id, err := s.AddMemory(store.AddMemoryParams{
+		keys[i] = fact.Key
+		bulkParams[i] = store.BulkSeedMemoryParams{
 			ProjectID: "longmemeval",
 			Kind:      fact.Kind,
 			Title:     fact.Title,
 			Body:      fact.Body,
 			Domain:    fact.Domain,
 			SessionID: fact.SessionID,
-		})
-		if err != nil {
-			s.Close()
-			os.RemoveAll(tmp)
-			return nil, nil, fmt.Errorf("seed fact %s: %w", fact.Key, err)
 		}
-		keyToID[fact.Key] = id
-		logProgress(i+1, totalFacts, "facts")
 	}
+
+	ids, err := s.BulkSeedMemories(bulkParams)
+	if err != nil {
+		s.Close()
+		os.RemoveAll(tmp)
+		return nil, nil, fmt.Errorf("bulk seed facts: %w", err)
+	}
+
+	keyToID := make(map[string]int64, totalFacts)
+	for i, id := range ids {
+		keyToID[keys[i]] = id
+	}
+	fmt.Fprintf(os.Stderr, "[ohara-bench] seeding facts: %d/%d (100%%)\n", totalFacts, totalFacts)
 
 	return s, keyToID, nil
 }
