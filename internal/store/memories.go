@@ -638,7 +638,7 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 
 	// Parse temporal operators from query string before FTS sanitization.
 	rawFTSQuery, filters := parseTemporalFilters(query)
-	ftsQuery := sanitizeFTS(rawFTSQuery)
+	ftsQuery := sanitizeFTSAnd(rawFTSQuery)
 	fallbackTerms := buildFallbackTerms(rawFTSQuery)
 	ftsFallbackQuery := sanitizeFTSOR(strings.Join(fallbackTerms, " "))
 
@@ -905,6 +905,40 @@ var ftsFallbackStopWords = map[string]struct{}{
 	"should": {}, "must": {}, "can": {}, "could": {}, "would": {}, "will": {},
 	"how": {}, "why": {}, "before": {}, "after": {}, "then": {}, "current": {},
 	"did": {}, "does": {}, "has": {}, "had": {},
+}
+
+// sanitizeFTSAnd builds the primary FTS5 AND query for memory search. Unlike the
+// generic sanitizeFTS (which quotes every word, including ultra-common stopwords),
+// this drops stopwords and sub-3-character tokens before quoting. Ultra-common
+// words like "i", "did", "what", "with" have posting lists spanning nearly the
+// entire corpus; ANDing them forces FTS5 to read enormous payloads to intersect,
+// which dominated query latency on large datasets. Requiring only discriminative
+// terms keeps the AND query both fast and more likely to match.
+//
+// If filtering removes every term (e.g. an all-stopword query), it falls back to
+// the generic sanitizeFTS so behaviour is preserved for such inputs.
+func sanitizeFTSAnd(raw string) string {
+	parts := strings.Fields(strings.ToLower(raw))
+	terms := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		token := strings.Trim(part, `"'.,;:!?()[]{}<>`)
+		if len(token) < 3 {
+			continue
+		}
+		if _, skip := ftsFallbackStopWords[token]; skip {
+			continue
+		}
+		if _, dup := seen[token]; dup {
+			continue
+		}
+		seen[token] = struct{}{}
+		terms = append(terms, `"`+token+`"`)
+	}
+	if len(terms) == 0 {
+		return sanitizeFTS(raw)
+	}
+	return strings.Join(terms, " ")
 }
 
 func buildFallbackTerms(raw string) []string {
