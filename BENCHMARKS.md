@@ -55,7 +55,7 @@ Keyword-match precision@k on deterministic fixtures: precision@3 = 0.2222 (22.2%
 
 LongMemEval-style session-distance recall benchmark. Seeds 45 facts across 6 sessions and evaluates retrieval quality at near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances using FTS5 search.
 
-Latest run (FTS5 mode, 30 questions): Recall@3=0.967, MRR=0.970, nDCG@5=0.967, near Recall@3=1.000, medium Recall@3=1.000, far Recall@3=0.929, p95 latency=37.2ms.
+Latest run (FTS5 mode, 30-question curated fixture): Recall@1=1.000, Recall@3=1.000, Recall@5=1.000, MRR=1.000, nDCG@5=1.000, near/medium/far Recall@3=1.000.
 
 Includes:
 - **Expanded distractor fixture**: 45 facts with overlapping titles and paraphrased bodies across auth, database, api, infra domains
@@ -63,6 +63,36 @@ Includes:
 - **Judge model**: `OverlapJudge` provides baseline token-overlap answer evaluation (no LLM dependency); mean judge score: 0.970
 - **Hybrid mode**: `-mode hybrid` tests deterministic embedding retrieval alongside FTS5
 - **25 deterministic tests** covering harness, import, judge, and hybrid modes
+
+### Official LongMemEval-S dataset (500 questions, 18,460 sessions)
+
+The cleaned LongMemEval-S dataset (`bench/longmemeval/data/longmemeval_s_cleaned.json`)
+imports as 18,460 session "facts" — each a full multi-turn conversation transcript —
+and 500 questions. This is the accreditation-scale run via
+[bench/run-benchmark-build.sh](bench/run-benchmark-build.sh).
+
+Latest FTS5 run (100-question slice, 4 workers): Recall@1=0.100, Recall@3=0.180,
+Recall@5=0.260, MRR=0.150. Absolute recall reflects the difficulty of pure-lexical
+FTS5 retrieval over large transcripts — LongMemEval is designed to reward semantic
+memory. These are honest baseline numbers for the FTS5 spine, not a tuned result.
+
+### Performance optimizations
+
+The exhaustive run was reduced from **~3h+ to ~75 min** (full 500Q × 2 modes) by
+three changes, each verified to preserve correctness (curated fixture stays 30/30,
+full store + bench suites pass):
+
+| Stage | Before | After | Change |
+|-------|--------|-------|--------|
+| Seed 18,460 facts | hours (serial `AddMemory`) | ~12s | `Store.BulkSeedMemories` — single transaction, prepared statement, skips audit/revisions/jobs/truncation |
+| Seed 45-fact fixture | 2.6s | 25ms | (same) |
+| Per-query (40Q, serial) | 18.2s | 6.2s | `sanitizeFTSAnd` drops stopwords from the FTS5 AND query so it no longer intersects corpus-wide posting lists for `"i"`, `"did"`, `"with"`, etc. |
+| Recall@5 (40Q, same change) | 0.250 | 0.350 | stopword removal also stops valid sessions being excluded — strict quality gain |
+| Auto worker count | GOMAXPROCS (8) | capped at 4 | pure-Go `modernc/sqlite` FTS5 reads contend on shared cache; throughput peaks at ~4 readers (8 measured slower than 4) |
+
+The remaining per-query cost is CPU-bound inside the pure-Go SQLite FTS5 iterator
+(`modernc.org/sqlite`) scanning large transcript payloads; further gains would
+require CGO SQLite or reusing one seeded DB across modes.
 
 ## Running Benchmarks
 

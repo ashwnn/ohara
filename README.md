@@ -391,3 +391,8 @@ of GitHub Actions:
 That script uses the official cleaned LongMemEval dataset from
 `bench/longmemeval/data/longmemeval_s_cleaned.json` when present and runs both
 `fts5` and deterministic `hybrid` modes locally.
+
+The full 500-question LongMemEval-S run (18,460 sessions) completes in roughly
+75 minutes (both modes) after seeding and query-path optimizations; see
+[BENCHMARKS.md](BENCHMARKS.md) for measured results and methodology. The 30-question
+curated fixture gate runs in well under a second and is the CI-friendly path.
