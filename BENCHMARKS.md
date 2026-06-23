@@ -75,10 +75,34 @@ imports as 18,460 session "facts" — each a full multi-turn conversation transc
 and 500 questions. This is the accreditation-scale run via
 [bench/run-benchmark-build.sh](bench/run-benchmark-build.sh).
 
-Latest FTS5 run (100-question slice, 4 workers): Recall@1=0.100, Recall@3=0.180,
-Recall@5=0.260, MRR=0.150. Absolute recall reflects the difficulty of pure-lexical
-FTS5 retrieval over large transcripts — LongMemEval is designed to reward semantic
-memory. These are honest baseline numbers for the FTS5 spine, not a tuned result.
+Full 500Q run completed 2026-06-23. Judge: containment (mean score: 0.761). Both
+FTS5 and hybrid-deterministic modes produce identical scores — the deterministic
+embedder used in CI does not call Ollama, so both lanes behave identically.
+
+| Mode | Recall@1 | Recall@3 | Recall@5 | MRR | nDCG@5 | Pass/500 | Runtime |
+|------|----------|----------|----------|-----|--------|----------|---------|
+| fts5 | 0.096 | 0.142 | 0.172 | 0.121 | 0.115 | 169 | ~2h04m |
+| hybrid-deterministic | 0.096 | 0.142 | 0.172 | 0.121 | 0.115 | 169 | ~1h59m |
+
+Per-category (fts5):
+
+| Category | Recall@3 | MRR | Cases |
+|----------|----------|-----|-------|
+| knowledge-update | 0.397 | 0.351 | 78 |
+| single-session-user | 0.243 | 0.197 | 70 |
+| multi-session | 0.090 | 0.079 | 133 |
+| single-session-preference | 0.033 | 0.011 | 30 |
+| temporal-reasoning | 0.068 | 0.058 | 133 |
+| single-session-assistant | 0.018 | 0.018 | 56 |
+
+Distance breakdown: near Recall@3=0.217, medium=0.189, far=0.129.
+
+These are honest FTS5 baseline numbers. LongMemEval is designed to reward semantic
+memory — questions like "How many doctor's appointments did I go to in March?" require
+understanding full conversation transcripts, which pure lexical FTS5 does not do well.
+The knowledge-update category (0.397) is strongest because those questions often contain
+exact terms present in the stored transcript. To compete with Mem0 93.4 / Hindsight 91.4,
+Ohara needs real vector embeddings (Phase 1: `vec0` + Ollama `nomic-embed-text`).
 
 ### Performance optimizations
 
