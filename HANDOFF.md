@@ -1,6 +1,6 @@
 # Ohara Handoff
 
-Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the plan) and `docs/analysis-20260619.md` (the strategic analysis the plan is derived from). Written June 19, 2026.
+Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the implementation plan). Written June 19, 2026.
 
 ## What Ohara is
 
