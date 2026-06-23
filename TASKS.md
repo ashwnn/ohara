@@ -44,7 +44,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T0.2 — LoCoMo and BEAM-1M harnesses
+### T0.2 — LoCoMo and BEAM-1M harnesses ✅ (commit pending)
 
 **What.** Add LoCoMo and BEAM-1M benchmark harnesses on the existing fixture pipeline and `JudgeModel` interface.
 

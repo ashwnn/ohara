@@ -1,0 +1,151 @@
+{
+  "description": "BEAM deterministic fixture — 2 conversations, 14 facts, 10 probes",
+  "conversations": [
+    {
+      "id": "conv-001",
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm building an agent memory system called Ohara. It should be a single binary."
+        },
+        {
+          "role": "assistant",
+          "content": "A single binary memory system is a great constraint. What storage engine are you considering?"
+        },
+        {
+          "role": "user",
+          "content": "SQLite with FTS5 for search, pure-Go only. No CGO."
+        },
+        {
+          "role": "assistant",
+          "content": "modernc.org/sqlite gives you pure-Go SQLite. For vectors, the vec0 extension is available now."
+        },
+        {
+          "role": "user",
+          "content": "The vec0 extension is in modernc v1.47.0+. But we need to stay on v1.45.0 for now."
+        },
+        {
+          "role": "assistant",
+          "content": "Understood. For small N (<1000 items), brute-force cosine works fine in Go."
+        }
+      ]
+    },
+    {
+      "id": "conv-002",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How should we handle memory deduplication?"
+        },
+        {
+          "role": "assistant",
+          "content": "Use normalized_hash on the content body. Store it in the database and check on insert."
+        },
+        {
+          "role": "user",
+          "content": "What about topic_key upserts? Should we keep those?"
+        },
+        {
+          "role": "assistant",
+          "content": "Yes, topic_key upserts are critical. They allow evolving topics to update a single observation over time."
+        },
+        {
+          "role": "user",
+          "content": "And for soft-deletes — we use deleted_at, right?"
+        },
+        {
+          "role": "assistant",
+          "content": "Correct. Never hard-delete. Set deleted_at and filter in queries. This preserves the audit trail."
+        }
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "p-001",
+      "category": "conv-001",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-001",
+      "question": "What storage engine is Ohara using?",
+      "expected_fact_keys": ["conv-001:msg:2"]
+    },
+    {
+      "id": "p-002",
+      "category": "conv-001",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-001",
+      "question": "What Go constraint does Ohara have?",
+      "expected_fact_keys": ["conv-001:msg:2"]
+    },
+    {
+      "id": "p-003",
+      "category": "conv-001",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-001",
+      "question": "What vector approach works for under 1000 items?",
+      "expected_fact_keys": ["conv-001:msg:5"]
+    },
+    {
+      "id": "p-004",
+      "category": "conv-002",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-002",
+      "question": "How should memory deduplication be done?",
+      "expected_fact_keys": ["conv-002:msg:1"]
+    },
+    {
+      "id": "p-005",
+      "category": "conv-002",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-002",
+      "question": "What are topic_key upserts used for?",
+      "expected_fact_keys": ["conv-002:msg:3"]
+    },
+    {
+      "id": "p-006",
+      "category": "conv-002",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-002",
+      "question": "How does Ohara handle deletion?",
+      "expected_fact_keys": ["conv-002:msg:5"]
+    },
+    {
+      "id": "p-007",
+      "category": "conv-001",
+      "probe_type": "temporal_order",
+      "conversation_id": "conv-001",
+      "question": "What was discussed after the storage engine question and before the vector approach?",
+      "expected_fact_keys": ["conv-001:msg:3", "conv-001:msg:4"]
+    },
+    {
+      "id": "p-008",
+      "category": "conv-002",
+      "probe_type": "temporal_order",
+      "conversation_id": "conv-002",
+      "question": "What topic was discussed after deduplication?",
+      "expected_fact_keys": ["conv-002:msg:3"]
+    },
+    {
+      "id": "p-009",
+      "category": "conv-001",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-001",
+      "question": "What vector solution was suggested and what is the constraint that affects it?",
+      "expected_fact_keys": ["conv-001:msg:3", "conv-001:msg:4"]
+    },
+    {
+      "id": "p-010",
+      "category": "conv-002",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-002",
+      "question": "What two deduplication mechanisms does Ohara use?",
+      "expected_fact_keys": ["conv-002:msg:1", "conv-002:msg:3"]
+    }
+  ],
+  "thresholds": {
+    "overall_recall_at_3": 0.20,
+    "mrr_overall": 0.15,
+    "latency_p95_ms_max": 500,
+    "latency_max_ms_max": 2000
+  }
+}

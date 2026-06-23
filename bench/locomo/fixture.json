@@ -1,0 +1,141 @@
+{
+  "description": "LoCoMo deterministic fixture — 2 conversations, 12 facts, 10 QA pairs",
+  "conversations": [
+    {
+      "id": "conv-001",
+      "messages": [
+        {
+          "role": "user",
+          "content": "I need help with my Go project. The SQLite driver keeps crashing."
+        },
+        {
+          "role": "assistant",
+          "content": "Let's check which SQLite driver you're using. Are you on mattn/go-sqlite3 or modernc.org/sqlite?"
+        },
+        {
+          "role": "user",
+          "content": "I'm using modernc.org/sqlite, the pure-Go one."
+        },
+        {
+          "role": "assistant",
+          "content": "Good choice. The pure-Go driver avoids CGO. Can you share the error message?"
+        },
+        {
+          "role": "user",
+          "content": "The error says 'database is locked' during concurrent writes."
+        },
+        {
+          "role": "assistant",
+          "content": "That's a common SQLite locking issue. Use WAL mode and set busy_timeout."
+        }
+      ]
+    },
+    {
+      "id": "conv-002",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How do I implement vector search in Go without dependencies?"
+        },
+        {
+          "role": "assistant",
+          "content": "You have a few options. For small datasets, brute-force cosine similarity works fine."
+        },
+        {
+          "role": "user",
+          "content": "What about for 50,000+ vectors?"
+        },
+        {
+          "role": "assistant",
+          "content": "At that scale, you want an ANN index. The modernc.org/sqlite driver now includes sqlite-vec via the vec0 virtual table."
+        },
+        {
+          "role": "user",
+          "content": "Does vec0 support float vectors?"
+        },
+        {
+          "role": "assistant",
+          "content": "Yes, vec0 supports float, int8, and binary vectors. No C toolchain required."
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q-001",
+      "conversation_id": "conv-001",
+      "category": "single-hop",
+      "question": "Which SQLite driver is the user using?",
+      "expected_fact_keys": ["conv-001:2"]
+    },
+    {
+      "id": "q-002",
+      "conversation_id": "conv-001",
+      "category": "single-hop",
+      "question": "What error is the user getting?",
+      "expected_fact_keys": ["conv-001:4"]
+    },
+    {
+      "id": "q-003",
+      "conversation_id": "conv-001",
+      "category": "single-hop",
+      "question": "What solution did the assistant suggest for the locking issue?",
+      "expected_fact_keys": ["conv-001:5"]
+    },
+    {
+      "id": "q-004",
+      "conversation_id": "conv-002",
+      "category": "single-hop",
+      "question": "What vector search approach works for small datasets?",
+      "expected_fact_keys": ["conv-002:1"]
+    },
+    {
+      "id": "q-005",
+      "conversation_id": "conv-002",
+      "category": "single-hop",
+      "question": "What is the recommended ANN solution for 50k+ vectors?",
+      "expected_fact_keys": ["conv-002:3"]
+    },
+    {
+      "id": "q-006",
+      "conversation_id": "conv-002",
+      "category": "single-hop",
+      "question": "What vector types does vec0 support?",
+      "expected_fact_keys": ["conv-002:5"]
+    },
+    {
+      "id": "q-007",
+      "conversation_id": "conv-001",
+      "category": "single-hop",
+      "question": "What driver did the assistant say avoids CGO?",
+      "expected_fact_keys": ["conv-001:3"]
+    },
+    {
+      "id": "q-008",
+      "conversation_id": "conv-001",
+      "category": "multi-hop",
+      "question": "What problem does the user have and what solution was suggested?",
+      "expected_fact_keys": ["conv-001:4", "conv-001:5"]
+    },
+    {
+      "id": "q-009",
+      "conversation_id": "conv-002",
+      "category": "multi-hop",
+      "question": "What vector search approach was recommended for large datasets?",
+      "expected_fact_keys": ["conv-002:3", "conv-002:5"]
+    },
+    {
+      "id": "q-010",
+      "conversation_id": "conv-001",
+      "category": "single-hop",
+      "question": "What Go driver is being discussed?",
+      "expected_fact_keys": ["conv-001:2"]
+    }
+  ],
+  "thresholds": {
+    "overall_recall_at_3": 0.50,
+    "mrr_overall": 0.45,
+    "latency_p95_ms_max": 200,
+    "latency_max_ms_max": 1000
+  }
+}
