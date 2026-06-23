@@ -22,7 +22,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ## Phase 0 — Make capability legible (Weeks 1-3)
 
-### T0.1 — Official LongMemEval 500-question harness
+### T0.1 — Official LongMemEval 500-question harness ✅ (commit `541942c` + CI gate in ci.yml)
 
 **What.** Add a loader and CI job that runs the *official* 500-question LongMemEval dataset through the existing benchmark pipeline and publishes a single end-to-end number to the README, next to Mem0 and Hindsight.
 
@@ -65,7 +65,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T0.3 — CI size and dependency guard
+### T0.3 — CI size and dependency guard ✅ (commit `32846d6`)
 
 **What.** A CI check that fails a PR if the stripped `linux/amd64` binary grows by more than ~5 MB, or if a new direct dependency appears in `go.mod` without an approving label.
 

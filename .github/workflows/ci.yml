@@ -156,6 +156,26 @@ jobs:
           fi
           echo "Dependency count is within the guard."
 
+  bench-longmemeval:
+    name: LongMemEval Fixture Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+          cache: true
+
+      - name: Run LongMemEval fixture gate (fts5)
+        run: go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency -mode fts5
+
+      - name: Run LongMemEval fixture gate (hybrid deterministic)
+        run: go run ./bench/cmd/run-longmemeval/ -k 5 -enforce -skip-latency -mode hybrid
+
   vet:
     name: Vet
     runs-on: ubuntu-latest
