@@ -44,7 +44,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T0.2 — LoCoMo and BEAM-1M harnesses ✅ (commit pending)
+### T0.2 — LoCoMo and BEAM-1M harnesses ✅ (commit `896feba`)
 
 **What.** Add LoCoMo and BEAM-1M benchmark harnesses on the existing fixture pipeline and `JudgeModel` interface.
 
@@ -85,7 +85,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T0.4 — Publish BENCHMARKS_RESULTS.md and refresh COMPARISON.md ✅ (commit pending)
+### T0.4 — Publish BENCHMARKS_RESULTS.md and refresh COMPARISON.md ✅ (commit `66978e0`)
 
 **What.** A stable results doc comparing Ohara `fts5` vs `hybrid` against Mem0/Zep/Hindsight on identical fixtures where possible, and a rewrite of `docs/COMPARISON.md` from a claude-mem-only table to a multi-system table with verified numbers.
 

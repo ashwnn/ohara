@@ -21,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run unit tests
@@ -38,7 +38,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run race tests
@@ -55,7 +55,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run e2e tests
@@ -72,7 +72,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Build binary from source
@@ -167,7 +167,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run LongMemEval fixture gate (fts5)
@@ -187,7 +187,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run LoCoMo fixture gate (fts5)
@@ -207,7 +207,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run BEAM fixture gate (fts5)
@@ -227,7 +227,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run go vet
@@ -244,7 +244,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.2"
+          go-version: "1.25.0"
           cache: true
 
       - name: Run govulncheck

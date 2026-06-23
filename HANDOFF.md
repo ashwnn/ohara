@@ -16,7 +16,7 @@ Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the impl
 - `32846d6` — CI size/dependency guard (T0.3)
 - `239ecd8` — LongMemEval CI gate (T0.1)
 - `896feba` — LoCoMo + BEAM-1M harnesses (T0.2)
-- *(T0.4 docs commit pending)*
+- `66978e0` — Publish BENCHMARKS_RESULTS.md and refresh COMPARISON.md (T0.4)
 
 ## What Ohara is
 
@@ -33,7 +33,7 @@ A local-first agent-memory engine shipped as a single static Go binary. It store
 cmd/ohara/main.go              CLI entrypoint + all commands
 internal/
   store/                       Core. SQLite + FTS5 + retrieval + lifecycle
-    store.go                   Schema, migrations (currentSchemaVersion=28), sessions, stats
+    store.go                   Schema, migrations (currentSchemaVersion=32), sessions, stats
     memories.go                Memory CRUD, conflict detection, relations usage
     hybrid.go                  Embedder interface, Ollama embed, cosine loop, fuseHybridRRF
     pack.go / pack_scoring.go  Context-pack assembly and scoring
@@ -64,7 +64,7 @@ The analysis (`docs/analysis-20260619.md`) is a strong strategic document, but s
 
 1. **MCP tool count is 35, not 33.** The analysis repeatedly says 33. New tools in Phase 2 raise it to 38 and must be added to the role/profile maps, not just registered.
 2. **`modernc.org/sqlite/vec` requires a version bump.** The analysis frames it as a free "drop-in blank import" next to the existing import. Verified: the pure-Go sqlite-vec port shipped in **`modernc.org/sqlite v1.47.0` (2026-03-17)**; the repo pins **v1.45.0**. Phase 1 therefore starts with a dependency upgrade (task T1.0), which trips the proposed size guard and needs justification. It is still CGO-free and single-binary.
-3. **Schema is at version 28**, migration-switch driven and additive. New migrations should be 029+ in order.
+3. **Schema is at version 32** (was 28 at handoff creation), migration-switch driven and additive. New migrations should be 033+ in order.
 4. **Pack scoring is split** across `pack.go` and `pack_scoring.go` (analysis implies a single `pack.go`).
 5. **Entity work may be partly done.** A `mem_extract_entities` MCP tool exists and `graph_feedback.go` handles entity-graph feedback. Audit before building the `entities` table from scratch (task T2.2) — likely extend, not create.
 6. **Module path is `github.com/ashwnn/ohara`** (not stated in analysis).
