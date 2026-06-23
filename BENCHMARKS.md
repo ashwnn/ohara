@@ -1,14 +1,16 @@
 # Benchmarks
 
-Hardware: Intel Core i5-6500T @ 2.50GHz, Linux amd64, Go 1.26.2.
+> Last updated: 2026-06-22  
+> Hardware: Apple M-series (arm64, macOS), Go 1.24.2.  
+> Prior run hardware: Intel Core i5-6500T @ 2.50GHz, Linux amd64, Go 1.26.2.
 
 ## Quality (bench/quality/)
 
 | Metric | Result | Goal |
 |--------|--------|------|
-| MRR@k=5 | 0.80 | ≥ 0.7 |
-| Recall@3 | 0.80 | ≥ 0.7 |
-| Recall@10 | 0.80 | ≥ 0.9 |
+| MRR@k=5 | 1.000 | ≥ 0.7 |
+| Recall@3 | 1.000 | ≥ 0.7 |
+| Recall@10 | 1.000 | ≥ 0.9 |
 | Conflict detection | PASS | overlap score 0.67 |
 | Staleness isolation | PASS | archived hidden from active |
 | Access count tracking | PASS | correct after 5 retrievals |
@@ -23,39 +25,41 @@ Hardware: Intel Core i5-6500T @ 2.50GHz, Linux amd64, Go 1.26.2.
 
 | Benchmark | Result | Conditions |
 |-----------|--------|------------|
-| Save throughput | ~1.28M ops/sec | 100 items, temp store |
-| Search p50 latency | ~18ms | 100-item corpus |
-| Search p95 latency | ~25ms | 100-item corpus |
-| Pack build (200 token budget) | <3ms | — |
+| Search p50 latency | ~12ms | 100-item corpus |
+| Search p95 latency | ~16ms | 100-item corpus |
 | DB size per memory item | ~2-3KB | — |
+
+Note: Save-throughput benchmarks (`BenchmarkSaveThroughput*`) are excluded from this
+table — they fail under `-benchtime=1s` due to the temp-store lifecycle; run
+`go test ./bench/store/ -bench=BenchmarkSaveThroughput -benchtime=30s` for throughput numbers.
 
 ## Retrieval Fixture Harness (bench/retrieval/)
 
 Deterministic fixture-driven recall, MRR, nDCG, stale/superseded filtering, file context, graph context, pack budgeting, abstention false-positive rate.
 
-Latest run (FTS5 mode, 70 cases): Recall@3=0.966, MRR=0.900, nDCG@5=0.914, file-context accuracy=1.000, graph-context accuracy=1.000, pack budget compliance=1.000, abstention FP=0.000, p95 latency=35.5ms.
+Latest run (FTS5 mode, 70 cases): Recall@1=0.831, Recall@3=0.966, Recall@5=0.983, MRR=0.900, nDCG@5=0.916, file-context accuracy=1.000, graph-context accuracy=1.000, pack budget compliance=1.000, abstention FP=0.000, p50=2.9ms, p95=7.6ms.
 
 ## Forgetting Harness (bench/forgetting/)
 
-Verifies the forgetting system doesn't corrupt memory state: stale recall prevention, false forget prevention (foundational memories survive expiry), conflict survival through forget operations.
+All three tests pass: stale recall prevention, false forget prevention (foundational memories survive expiry), conflict survival through forget operations.
 
 ## Precision (bench/precision/)
 
-Keyword-match precision@k on deterministic fixtures: precision@3 = 0.2222 (22.2%) — 3 queries. Low precision reflects FTS5 matching on short fixture titles.
+Keyword-match precision@k on deterministic fixtures: precision@3 = 0.3333 (33.3%) — 3 queries. Low precision is expected given FTS5 matching over short fixture content; ranking quality is better represented by the retrieval harness MRR.
 
 ## Token Counting (internal/token/)
 
 | Benchmark | Op/s | ns/op |
 |-----------|------|-------|
-| Count | ~31K | 31,796 |
-| CountStrict | ~33K | 30,581 |
-| WithinBudget | ~34K | 29,007 |
+| Count | ~69K | 14,482 |
+| CountStrict | ~74K | 13,552 |
+| WithinBudget | ~88K | 11,377 |
 
 ## LongMemEval Harness (bench/longmemeval/)
 
 LongMemEval-style session-distance recall benchmark. Seeds 45 facts across 6 sessions and evaluates retrieval quality at near (1 session), medium (2-3 sessions), and far (4-5 sessions) distances using FTS5 search.
 
-Latest run (FTS5 mode, 30-question curated fixture): Recall@1=1.000, Recall@3=1.000, Recall@5=1.000, MRR=1.000, nDCG@5=1.000, near/medium/far Recall@3=1.000.
+Latest run (FTS5 mode, 30-question curated fixture): Recall@1=1.000, Recall@3=1.000, Recall@5=1.000, MRR=1.000, nDCG@5=1.000, near/medium/far Recall@3=1.000, p50=39ms, p95=68ms.
 
 Includes:
 - **Expanded distractor fixture**: 45 facts with overlapping titles and paraphrased bodies across auth, database, api, infra domains
@@ -101,7 +105,7 @@ require CGO SQLite or reusing one seeded DB across modes.
 go test ./bench/quality/...  -v -bench=. -benchtime=1s
 
 # Store performance
-go test ./bench/store/       -bench=. -benchmem -benchtime=1s
+go test ./bench/store/       -bench=BenchmarkSearchLatency100 -benchmem -benchtime=1s
 
 # Forgetting quality
 go test ./bench/forgetting/ -v
@@ -115,8 +119,8 @@ go run ./bench/cmd/run-retrieval/ -k 5
 
 # LongMemEval session-distance recall
 go test ./bench/longmemeval/ -v
-go run ./bench/cmd/run-longmemeval/ -k 5
-./bench/run-benchmark-build.sh
+go run ./bench/cmd/run-longmemeval/ -k 5 -fixture bench/longmemeval/fixture.json
+./bench/run-benchmark-build.sh   # requires bench/longmemeval/data/ (download separately)
 
 # Token counting
 go test ./internal/token/   -bench=. -benchmem -benchtime=1s
