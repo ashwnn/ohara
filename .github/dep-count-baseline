@@ -1,0 +1,5 @@
+# Baseline direct dependency count from go.mod require block (excluding indirect).
+# Update this file in a PR when adding/removing dependencies is intentional.
+# Format: <count>
+# Direct dependencies: mark3labs/mcp-go, pkoukk/tiktoken-go, modernc.org/sqlite
+3

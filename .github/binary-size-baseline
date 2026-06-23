@@ -1,0 +1,5 @@
+# Baseline stripped binary size (bytes) for linux/amd64 with release flags.
+# Update this file in a PR when binary growth is intentional.
+# Format: <size_bytes>
+# Build command: go build -trimpath -ldflags "-s -w" -o /tmp/ohara ./cmd/ohara
+13697316

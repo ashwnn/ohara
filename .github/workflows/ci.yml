@@ -78,6 +78,84 @@ jobs:
       - name: Build binary from source
         run: go build -trimpath ./cmd/ohara
 
+      - name: Build stripped release binary
+        run: go build -trimpath -ldflags "-s -w" -o /tmp/ohara-release ./cmd/ohara
+
+      - name: Check binary size guard
+        id: size-check
+        run: |
+          set -euo pipefail
+          BASELINE_FILE=".github/binary-size-baseline"
+          if [ ! -f "$BASELINE_FILE" ]; then
+            echo "Missing binary size baseline file: $BASELINE_FILE"
+            exit 1
+          fi
+          BASELINE=$(grep -oP '^\d+' "$BASELINE_FILE" | head -1)
+          CURRENT=$(stat -c%s /tmp/ohara-release)
+          DELTA=$((CURRENT - BASELINE))
+          MAX_GROWTH=$((5 * 1024 * 1024)) # 5 MB
+
+          echo "Baseline size: ${BASELINE} bytes ($(echo "scale=1; ${BASELINE}/1048576" | bc) MB)"
+          echo "Current size:  ${CURRENT} bytes ($(echo "scale=1; ${CURRENT}/1048576" | bc) MB)"
+          echo "Delta:         ${DELTA} bytes"
+
+          if [ "$DELTA" -gt "$MAX_GROWTH" ]; then
+            echo ""
+            echo "ERROR: Binary grew by ${DELTA} bytes (> 5 MB limit)."
+            echo "If intentional, update .github/binary-size-baseline and add 'dep-approved' label."
+            exit 1
+          fi
+          if [ "$DELTA" -lt 0 ]; then
+            echo "Binary shrank by $((0 - DELTA)) bytes — consider updating the baseline."
+          fi
+          echo "Binary size is within the 5 MB growth guard."
+
+  dep-guard:
+    name: Dependency Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check direct dependency count
+        id: dep-check
+        run: |
+          set -euo pipefail
+          BASELINE_FILE=".github/dep-count-baseline"
+          if [ ! -f "$BASELINE_FILE" ]; then
+            echo "Missing dependency baseline file: $BASELINE_FILE"
+            exit 1
+          fi
+          BASELINE=$(grep -oP '^\d+' "$BASELINE_FILE" | head -1)
+
+          # Count direct (non-indirect) dependencies from go.mod require block.
+          # The first require(...) block in go.mod has direct deps; indirect deps
+          # are in a second block or marked with // indirect.
+          CURRENT=$(awk '
+            BEGIN { in_direct=0; count=0 }
+            /^require[[:space:]]*\(/ && in_direct==0 { in_direct=1; next }
+            in_direct && /^\)/ { exit }
+            in_direct && /\/\/ indirect/ { next }
+            in_direct && /^[[:space:]]+[a-zA-Z]/ { count++ }
+            END { print count }
+          ' go.mod)
+
+          echo "Baseline direct deps: ${BASELINE}"
+          echo "Current direct deps:  ${CURRENT}"
+
+          if [ "$CURRENT" -gt "$BASELINE" ]; then
+            echo ""
+            echo "ERROR: Direct dependencies increased from ${BASELINE} to ${CURRENT}."
+            echo "New dependencies require justification. If approved, update .github/dep-count-baseline"
+            echo "and add the 'dep-approved' label to this PR."
+            exit 1
+          fi
+          if [ "$CURRENT" -lt "$BASELINE" ]; then
+            echo "Direct dependencies decreased — consider updating the baseline."
+          fi
+          echo "Dependency count is within the guard."
+
   vet:
     name: Vet
     runs-on: ubuntu-latest
