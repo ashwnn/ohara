@@ -1064,7 +1064,7 @@ func (s *Store) Close() error {
 }
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 30
+const currentSchemaVersion = 32
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -1812,6 +1812,32 @@ func (s *Store) applyMigration(version int) error {
 		}
 		if batchCount > 0 {
 			log.Printf("[ohara] migration 030: enqueued %d backfill jobs for vec0", batchCount)
+		}
+
+	case 31:
+		// Migration 031: Bi-temporal columns on memory_relations (Phase 2 — T2.1).
+		// Adds world-time validity windows to inter-memory relationships, enabling
+		// temporal queries, lineage tracking, and time-aware pack scoring.
+		if s.tableExists("memory_relations") {
+			if err := s.addColumnIfNotExists("memory_relations", "valid_from", "TEXT"); err != nil {
+				return err
+			}
+			if err := s.addColumnIfNotExists("memory_relations", "valid_to", "TEXT"); err != nil {
+				return err
+			}
+		}
+
+	case 32:
+		// Migration 032: Add first_seen_at / last_seen_at to entities (Phase 2 — T2.2).
+		// Tracks entity discovery and re-seen timestamps for temporal entity queries
+		// and entity lifecycle awareness.
+		if s.tableExists("entities") {
+			if err := s.addColumnIfNotExists("entities", "first_seen_at", "TEXT"); err != nil {
+				return err
+			}
+			if err := s.addColumnIfNotExists("entities", "last_seen_at", "TEXT"); err != nil {
+				return err
+			}
 		}
 
 	default:

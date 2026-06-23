@@ -184,6 +184,11 @@ var toolRoles = map[string]auth.Role{
 	"mem_feedback":         auth.RoleWrite,
 	"mem_extract_entities": auth.RoleWrite,
 
+	// Bi-temporal query tools (Phase 2 — read-only)
+	"mem_temporal_state": auth.RoleRead,
+	"mem_lineage":        auth.RoleRead,
+	"mem_supersedes":     auth.RoleRead,
+
 	// Destructive / administrative tools
 	"mem_delete":         auth.RoleAdmin,
 	"mem_merge_projects": auth.RoleAdmin,
@@ -269,6 +274,9 @@ var ProfileAgent = map[string]bool{
 	"mem_extract_entities":       true, // heuristic entity extraction and linking
 	"mem_file_history":           true, // file-specific memory retrieval
 	"mem_file_context":           true, // file-focused context retrieval
+	"mem_temporal_state":         true, // bi-temporal: what did we know about X at time T
+	"mem_lineage":                true, // bi-temporal: trace topic_key evolution
+	"mem_supersedes":             true, // bi-temporal: what replaced this memory
 }
 
 // ProfileAdmin contains tools for TUI, dashboards, and manual curation
@@ -376,7 +384,8 @@ DEFERRED TOOLS (use ToolSearch when needed):
   mem_list_domains, mem_mark_used, mem_append_outcome, mem_resolve_conflict,
   mem_forget, mem_link, mem_unlink, mem_related, mem_consolidate_candidates,
   mem_mark_consolidated, mem_search_rerank, mem_feedback, mem_graph_context,
-  mem_extract_entities, mem_file_history, mem_file_context
+  mem_extract_entities, mem_file_history, mem_file_context,
+  mem_temporal_state, mem_lineage, mem_supersedes
 
 PROACTIVE SAVE RULE: Call mem_save immediately after ANY decision, bug fix, discovery, or convention — not just when asked.`
 
@@ -1422,6 +1431,59 @@ Duplicates are automatically detected and skipped — safe to call multiple time
 				mcp.WithNumber("limit", mcp.Description("Max linked memories to return (default: 10)")),
 			),
 			wrapToolHandler("mem_graph_context", requireMCPProjectScope("project")(handleGraphContext(s))),
+		)
+	}
+
+	// ─── mem_temporal_state (profile: agent, Phase 2) ───────────────────
+	if shouldRegister("mem_temporal_state", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_temporal_state",
+				mcp.WithDescription("Bi-temporal query: what did we believe about an entity at a point in time. Uses valid_from/valid_to windows to return memories active at the given timestamp."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Temporal State"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("entity", mcp.Required(), mcp.Description("Entity name (e.g. 'auth', 'database', 'React')")),
+				mcp.WithString("at", mcp.Required(), mcp.Description("ISO timestamp to query state at (e.g. '2026-06-01T00:00:00Z')")),
+				mcp.WithString("project", mcp.Description("Project scope")),
+			),
+			wrapToolHandler("mem_temporal_state", requireMCPProjectScope("project")(handleTemporalState(s))),
+		)
+	}
+
+	// ─── mem_lineage (profile: agent, Phase 2) ──────────────────────────
+	if shouldRegister("mem_lineage", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_lineage",
+				mcp.WithDescription("Trace the evolution of a topic_key through its supersedes chain. Returns all memories in the lineage ordered by update time."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Topic Lineage"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithString("topic_key", mcp.Required(), mcp.Description("Topic key to trace lineage for")),
+			),
+			wrapToolHandler("mem_lineage", handleLineage(s)),
+		)
+	}
+
+	// ─── mem_supersedes (profile: agent, Phase 2) ───────────────────────
+	if shouldRegister("mem_supersedes", allowlist) {
+		srv.AddTool(
+			mcp.NewTool("mem_supersedes",
+				mcp.WithDescription("Find memories that supersede the given memory. Follows the supersedes relation forward to show what replaced this memory."),
+				mcp.WithDeferLoading(true),
+				mcp.WithTitleAnnotation("Find Superseding"),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithDestructiveHintAnnotation(false),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+				mcp.WithNumber("obs_id", mcp.Required(), mcp.Description("Memory ID to find replacements for")),
+			),
+			wrapToolHandler("mem_supersedes", requireMCPMemoryScope(s, "obs_id")(handleSupersedes(s))),
 		)
 	}
 }
@@ -3161,6 +3223,109 @@ func handleGraphContext(s *store.Store) server.ToolHandlerFunc {
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "Graph context for entity %q (%d items):\n\n", entity, len(items))
+		for i, m := range items {
+			preview := util.Truncate(m.Body, 200)
+			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)\n    %s\n\n", i+1, m.ID, m.Title, m.Kind, m.Scope, preview)
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+}
+
+// ─── Phase 2 bi-temporal handlers ────────────────────────────────────────────
+
+// handleTemporalState returns memories about an entity active at a point in time.
+func handleTemporalState(s *store.Store) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		entity, _ := req.GetArguments()["entity"].(string)
+		at, _ := req.GetArguments()["at"].(string)
+		project, _ := req.GetArguments()["project"].(string)
+
+		if strings.TrimSpace(entity) == "" {
+			return mcp.NewToolResultError("entity is required"), nil
+		}
+		if strings.TrimSpace(at) == "" {
+			return mcp.NewToolResultError("at (ISO timestamp) is required"), nil
+		}
+
+		items, err := s.GetTemporalState(entity, at, project)
+		if err != nil {
+			return mcp.NewToolResultError("Temporal state query failed: " + err.Error()), nil
+		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
+
+		if len(items) == 0 {
+			return mcp.NewToolResultText(fmt.Sprintf("No memories found for entity %q at time %s.", entity, at)), nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "Temporal state for entity %q at %s (%d items):\n\n", entity, at, len(items))
+		for i, m := range items {
+			preview := util.Truncate(m.Body, 200)
+			var validStr string
+			if m.ValidFrom != nil && *m.ValidFrom != "" {
+				validStr = fmt.Sprintf(" [valid: %s", *m.ValidFrom)
+				if m.ValidTo != nil && *m.ValidTo != "" {
+					validStr += " → " + *m.ValidTo
+				}
+				validStr += "]"
+			}
+			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)%s\n    %s\n\n", i+1, m.ID, m.Title, m.Kind, m.Scope, validStr, preview)
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+}
+
+// handleLineage traces the evolution of a topic_key through supersedes chains.
+func handleLineage(s *store.Store) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		topicKey, _ := req.GetArguments()["topic_key"].(string)
+
+		if strings.TrimSpace(topicKey) == "" {
+			return mcp.NewToolResultError("topic_key is required"), nil
+		}
+
+		items, err := s.GetLineage(topicKey)
+		if err != nil {
+			return mcp.NewToolResultError("Lineage query failed: " + err.Error()), nil
+		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
+
+		if len(items) == 0 {
+			return mcp.NewToolResultText(fmt.Sprintf("No lineage found for topic_key %q.", topicKey)), nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "Lineage for topic_key %q (%d items, newest first):\n\n", topicKey, len(items))
+		for i, m := range items {
+			preview := util.Truncate(m.Body, 200)
+			var superseded string
+			if m.SupersededBy != nil && *m.SupersededBy > 0 {
+				superseded = fmt.Sprintf(" [superseded by #%d]", *m.SupersededBy)
+			}
+			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)%s\n    %s\n\n", i+1, m.ID, m.Title, m.Kind, m.Scope, superseded, preview)
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+}
+
+// handleSupersedes finds memories that supersede the given memory.
+func handleSupersedes(s *store.Store) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		obsID := int64(intArg(req, "obs_id", 0))
+
+		if obsID <= 0 {
+			return mcp.NewToolResultError("obs_id is required"), nil
+		}
+
+		items, err := s.GetSupersededBy(obsID)
+		if err != nil {
+			return mcp.NewToolResultError("Supersedes query failed: " + err.Error()), nil
+		}
+		items = store.FilterByTrustLevel(items, isLowTrustCtx(ctx))
+
+		if len(items) == 0 {
+			return mcp.NewToolResultText(fmt.Sprintf("Memory #%d is not superseded by any known memory.", obsID)), nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "Memory #%d is superseded by (%d items):\n\n", obsID, len(items))
 		for i, m := range items {
 			preview := util.Truncate(m.Body, 200)
 			fmt.Fprintf(&b, "[%d] #%d **%s** (%s | %s)\n    %s\n\n", i+1, m.ID, m.Title, m.Kind, m.Scope, preview)

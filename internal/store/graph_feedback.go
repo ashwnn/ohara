@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type MemoryEntity struct {
@@ -14,28 +15,41 @@ type MemoryEntity struct {
 	ProjectKey string
 }
 
-var entityTokenRE = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_\-/]{2,}`)
+var tokenRE = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_\-/]{2,}`)        // identifiers, paths, file names
+var capitalRE = regexp.MustCompile(`\b[A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})+\b`) // ProperCase / CamelCase terms
+var isoDateRE = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)                  // YYYY-MM-DD dates
+var urlHostRE = regexp.MustCompile(`https?://([\w.\-]+)`)                     // URL hostnames
+
+// knownTools maps case-normalized tool/language/framework names for entity extraction.
+var knownTools = map[string]bool{
+	"docker": true, "kubernetes": true, "k8s": true, "postgres": true,
+	"postgresql": true, "sqlite": true, "redis": true, "mongodb": true,
+	"grafana": true, "prometheus": true, "nginx": true, "apache": true,
+	"git": true, "github": true, "gitlab": true, "jenkins": true,
+	"terraform": true, "ansible": true, "helm": true, "istio": true,
+	"ollama": true, "openai": true, "claude": true, "gemini": true,
+	"opencode": true, "codex": true, "cursor": true, "vscode": true,
+	"playwright": true, "cypress": true, "selenium": true, "vitest": true,
+	"nextjs": true, "react": true, "angular": true, "vue": true,
+	"typescript": true, "python": true, "go": true, "rust": true,
+	"golang": true, "node": true, "nodejs": true, "deno": true,
+}
 
 func (s *Store) UpsertEntity(name, typ, project string) (int64, error) {
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(typ) == "" || strings.TrimSpace(project) == "" {
 		return 0, fmt.Errorf("name, type, and project are required")
 	}
-	res, err := s.execHook(s.db,
-		`INSERT INTO entities (name, type, project_key) VALUES (?, ?, ?)
-		 ON CONFLICT(name, type, project_key) DO NOTHING`,
-		name, typ, project,
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.execHook(s.db,
+		`INSERT INTO entities (name, type, project_key, first_seen_at, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(name, type, project_key) DO UPDATE SET
+		   last_seen_at = excluded.last_seen_at`,
+		name, typ, project, now, now,
 	)
 	if err != nil {
 		return 0, err
 	}
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if rowsAffected > 0 {
-		return res.LastInsertId()
-	}
-	// ON CONFLICT DO NOTHING did nothing — entity already exists.
 	var id int64
 	if err := s.db.QueryRow(`SELECT id FROM entities WHERE name = ? AND type = ? AND project_key = ?`, name, typ, project).Scan(&id); err != nil {
 		return 0, err
@@ -52,23 +66,51 @@ func (s *Store) LinkMemoryEntity(memoryID, entityID int64) error {
 }
 
 func ExtractEntitiesHeuristic(text string) []string {
-	matches := entityTokenRE.FindAllString(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
 	seen := make(map[string]bool)
 	var out []string
-	for _, m := range matches {
-		lower := strings.ToLower(m)
-		if len(lower) < 4 {
-			continue
+
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if len(candidate) < 3 {
+			return
 		}
+		lower := strings.ToLower(candidate)
 		if seen[lower] {
-			continue
+			return
 		}
 		seen[lower] = true
-		out = append(out, m)
+		out = append(out, candidate)
 	}
+
+	// 1. Token-based extraction (identifiers, paths, file names).
+	for _, m := range tokenRE.FindAllString(text, -1) {
+		add(m)
+	}
+
+	// 2. ProperCase / CamelCase terms (e.g. "OpenCode", "ReactNative").
+	for _, m := range capitalRE.FindAllString(text, -1) {
+		add(m)
+	}
+
+	// 3. ISO date patterns (YYYY-MM-DD).
+	for _, m := range isoDateRE.FindAllString(text, -1) {
+		add("date-" + m)
+	}
+
+	// 4. URL hosts.
+	for _, m := range urlHostRE.FindAllStringSubmatch(text, -1) {
+		if len(m) >= 2 {
+			add(m[1])
+		}
+	}
+
+	// 5. Known tool / language / framework names (case-insensitive scan).
+	for _, m := range tokenRE.FindAllString(text, -1) {
+		if knownTools[strings.ToLower(m)] {
+			add(m)
+		}
+	}
+
 	sort.Strings(out)
 	if len(out) > 20 {
 		out = out[:20]

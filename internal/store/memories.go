@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ashwnn/ohara/internal/redact"
 )
@@ -1448,9 +1449,9 @@ func (s *Store) RemoveRelation(fromID, toID int64, relation string) error {
 // GetRelated returns memory items related to the given ID.
 func (s *Store) GetRelated(id int64, relation string) ([]MemoryItem, error) {
 	query := `SELECT m.id, m.created_at, m.updated_at, m.project_id, m.actor_id, m.kind, m.scope, m.title, m.body, m.tags,
-	          source, status, superseded_by, expires_at,
-	          domain, evidence_json, applies_to_json, related_json, classification,
-	          access_count, last_accessed, valid_from, valid_to, superseded_at, session_id, trust_level,
+	          m.source, m.status, m.superseded_by, m.expires_at,
+	          m.domain, m.evidence_json, m.applies_to_json, m.related_json, m.classification,
+	          m.access_count, m.last_accessed, m.valid_from, m.valid_to, m.superseded_at, m.session_id, m.trust_level,
 	          ingested_at, written_by,
 	          trigger_condition, utility_weight, consolidated_from,
 	          0 AS relevance_score
@@ -1477,6 +1478,152 @@ func (s *Store) GetRelated(id int64, relation string) ([]MemoryItem, error) {
 		}
 	}
 	return items, nil
+}
+
+// GetTemporalState returns memory_items about the named entity that were
+// active at the given asof timestamp (bi-temporal query — T2.3).
+func (s *Store) GetTemporalState(entity, asof, project string) ([]MemoryItem, error) {
+	if strings.TrimSpace(entity) == "" {
+		return nil, fmt.Errorf("entity is required")
+	}
+	asofTime, err := parseISOTime(asof)
+	if err != nil {
+		return nil, fmt.Errorf("invalid asof timestamp: %w", err)
+	}
+	asofStr := asofTime.Format(time.RFC3339Nano)
+
+	query := `SELECT m.id, m.created_at, m.updated_at, m.project_id, m.actor_id, m.kind, m.scope, m.title, m.body, m.tags,
+		     source, status, superseded_by, expires_at,
+		     domain, evidence_json, applies_to_json, related_json, classification,
+		     access_count, last_accessed, valid_from, valid_to, superseded_at, session_id, trust_level,
+		     ingested_at, written_by,
+		     trigger_condition, utility_weight, consolidated_from,
+		     0 AS relevance_score
+		 FROM memory_items m
+		 JOIN obs_entities oe ON oe.obs_id = m.id
+		 JOIN entities e ON e.id = oe.entity_id
+		 WHERE lower(e.name) = lower(?)
+		   AND m.status = ?
+		   AND (m.valid_from IS NULL OR m.valid_from = '' OR m.valid_from <= ?)
+		   AND (m.valid_to IS NULL OR m.valid_to = '' OR m.valid_to > ?)`
+	args := []any{entity, MemoryStatusActive, asofStr, asofStr}
+	if strings.TrimSpace(project) != "" {
+		query += ` AND e.project_key = ?`
+		args = append(args, project)
+	}
+	query += ` ORDER BY m.updated_at DESC`
+
+	rows, err := s.queryItHook(s.db, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MemoryItem
+	for rows.Next() {
+		item, err := s.scanMemoryRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
+// GetLineage traces the evolution of a topic_key by following supersedes chains
+// from the most recent memory backwards through all predecessors (T2.3).
+func (s *Store) GetLineage(topicKey string) ([]MemoryItem, error) {
+	if strings.TrimSpace(topicKey) == "" {
+		return nil, fmt.Errorf("topic_key is required")
+	}
+	query := `SELECT m.id, m.created_at, m.updated_at, m.project_id, m.actor_id, m.kind, m.scope, m.title, m.body, m.tags,
+		     m.source, m.status, m.superseded_by, m.expires_at,
+		     m.domain, m.evidence_json, m.applies_to_json, m.related_json, m.classification,
+		     m.access_count, m.last_accessed, m.valid_from, m.valid_to, m.superseded_at, m.session_id, m.trust_level,
+		     m.ingested_at, m.written_by,
+		     m.trigger_condition, m.utility_weight, m.consolidated_from,
+		     0 AS relevance_score
+		 FROM memory_items m
+		 JOIN memory_relations r ON r.to_obs_id = m.id
+		 WHERE r.relation = ?
+		   AND r.from_obs_id IN (
+		     SELECT from_obs_id FROM memory_relations r2
+		     JOIN memory_items m2 ON m2.id = r2.from_obs_id OR m2.id = r2.to_obs_id
+		     WHERE m2.title LIKE ? AND r2.relation = ?
+		   )
+		   AND m.status = ?
+		 ORDER BY m.updated_at DESC`
+
+	pattern := "%" + topicKey + "%"
+	rows, err := s.queryItHook(s.db, query, RelationSupersedes, pattern, RelationSupersedes, MemoryStatusActive)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MemoryItem
+	for rows.Next() {
+		item, err := s.scanMemoryRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
+// GetSupersededBy returns memories that supersede the given memory (T2.3).
+// Follows the relation chain forward: which memories replaced this one?
+func (s *Store) GetSupersededBy(obsID int64) ([]MemoryItem, error) {
+	if obsID <= 0 {
+		return nil, fmt.Errorf("obs_id is required")
+	}
+	query := `SELECT m.id, m.created_at, m.updated_at, m.project_id, m.actor_id, m.kind, m.scope, m.title, m.body, m.tags,
+		     m.source, m.status, m.superseded_by, m.expires_at,
+		     m.domain, m.evidence_json, m.applies_to_json, m.related_json, m.classification,
+		     m.access_count, m.last_accessed, m.valid_from, m.valid_to, m.superseded_at, m.session_id, m.trust_level,
+		     m.ingested_at, m.written_by,
+		     m.trigger_condition, m.utility_weight, m.consolidated_from,
+		     0 AS relevance_score
+		 FROM memory_items m
+		 JOIN memory_relations r ON r.to_obs_id = m.id
+		 WHERE r.from_obs_id = ?
+		   AND r.relation = ?
+		   AND m.status = ?
+		 ORDER BY m.updated_at DESC`
+
+	rows, err := s.queryItHook(s.db, query, obsID, RelationSupersedes, MemoryStatusActive)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MemoryItem
+	for rows.Next() {
+		item, err := s.scanMemoryRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, *item)
+	}
+	return items, rows.Err()
+}
+
+// parseISOTime parses common ISO timestamp formats and returns UTC time.
+func parseISOTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp format: %q", s)
 }
 
 // CandidateGroup holds a group of source memories that can be consolidated.

@@ -158,23 +158,24 @@ func (s *Store) scorePackCandidates(items []MemoryItem, p PackParams) ([]scoredP
 
 func scorePackItem(item MemoryItem, p PackParams, entityWeight, relationWeight float64, now time.Time) (float64, map[string]float64) {
 	components := map[string]float64{
-		"base_retrieval_score":  0,
-		"rrf_score":             0,
-		"project_relevance":     0,
-		"session_relevance":     0,
-		"domain_relevance":      0,
-		"kind_priority":         0,
-		"classification_weight": 0,
-		"recency_boost":         0,
-		"utility_weight":        0,
-		"structural_weight":     0,
-		"relation_weight":       0,
-		"usage_weight":          0,
-		"stale_penalty":         0,
-		"superseded_penalty":    0,
-		"expiry_penalty":        0,
-		"low_trust_penalty":     0,
-		"final_score":           0,
+		"base_retrieval_score":   0,
+		"rrf_score":              0,
+		"project_relevance":      0,
+		"session_relevance":      0,
+		"domain_relevance":       0,
+		"kind_priority":          0,
+		"classification_weight":  0,
+		"recency_boost":          0,
+		"utility_weight":         0,
+		"structural_weight":      0,
+		"relation_weight":        0,
+		"temporal_overlap_boost": 0,
+		"usage_weight":           0,
+		"stale_penalty":          0,
+		"superseded_penalty":     0,
+		"expiry_penalty":         0,
+		"low_trust_penalty":      0,
+		"final_score":            0,
 	}
 
 	if p.ProjectID != "" {
@@ -207,6 +208,7 @@ func scorePackItem(item MemoryItem, p PackParams, entityWeight, relationWeight f
 	components["utility_weight"] = clamp(item.UtilityWeight*0.04, -0.06, 0.16)
 	components["structural_weight"] = clamp(entityWeight, 0, 0.16)
 	components["relation_weight"] = clamp(relationWeight, -0.06, 0.14)
+	components["temporal_overlap_boost"] = temporalOverlapBoost(item, p.Asof)
 	components["usage_weight"] = packUsageWeight(item, now)
 	components["recency_boost"] = packRecencyBoost(item.UpdatedAt, now)
 	components["stale_penalty"] = packStalePenalty(item.UpdatedAt, now)
@@ -339,6 +341,57 @@ func packTrustPenalty(trustLevel string) float64 {
 		return -0.05
 	}
 	return 0
+}
+
+// temporalOverlapBoost computes an Allen-interval temporal overlap bonus for pack scoring (T2.4).
+// When the query has a timeframe (asof), memories whose validity window overlaps the query point
+// receive a boost. Non-temporal queries (asof empty) receive zero boost.
+//
+// The boost follows the Allen-interval "contains" relation: if the query point falls within
+// the memory's [valid_from, valid_to) window, the memory gets a positive contribution.
+// Memories with no temporal binding (no valid_from/valid_to) are neutral (zero bonus).
+func temporalOverlapBoost(item MemoryItem, asof string) float64 {
+	if asof == "" {
+		return 0
+	}
+	asofTime, ok := parsePackTime(asof)
+	if !ok {
+		return 0
+	}
+
+	hasFrom := item.ValidFrom != nil && strings.TrimSpace(*item.ValidFrom) != ""
+	hasTo := item.ValidTo != nil && strings.TrimSpace(*item.ValidTo) != ""
+
+	if !hasFrom && !hasTo {
+		return 0 // no temporal binding — neutral
+	}
+
+	fromOk := true
+	toOk := true
+
+	if hasFrom {
+		fromTime, ok := parsePackTime(*item.ValidFrom)
+		if !ok {
+			return 0
+		}
+		fromOk = !fromTime.After(asofTime) // valid_from <= asof
+	}
+
+	if hasTo {
+		toTime, ok := parsePackTime(*item.ValidTo)
+		if !ok {
+			return 0
+		}
+		toOk = toTime.After(asofTime) // asof < valid_to (exclusive)
+	}
+
+	if fromOk && toOk {
+		// Allen overlap confirmed: query point is within the memory's validity window.
+		return 0.07
+	}
+	// Temporal mismatch penalty: memory's validity window does not contain the query point.
+	// This is a mild penalty (not exclusion) — the memory may still be relevant by other signals.
+	return -0.03
 }
 
 func parsePackTime(ts string) (time.Time, bool) {
