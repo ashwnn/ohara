@@ -1,6 +1,9 @@
 # Binary (only at root, not cmd/ohara/ directory)
 /ohara
 /run_retrieval
+/run-beam
+/run-locomo
+/run-longmemeval
 *.exe
 
 # Database
