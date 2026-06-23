@@ -34,3 +34,9 @@ ohara-dev
 # Session state / agent runtime artifacts
 .opencode/
 .serena/
+
+# Large benchmark datasets (do not commit - download separately)
+bench/longmemeval/data/
+
+# Raw benchmark run logs
+benchmark_output.txt
