@@ -26,6 +26,7 @@ import (
 	"github.com/ashwnn/ohara/internal/token"
 	"github.com/ashwnn/ohara/internal/util"
 	sqlite "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec" // register vec0 virtual table extension
 )
 
 var openDB = sql.Open
@@ -1063,7 +1064,7 @@ func (s *Store) Close() error {
 }
 
 // Current schema version — increment by 1 for each new migration.
-const currentSchemaVersion = 28
+const currentSchemaVersion = 30
 
 func (s *Store) migrate() error {
 	// Bootstrap schema_version table first so we can track applied migrations.
@@ -1743,6 +1744,74 @@ func (s *Store) applyMigration(version int) error {
 		}
 		if _, err := s.execHook(s.db, `CREATE INDEX IF NOT EXISTS idx_mem_idempotency ON memory_items(project_id, idempotency_key)`); err != nil {
 			return err
+		}
+
+	case 29:
+		// Migration 029: vec0 native vector index for sub-linear KNN retrieval (Phase 1).
+		if _, err := s.execHook(s.db, `
+			CREATE VIRTUAL TABLE IF NOT EXISTS observation_embeddings_vec USING vec0(
+				embedding FLOAT[768]
+			)`); err != nil {
+			return err
+		}
+
+	case 30:
+		// Migration 030: Backfill vec0 rows for existing obs_embeddings via memory_jobs.
+		// Dual-write (migration 029) only covers new embeddings. Existing embeddings
+		// that were stored before the upgrade need a one-shot copy into vec0.
+		// We enqueue batch backfill jobs so the worker processes them asynchronously,
+		// avoiding a synchronous startup block on large databases.
+		if !s.tableExists("observation_embeddings_vec") {
+			// vec0 table doesn't exist (e.g. zero-to-30 fresh install);
+			// nothing to backfill.
+			break
+		}
+		if !s.tableExists("obs_embeddings") {
+			break
+		}
+
+		// Find obs_embeddings rows that don't have corresponding vec0 entries.
+		// We process in batches via the job system.
+		rows, err := s.queryItHook(s.db, `
+			SELECT oe.obs_id
+			FROM obs_embeddings oe
+			LEFT JOIN observation_embeddings_vec v ON v.rowid = oe.obs_id
+			WHERE v.rowid IS NULL
+			ORDER BY oe.obs_id ASC
+		`)
+		if err != nil {
+			return fmt.Errorf("migration 030 query pending: %w", err)
+		}
+		defer rows.Close()
+
+		var batch []int64
+		batchCount := 0
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("migration 030 scan: %w", err)
+			}
+			batch = append(batch, id)
+			if len(batch) >= backfillBatchSize {
+				if err := s.enqueueBackfillBatch(batch); err != nil {
+					return fmt.Errorf("migration 030 enqueue batch: %w", err)
+				}
+				batchCount += len(batch)
+				batch = batch[:0]
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("migration 030 rows: %w", err)
+		}
+		// Flush remaining batch.
+		if len(batch) > 0 {
+			if err := s.enqueueBackfillBatch(batch); err != nil {
+				return fmt.Errorf("migration 030 enqueue final batch: %w", err)
+			}
+			batchCount += len(batch)
+		}
+		if batchCount > 0 {
+			log.Printf("[ohara] migration 030: enqueued %d backfill jobs for vec0", batchCount)
 		}
 
 	default:

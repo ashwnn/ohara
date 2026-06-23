@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ const (
 	JobTypeExtractEntity = "extract_entities"
 	JobTypeLinkRelated   = "link_related"
 	JobTypeScoreUtility  = "score_utility"
+	JobTypeBackfillVec0  = "backfill_vec0"
 
 	jobStatusPending = "pending"
 	jobStatusRunning = "running"
@@ -23,6 +25,9 @@ const (
 
 	defaultJobRunLimit = 20
 	maxJobAttempts     = 6
+
+	// backfillBatchSize is the number of embedding rows per backfill job.
+	backfillBatchSize = 500
 )
 
 // MemoryJob models a durable post-write derived processing task.
@@ -74,6 +79,27 @@ func (s *Store) enqueueDerivedJobsTx(tx *sql.Tx, memoryID int64) error {
 		}
 	}
 	return nil
+}
+
+// enqueueBackfillBatch enqueues backfill_vec0 jobs for a batch of memory IDs.
+// Used by migration 030 to backfill existing obs_embeddings into vec0.
+func (s *Store) enqueueBackfillBatch(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Enqueue one job per memory ID within a transaction.
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := s.execHook(tx,
+				`INSERT OR IGNORE INTO memory_jobs (memory_id, job_type, status)
+				 VALUES (?, ?, ?)`,
+				id, JobTypeBackfillVec0, jobStatusPending,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) startJobWorker() {
@@ -208,6 +234,35 @@ func (s *Store) executeMemoryJob(job *MemoryJob) error {
 	case JobTypeLinkRelated:
 		return nil
 	case JobTypeScoreUtility:
+		return nil
+	case JobTypeBackfillVec0:
+		// Backfill an existing obs_embeddings BLOB into the vec0 virtual table.
+		// This is a one-shot job enqueued by migration 030 for existing embeddings.
+		// The embedding dimension must match vec0Dim (768) to be inserted.
+		var embeddingBlob []byte
+		if err := s.db.QueryRow(
+			`SELECT embedding FROM obs_embeddings WHERE obs_id = ?`, job.MemoryID,
+		).Scan(&embeddingBlob); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // embedding already deleted, nothing to backfill
+			}
+			return fmt.Errorf("backfill_vec0 read obs_embeddings: %w", err)
+		}
+		vec, err := bytesToFloats(embeddingBlob)
+		if err != nil {
+			log.Printf("[ohara] warning: backfill_vec0 invalid embedding blob for memory %d: %v", job.MemoryID, err)
+			return nil // skip invalid blobs
+		}
+		if len(vec) != vec0Dim {
+			// Non-768d embeddings (e.g. from test embedders) aren't stored in vec0.
+			return nil
+		}
+		if _, err := s.execHook(s.db,
+			`INSERT OR REPLACE INTO observation_embeddings_vec(rowid, embedding) VALUES (?, ?)`,
+			job.MemoryID, embeddingBlob,
+		); err != nil {
+			return fmt.Errorf("backfill_vec0 insert: %w", err)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown memory job type %q", job.JobType)

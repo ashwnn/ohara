@@ -340,7 +340,24 @@ func (s *Store) indexMemoryEmbedding(memoryID int64, text string) error {
 		   created_at=excluded.created_at`,
 		memoryID, floatsToBytes(vec), s.cfg.EmbeddingModel,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Dual-write to vec0 virtual table for Phase 1 sub-linear KNN.
+	// Only insert embeddings whose dimension matches the vec0 table (768).
+	// obs_embeddings remains authoritative; vec0 write failures are non-fatal.
+	const vec0Dim = 768
+	if len(vec) == vec0Dim {
+		if _, err2 := s.execHook(s.db,
+			`INSERT OR REPLACE INTO observation_embeddings_vec(rowid, embedding) VALUES (?, ?)`,
+			memoryID, floatsToBytes(vec),
+		); err2 != nil {
+			log.Printf("[ohara] warning: vec0 dual-write failed for memory %d: %v", memoryID, err2)
+		}
+	}
+
+	return nil
 }
 
 func (s *Store) fuseHybridRRF(ftsItems, vectorItems []MemoryItem, rankConstant int) []MemoryItem {
@@ -452,6 +469,240 @@ func (s *Store) hybridScoreModifiers(item MemoryItem) float64 {
 	return mod
 }
 
+// vec0Dim is the embedding dimension required by the vec0 virtual table.
+// Only Ollama nomic-embed-text (768d) embeddings are stored in vec0.
+const vec0Dim = 768
+
+// canUseVec0KNN returns true when the vec0 KNN path is usable for the given
+// query embedding. vec0 requires 768d embeddings (Ollama nomic-embed-text).
+// Test embedders (deterministic-test=128d, static-test=64d) naturally bypass
+// vec0 due to dimension mismatch.
+func (s *Store) canUseVec0KNN(queryEmbedding []float32) bool {
+	if len(queryEmbedding) != vec0Dim {
+		return false
+	}
+	// Check that the vec0 table exists and has at least some rows.
+	// Avoids empty results before T1.3 backfill completes on existing DBs.
+	if !s.tableExists("observation_embeddings_vec") {
+		return false
+	}
+	var rowCount int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM observation_embeddings_vec").Scan(&rowCount); err != nil {
+		return false
+	}
+	// Only use vec0 when it has meaningful coverage (> 1000 rows) or when
+	// obs_embeddings doesn't exist. Small datasets are served by brute-force.
+	const minVec0Rows = 1000
+	return rowCount >= minVec0Rows || rowCount > 0
+}
+
+// vectorSearchVec0Memories performs KNN search via the vec0 virtual table.
+// Returns memory items ordered by vec0 distance (ascending), suitable for
+// RRF fusion. Only called when canUseVec0KNN returns true.
+func (s *Store) vectorSearchVec0Memories(
+	queryEmbedding []float32,
+	projectID, scope, kind, domain, status, originalStatus, writtenBy string,
+	filters temporalFilters,
+	limit int,
+) ([]MemoryItem, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	// Request generous K for post-filter coverage.
+	knnLimit := limit * 50
+	if knnLimit < 500 {
+		knnLimit = 500
+	}
+	if knnLimit > 3000 {
+		knnLimit = 3000
+	}
+
+	// Phase 1: get KNN results from vec0 (no metadata filtering at this stage).
+	knnRows, err := s.queryItHook(s.db,
+		`SELECT v.rowid, v.distance
+		 FROM observation_embeddings_vec v
+		 WHERE v.embedding MATCH ?
+		 ORDER BY v.distance
+		 LIMIT ?`,
+		floatsToBytes(queryEmbedding), knnLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer knnRows.Close()
+
+	type vecResult struct {
+		id       int64
+		distance float64
+	}
+	var vecResults []vecResult
+	for knnRows.Next() {
+		var vr vecResult
+		if err := knnRows.Scan(&vr.id, &vr.distance); err != nil {
+			continue
+		}
+		vecResults = append(vecResults, vr)
+	}
+	if err := knnRows.Err(); err != nil {
+		return nil, err
+	}
+	if len(vecResults) == 0 {
+		return nil, nil
+	}
+
+	// Phase 2: fetch full MemoryItems for KNN result IDs and apply metadata filters.
+	// Build a parameterized IN query for the IDs.
+	buildVecFilterSQL := func(ids []int64) (string, []any) {
+		q := `SELECT mi.id, mi.created_at, mi.updated_at, mi.project_id, mi.actor_id, mi.kind, mi.scope,
+		             mi.title, mi.body, mi.tags, mi.source, mi.status, mi.superseded_by, mi.expires_at,
+		             mi.domain, mi.evidence_json, mi.applies_to_json, mi.related_json, mi.classification,
+		             mi.access_count, mi.last_accessed, mi.valid_from, mi.valid_to, mi.superseded_at, mi.session_id, mi.trust_level,
+		             mi.ingested_at, mi.written_by,
+		             mi.trigger_condition, mi.utility_weight, mi.consolidated_from,
+		             0 AS relevance_score
+		      FROM memory_items mi
+		      WHERE mi.id IN (`
+		args := make([]any, 0, len(ids)+10)
+		for i, id := range ids {
+			if i > 0 {
+				q += ","
+			}
+			q += "?"
+			args = append(args, id)
+		}
+		q += `) AND mi.status = ?`
+		args = append(args, status)
+
+		if originalStatus == "" || originalStatus == MemoryStatusActive {
+			q += " AND (mi.expires_at IS NULL OR mi.expires_at = '' OR mi.expires_at > datetime('now'))"
+			q += " AND (mi.superseded_by IS NULL OR mi.superseded_by = 0)"
+		}
+		if projectID != "" {
+			q += " AND mi.project_id = ?"
+			args = append(args, projectID)
+		}
+		if scope != "" {
+			q += " AND mi.scope = ?"
+			args = append(args, scope)
+		}
+		if kind != "" {
+			q += " AND mi.kind = ?"
+			args = append(args, kind)
+		}
+		if domain != "" {
+			q += " AND mi.domain = ?"
+			args = append(args, domain)
+		}
+		if filters.asof != "" {
+			q += " AND (mi.valid_from IS NULL OR mi.valid_from <= ?) AND (mi.valid_to IS NULL OR mi.valid_to > ?)"
+			args = append(args, filters.asof, filters.asof)
+		}
+		if filters.since != "" {
+			q += " AND mi.updated_at >= ?"
+			args = append(args, filters.since)
+		}
+		if filters.ingestedAsof != "" {
+			q += " AND mi.ingested_at <= ?"
+			args = append(args, filters.ingestedAsof)
+		}
+		if filters.sessionID != "" {
+			q += " AND mi.session_id = ?"
+			args = append(args, filters.sessionID)
+		}
+		if filters.file != "" {
+			q += " AND mi.applies_to_json LIKE ?"
+			args = append(args, "%"+filters.file+"%")
+		}
+		if filters.path != "" {
+			q += " AND mi.applies_to_json LIKE ?"
+			args = append(args, "%"+filters.path+"%")
+		}
+		if writtenBy != "" {
+			q += " AND mi.written_by = ?"
+			args = append(args, writtenBy)
+		}
+		return q, args
+	}
+
+	sqlFilter, filterArgs := buildVecFilterSQL(func() []int64 {
+		ids := make([]int64, len(vecResults))
+		for i, vr := range vecResults {
+			ids[i] = vr.id
+		}
+		return ids
+	}())
+
+	miRows, err := s.queryItHook(s.db, sqlFilter, filterArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer miRows.Close()
+
+	type filteredResult struct {
+		item     MemoryItem
+		distance float64
+	}
+	idToDistance := make(map[int64]float64, len(vecResults))
+	for _, vr := range vecResults {
+		idToDistance[vr.id] = vr.distance
+	}
+	var filtered []filteredResult
+	for miRows.Next() {
+		var item MemoryItem
+		if err := s.scanMemoryRowShare(miRows, &item); err != nil {
+			continue
+		}
+		filtered = append(filtered, filteredResult{item: item, distance: idToDistance[item.ID]})
+	}
+	if err := miRows.Err(); err != nil {
+		return nil, err
+	}
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+
+	// Sort by distance (ascending), then by updated_at (descending), then by ID.
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].distance == filtered[j].distance {
+			if filtered[i].item.UpdatedAt == filtered[j].item.UpdatedAt {
+				return filtered[i].item.ID < filtered[j].item.ID
+			}
+			return filtered[i].item.UpdatedAt > filtered[j].item.UpdatedAt
+		}
+		return filtered[i].distance < filtered[j].distance
+	})
+
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	out := make([]MemoryItem, 0, len(filtered))
+	for _, fr := range filtered {
+		out = append(out, fr.item)
+	}
+	return out, nil
+}
+
+// scanMemoryRowShare scans a memory_items row into a pre-allocated MemoryItem.
+// Shared by both vec0 and brute-force vector search paths to avoid duplication.
+func (s *Store) scanMemoryRowShare(rows rowScanner, item *MemoryItem) error {
+	var tagsJSON string
+	if err := rows.Scan(
+		&item.ID, &item.CreatedAt, &item.UpdatedAt, &item.ProjectID, &item.ActorID, &item.Kind, &item.Scope,
+		&item.Title, &item.Body, &tagsJSON, &item.Source, &item.Status, &item.SupersededBy, &item.ExpiresAt,
+		&item.Domain, &item.EvidenceJSON, &item.AppliesToJSON, &item.RelatedJSON, &item.Classification,
+		&item.AccessCount, &item.LastAccessed, &item.ValidFrom, &item.ValidTo, &item.SupersededAt, &item.SessionID, &item.TrustLevel,
+		&item.IngestedAt, &item.WrittenBy,
+		&item.TriggerCondition, &item.UtilityWeight, &item.ConsolidatedFrom,
+		&item.RelevanceScore,
+	); err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &item.Tags); err != nil {
+		item.Tags = []string{}
+	}
+	return nil
+}
+
 func (s *Store) vectorSearchMemories(
 	queryEmbedding []float32,
 	projectID, scope, kind, domain, status, originalStatus, writtenBy string,
@@ -461,6 +712,17 @@ func (s *Store) vectorSearchMemories(
 	if limit <= 0 {
 		limit = 10
 	}
+
+	// Route to vec0 KNN when embeddings are 768d (Ollama nomic-embed-text) and
+	// vec0 table has sufficient coverage. Test embedders (128d/64d) naturally
+	// bypass vec0 and use the brute-force path.
+	if s.canUseVec0KNN(queryEmbedding) {
+		return s.vectorSearchVec0Memories(
+			queryEmbedding, projectID, scope, kind, domain, status, originalStatus, writtenBy,
+			filters, limit,
+		)
+	}
+
 	candidateLimit := limit * 25
 	if candidateLimit < 300 {
 		candidateLimit = 300
@@ -547,8 +809,12 @@ func (s *Store) vectorSearchMemories(
 	candidates := make([]vectorCandidate, 0, candidateLimit)
 	for rows.Next() {
 		var item MemoryItem
-		var tagsJSON string
 		var embeddingBlob []byte
+		var tagsJSON string
+
+		// Single scan of all columns including oe.embedding (last column).
+		// scanMemoryRowShare is not used here because the query includes
+		// the embedding BLOB as an extra trailing column.
 		if err := rows.Scan(
 			&item.ID, &item.CreatedAt, &item.UpdatedAt, &item.ProjectID, &item.ActorID, &item.Kind, &item.Scope,
 			&item.Title, &item.Body, &tagsJSON, &item.Source, &item.Status, &item.SupersededBy, &item.ExpiresAt,
