@@ -1,15 +1,31 @@
 # Ohara Handoff
 
-Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the implementation plan). Written June 19, 2026.
+Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the implementation plan). Written June 19, 2026. Updated June 23, 2026.
+
+## Implementation status (as of 2026-06-23)
+
+| Phase | Tasks | Status |
+|-------|-------|--------|
+| Phase 0 | T0.1–T0.4 | ✅ Complete |
+| Phase 1 | T1.0–T1.3 | ✅ Complete (commit `34b0be3`) |
+| Phase 2 | T2.1–T2.4 | ✅ Complete (commit `a0709c0`) |
+| Phase 3 | Backlog | 🔲 Gated — requires written design note |
+
+### Recent commits
+
+- `32846d6` — CI size/dependency guard (T0.3)
+- `239ecd8` — LongMemEval CI gate (T0.1)
+- `896feba` — LoCoMo + BEAM-1M harnesses (T0.2)
+- *(T0.4 docs commit pending)*
 
 ## What Ohara is
 
 A local-first agent-memory engine shipped as a single static Go binary. It stores curated memories in SQLite with FTS5 lexical search, optional Ollama vector embeddings, a typed relation graph, and a five-state lifecycle. It exposes a 35-tool MCP surface to coding agents (Claude Code, OpenCode, Gemini CLI). The differentiators are strict: single binary, no CGO, and zero LLM calls on the retrieval hot path.
 
-- Module: `github.com/ashwnn/ohara`, Go 1.24.2.
-- 3 direct deps: `mark3labs/mcp-go v0.44.0`, `pkoukk/tiktoken-go v0.1.8`, `modernc.org/sqlite v1.45.0`.
+- Module: `github.com/ashwnn/ohara`, Go 1.25.0.
+- 3 direct deps: `mark3labs/mcp-go v0.44.0`, `pkoukk/tiktoken-go v0.1.8`, `modernc.org/sqlite v1.53.0`.
 - Runtime: one binary + one SQLite WAL DB (`engram.db`) under `~/.local/share/ohara/`.
-- Build: `go build -trimpath -ldflags "-s -w -X main.version=..."`; release matrix linux/darwin x amd64/arm64; stripped binary ~14-18 MB.
+- Build: `go build -trimpath -ldflags "-s -w -X main.version=..."`; release matrix linux/darwin x amd64/arm64; stripped binary ~13.1 MB.
 
 ## Repo map (verified against code)
 
