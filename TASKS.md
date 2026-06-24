@@ -257,14 +257,78 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-## Phase 3 — Backlog (needs written justification before starting)
+## Phase 3 — Narrow graph-aware Personalized PageRank reranker (Week 14+)
 
-These relax constraints or lack evidence of need. Do not start without a short design note arguing the constraint trade-off.
+> **Design note:** `docs/design-phase3-ppr-reranker.md` (created 2026-06-23). Measurement pass confirms multi-hop Recall@3 = 0.000 on BEAM fixture. PPR reranker is the highest-ROI Phase 3 item.
 
-- **Pluggable HNSW index** (`coder/hnsw`, pure-Go). Only useful above ~50k items; `vec0` (Phase 1) likely makes it unnecessary. Re-evaluate only if `vec0` KNN proves insufficient at target scale.
-- **Sleep-time consolidation** (Letta-style offline merge/dedupe via `memory_jobs`). Requires local Ollama; keep optional and local. Promising but large.
-- **Personalized PageRank reranker** (HippoRAG 2). Pure-Go feasible, likely passes constraints; improves multi-hop recall. Candidate once BEAM multi-hop numbers (T0.2) show a gap.
-- **BEAM-10M scaling.** Gated on Phase 1 latency at extreme N; treat as a research spike, not a deliverable.
+### T3.1 — Core PPR engine (`internal/store/ppr.go`)
+
+**What.** Pure-Go Personalized PageRank implementation: adjacency graph from `memory_relations`, entity-aware personalization vector, bounded iterative PPR (α=0.15, 5 iters), linear blend with original retrieval scores.
+
+**Why.** Multi-hop BEAM probes fail because lexical search cannot connect related facts. The relation graph already captures these connections; PPR propagates relevance from lexically-matched seeds to graph neighbors.
+
+**Research / verification.**
+- BEAM baseline (2026-06-23): multi_hop Recall@3 = 0.000 (p-009, p-010 fail), temporal = 0.500 (p-007 fails, p-008 passes).
+- Relation graph: 6 typed relations (`caused`, `resolves`, `supersedes`, `related_to`, `implements`, `contradicts`) with existing typed weights in `pack_scoring.go` ~line 498.
+- Entity extraction: `ExtractEntitiesHeuristic` in `graph_feedback.go` ~line 68 provides deterministic seed entities.
+- Algorithm: N ≤ 200 candidates, matrix O(200²), 5 iterations — ~200k FLOPs, negligible.
+- No new dependencies. Pure-Go matrix ops. Flag-gated behind `--ppr-rerank`.
+
+**Implementation pointers.**
+- New file `internal/store/ppr.go`: `pprGraph` struct, `buildPPRGraph()`, `buildPersonalizationVector()`, `personalizedPageRank()`, `blendAndRerank()`.
+- New test `internal/store/ppr_test.go`: synthetic graphs, rank consistency, edge cases.
+- Store config: add `PPRRerank bool` field, false by default.
+
+**Acceptance.** Unit tests pass on synthetic graphs. No behavior change when flag is off.
+
+**Effort.** ~1 day. **Risk.** Low. **Depends on.** Nothing (uses existing tables).
+
+---
+
+### T3.2 — Wire PPR into hybrid retrieval pipeline
+
+**What.** Call `pprRerank()` after `fuseHybridRRF()` in the hybrid search path. Blend PPR scores with RRF scores.
+
+**Why.** This is where the multi-hop improvement materializes.
+
+**Implementation pointers.**
+- Integration point: `internal/store/hybrid.go` ~line 716-841 (after `fuseHybridRRF` returns, before top-K truncation).
+- `blendAndRerank()` takes original RRF-ranked candidates + PPR scores, returns re-ranked list.
+- λ = 0.15 default (PPR contribution); tunable.
+
+**Acceptance.** BEAM multi-hop Recall@3 > 0.20 on current fixture. Retrieval fixture Recall@3 ≥ 0.95 (no regression). SLO gates pass.
+
+**Effort.** ~0.5 day. **Risk.** Low-Medium (must not regress single-hop). **Depends on.** T3.1.
+
+---
+
+### T3.3 — Expand BEAM fixture + multi-hop CI gate
+
+**What.** Expand `bench/beam/fixture.json` from 10 probes (2 multi-hop) to ~25 probes (8+ multi-hop, 4+ temporal). Add CI gate tracking multi-hop Recall@3.
+
+**Why.** The 2-probe multi-hop fixture is too small for confident measurement. More probes reduce variance and make the gate meaningful.
+
+**Acceptance.** `go test ./bench/beam/` green. CI job reports per-probe-type metrics with multi-hop gate.
+
+**Effort.** ~0.5 day. **Risk.** Low. **Depends on.** T3.2.
+
+---
+
+### T3.4 — temporal walk variant (optional)
+
+**What.** If temporal_order BEAM probes don't improve from PPR alone, add temporal-weighted edges (adjacent turns in same session get higher weight).
+
+**Acceptance.** Temporal BEAM probes improve. SLO gates pass.
+
+**Effort.** ~0.5 day. **Risk.** Low. **Depends on.** T3.2, triggered only if temporal gap persists.
+
+---
+
+## Backlog (not yet justified)
+
+- **Pluggable HNSW index** (`coder/hnsw`, pure-Go). Superseded by `vec0` (Phase 1). Re-evaluate only if vec0 KNN proves insufficient at target scale.
+- **Sleep-time consolidation** (Letta-style offline merge/dedupe via `memory_jobs`). Requires local Ollama; keep optional. Promising but large surface area.
+- **BEAM-10M scaling.** Gated on Phase 1 latency at extreme N; research spike only.
 
 ### Explicit non-goals (do not implement)
 - No `sqlite-vec` via `mattn/go-sqlite3` (CGO breaks portability).

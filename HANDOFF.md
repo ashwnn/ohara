@@ -9,7 +9,17 @@ Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the impl
 | Phase 0 | T0.1–T0.4 | ✅ Complete |
 | Phase 1 | T1.0–T1.3 | ✅ Complete (commit `34b0be3`) |
 | Phase 2 | T2.1–T2.4 | ✅ Complete (commit `a0709c0`) |
-| Phase 3 | Backlog | 🔲 Gated — requires written design note |
+| Phase 3 | T3.1 PPR engine | 🔲 Design note committed — implementation pending |
+| Phase 3 | T3.2–T3.4 | 🔲 Gated on T3.1 |
+
+### Measurement pass (2026-06-23)
+
+- BEAM multi-hop Recall@3: **0.000** (0/2 probes) — justifies PPR reranker
+- BEAM temporal Recall@3: **0.500** (1/2 probes)
+- Retrieval fixture Recall@3: **0.966** — SLO gates pass
+- Binary size: **13.7 MB** stripped
+- vec0: integrated (768d, >1000 row threshold)
+- Design note: `docs/design-phase3-ppr-reranker.md`
 
 ### Recent commits
 
@@ -79,15 +89,22 @@ The analysis (`docs/analysis-20260619.md`) is a strong strategic document, but s
 
 Numbers I did *not* independently re-verify and that should be treated as analysis-supplied until checked: Hindsight `91.4` LME / `64.1` BEAM-10M, MemPalace `96.6` recall_any@5, and the various LoCoMo baselines. Verify before publishing them in `docs/COMPARISON.md`.
 
-## Where to start
+## Where to start (updated 2026-06-23)
 
-Follow the first-PR sequence in `TASKS.md`. Concretely:
+Phases 0-2 are complete. Current work is Phase 3: narrow PPR reranker.
 
-1. **T0.3 size/dependency CI guard (~2h)** — land this first so it protects every later change.
-2. **T0.1 official LongMemEval 500-Q (~1d)** — first public benchmark number; harness plumbing already exists.
-3. Then T0.2 → T0.4, then Phase 1 starting with the **T1.0 driver bump**.
+1. **T3.1 Core PPR engine (~1d)** — new file `internal/store/ppr.go`, pure-Go, no new deps, flag-gated off by default. Unit tests on synthetic graphs.
+2. **T3.2 Wire into hybrid retrieval (~0.5d)** — integrate into `internal/store/hybrid.go` after `fuseHybridRRF()`.
+3. **T3.3 Expand BEAM fixture (~0.5d)** — 10→25 probes, multi-hop CI gate.
 
-The three things most likely to bite: (a) the v1.47.0 driver bump shifting FTS5/query-planner behavior, so isolate it in its own PR; (b) proving the `vec0` KNN lane returns ranking parity with the brute-force cosine lane rather than assuming it; (c) keeping the deterministic CI embedders reproducible once a real ANN path exists.
+See `docs/design-phase3-ppr-reranker.md` for full design, constraint compliance, and success criteria. See `.opencode/handoff.md` for session resume point.
+
+Key constraints for all Phase 3 work:
+- No new `go.mod` dependencies (pure-Go matrix ops only)
+- No LLM on hot path
+- Flag-gated (`--ppr-rerank`), off by default
+- Must not regress retrieval fixture Recall@3 (0.966)
+- Binary size delta ≤ 500 KB
 
 ## Build and verify
 
