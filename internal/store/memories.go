@@ -896,6 +896,14 @@ func (s *Store) SearchMemories(query string, projectID, scope, kind, domain stri
 		items = filtered
 	}
 
+	// Phase 3: graph-aware Personalized PageRank reranker.
+	// Off by default; flag-gated behind cfg.PPRRerank.
+	// Reorders candidates using the existing relation graph to improve
+	// multi-hop recall without hot-path LLM calls.
+	if s.cfg.PPRRerank && len(items) > 1 && strings.TrimSpace(query) != "" {
+		items = s.pprRerank(query, items)
+	}
+
 	return items, nil
 }
 

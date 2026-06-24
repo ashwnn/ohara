@@ -589,6 +589,7 @@ type Config struct {
 	HybridAlpha       float64
 	OllamaURL         string
 	RerankerBackend   string         // "none", "tfidf" (default), "ollama"
+	PPRRerank         bool           // enable graph-aware PPR reranker (off by default)
 	Scoring           ScoringWeights // tunable retrieval scoring weights
 	NoJobWorker       bool           // set true to skip the background job worker (e.g. bulk import)
 	MaxOpenConns      int            // optional SQLite connection cap for concurrent benchmark-style reads
