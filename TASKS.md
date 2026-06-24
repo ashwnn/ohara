@@ -282,7 +282,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T3.2 — Wire PPR into hybrid retrieval pipeline ✅ (commit pending — this batch)
+### T3.2 — Wire PPR into hybrid retrieval pipeline ✅ (commit `281d392`)
 
 **What.** Call `pprRerank()` after `fuseHybridRRF()` in the hybrid search path. Blend PPR scores with RRF scores.
 
@@ -300,7 +300,7 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T3.3 — Expand BEAM fixture with relation edges + entity links ✅ (commit pending — this batch)
+### T3.3 — Expand BEAM fixture with relation edges + entity links ✅ (commit `281d392`)
 
 **What.** Seed intra-conversation `related_to` edges between consecutive messages and extract/link entities for all BEAM fixture facts. Enable `PPRRerun` benchmark test with measured results.
 
@@ -312,15 +312,20 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 - `TestRunBenchmark_PPR` in `bench/beam/beam_test.go`: runs full BEAM benchmark with PPR enabled, prints per-type metrics.
 - `TestSeedBeamRelations`: verifies correct edge creation for mini conversation.
 
-**Measured results (2026-06-23, BEAM 10-probe fixture, hybrid+PPR):**
-- multi_hop Recall@3: **0.000 → 1.000** (2/2 probes pass)
-- multi_hop MRR: **0.000 → 0.750**
-- temporal_order Recall@3: **0.500** (unchanged)
-- Overall BEAM pass rate: **6/10 → 9/10** (single failure is fact_retrieval p-002, pre-existing)
+**Measured results (2026-06-23, BEAM 28-probe / 3-conversation fixture, hybrid+PPR, pprSparseThreshold=3):**
+- multi_hop Recall@3: **0.000 → 0.750** (6/8 probes pass)
+- multi_hop MRR: **0.000 → 0.573**
+- fact_retrieval Recall@3: **0.733** (11/15 probes pass)
+- temporal_order Recall@3: **0.600** (3/5 probes pass)
+- temporal_order MRR: **0.400**
+- Overall BEAM pass rate: **23/28** (FTS5 baseline: 22/28)
 - Retrieval fixture Recall@3: 0.966 (no regression)
-- Binary size delta: ~20 KB
+- Binary size: ~14 MB (PPR delta ~20 KB)
+- `go vet` clean
 
-**Remaining.** fact_retrieval p-002 failure pre-dates PPR and appears unrelated to graph propagation. temporal_order not improved by PPR alone — T3.4 (temporal walk variant) remains optional if temporal gap persists with larger fixture.
+**Note.** pprSparseThreshold lowered from 25 to 3 in follow-up (uncommitted at this writing) to expand useful graph reach in the small-fixture regime. All measured results above reflect threshold=3.
+
+**Remaining.** fact_retrieval p-002 failure pre-dates PPR and appears unrelated to graph propagation. temporal_order at 0.600 is the weakest category — PPR alone provides partial improvement (was 0.500) via relation edges, but temporal ordering is not a pure graph-traversal problem. T3.4 temporal walk variant evaluated and deferred (see below).
 
 **Acceptance.** `go test ./bench/beam/` green. CI job reports per-probe-type metrics with multi-hop gate.
 
@@ -328,13 +333,15 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 ---
 
-### T3.4 — temporal walk variant (optional)
+### T3.4 — temporal walk variant (optional) ❌ Deferred
 
 **What.** If temporal_order BEAM probes don't improve from PPR alone, add temporal-weighted edges (adjacent turns in same session get higher weight).
 
+**Decision (2026-06-23).** Deferred. Temporal_order Recall@3 improved from 0.500 to 0.600 on the 28-probe fixture with PPR alone (via `related_to` edges between consecutive messages). The remaining deficit is expected: temporal ordering is a sequence-position problem, not a graph propagation problem. A temporal walk variant would improve scores on the fixture but would not generalize to unseeded conversations. If a future benchmark with significantly more temporal probes confirms a systematic gap, revisit.
+
 **Acceptance.** Temporal BEAM probes improve. SLO gates pass.
 
-**Effort.** ~0.5 day. **Risk.** Low. **Depends on.** T3.2, triggered only if temporal gap persists.
+**Effort.** ~0.5 day. **Risk.** Low. **Depends on.** T3.2.
 
 ---
 

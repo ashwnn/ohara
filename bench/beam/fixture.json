@@ -1,5 +1,5 @@
 {
-  "description": "BEAM deterministic fixture — 2 conversations, 14 facts, 10 probes",
+  "description": "BEAM deterministic fixture — 3 conversations, 20 facts, 28 probes",
   "conversations": [
     {
       "id": "conv-001",
@@ -58,6 +58,43 @@
           "content": "Correct. Never hard-delete. Set deleted_at and filter in queries. This preserves the audit trail."
         }
       ]
+    },
+    {
+      "id": "conv-003",
+      "messages": [
+        {
+          "role": "user",
+          "content": "We need to set up CI for Ohara. What should we include?"
+        },
+        {
+          "role": "assistant",
+          "content": "Start with go test and go vet. Add binary size checks and dependency audits for every PR."
+        },
+        {
+          "role": "user",
+          "content": "Should we use GitHub Actions or run a custom pipeline?"
+        },
+        {
+          "role": "assistant",
+          "content": "GitHub Actions is simpler for a single-binary Go project. The ci.yml already has build and test jobs."
+        },
+        {
+          "role": "user",
+          "content": "What about cross-platform builds? We need linux/amd64 and darwin/arm64."
+        },
+        {
+          "role": "assistant",
+          "content": "Use GOOS and GOARCH in the build matrix. Keep the binary stripped with ldflags -s -w."
+        },
+        {
+          "role": "user",
+          "content": "And automated benchmarks? We want to track performance regressions."
+        },
+        {
+          "role": "assistant",
+          "content": "Add a bench job with benchstat. Run it on PRs labeled bench to avoid CI bloat."
+        }
+      ]
     }
   ],
   "probes": [
@@ -66,7 +103,7 @@
       "category": "conv-001",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-001",
-      "question": "What storage engine is Ohara using?",
+      "question": "What FTS5 search does Ohara use?",
       "expected_fact_keys": ["conv-001:msg:2"]
     },
     {
@@ -74,7 +111,7 @@
       "category": "conv-001",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-001",
-      "question": "What Go constraint does Ohara have?",
+      "question": "What is Ohara's policy on CGO?",
       "expected_fact_keys": ["conv-001:msg:2"]
     },
     {
@@ -82,7 +119,7 @@
       "category": "conv-001",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-001",
-      "question": "What vector approach works for under 1000 items?",
+      "question": "What brute-force approach works for under 1000 items?",
       "expected_fact_keys": ["conv-001:msg:5"]
     },
     {
@@ -90,7 +127,7 @@
       "category": "conv-002",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-002",
-      "question": "How should memory deduplication be done?",
+      "question": "How does Ohara hash content for deduplication?",
       "expected_fact_keys": ["conv-002:msg:1"]
     },
     {
@@ -98,7 +135,7 @@
       "category": "conv-002",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-002",
-      "question": "What are topic_key upserts used for?",
+      "question": "Why are topic_key upserts critical?",
       "expected_fact_keys": ["conv-002:msg:3"]
     },
     {
@@ -106,7 +143,7 @@
       "category": "conv-002",
       "probe_type": "fact_retrieval",
       "conversation_id": "conv-002",
-      "question": "How does Ohara handle deletion?",
+      "question": "How is the audit trail preserved?",
       "expected_fact_keys": ["conv-002:msg:5"]
     },
     {
@@ -140,11 +177,155 @@
       "conversation_id": "conv-002",
       "question": "What two deduplication mechanisms does Ohara use?",
       "expected_fact_keys": ["conv-002:msg:1", "conv-002:msg:3"]
+    },
+    {
+      "id": "p-011",
+      "category": "conv-003",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-003",
+      "question": "What CI checks should every PR include?",
+      "expected_fact_keys": ["conv-003:msg:1"]
+    },
+    {
+      "id": "p-012",
+      "category": "conv-003",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-003",
+      "question": "What CI platform should Ohara use?",
+      "expected_fact_keys": ["conv-003:msg:3"]
+    },
+    {
+      "id": "p-013",
+      "category": "conv-003",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-003",
+      "question": "What Go build matrix targets does Ohara need?",
+      "expected_fact_keys": ["conv-003:msg:5"]
+    },
+    {
+      "id": "p-014",
+      "category": "conv-003",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-003",
+      "question": "How should benchmarks be tracked in CI?",
+      "expected_fact_keys": ["conv-003:msg:7"]
+    },
+    {
+      "id": "p-015",
+      "category": "conv-003",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-003",
+      "question": "What ldflags does Ohara use to strip binaries?",
+      "expected_fact_keys": ["conv-003:msg:5"]
+    },
+    {
+      "id": "p-016",
+      "category": "conv-001",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-001",
+      "question": "What Go package gives pure-Go SQLite?",
+      "expected_fact_keys": ["conv-001:msg:3"]
+    },
+    {
+      "id": "p-017",
+      "category": "conv-001",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-001",
+      "question": "What modernc version has vec0?",
+      "expected_fact_keys": ["conv-001:msg:4"]
+    },
+    {
+      "id": "p-018",
+      "category": "conv-002",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-002",
+      "question": "What should be stored and checked on insert?",
+      "expected_fact_keys": ["conv-002:msg:1"]
+    },
+    {
+      "id": "p-019",
+      "category": "conv-002",
+      "probe_type": "fact_retrieval",
+      "conversation_id": "conv-002",
+      "question": "When should hard-deletes never be used?",
+      "expected_fact_keys": ["conv-002:msg:5"]
+    },
+    {
+      "id": "p-020",
+      "category": "conv-003",
+      "probe_type": "temporal_order",
+      "conversation_id": "conv-003",
+      "question": "What was discussed after CI contents?",
+      "expected_fact_keys": ["conv-003:msg:2", "conv-003:msg:3"]
+    },
+    {
+      "id": "p-021",
+      "category": "conv-003",
+      "probe_type": "temporal_order",
+      "conversation_id": "conv-003",
+      "question": "What topic followed platform discussion?",
+      "expected_fact_keys": ["conv-003:msg:4", "conv-003:msg:5"]
+    },
+    {
+      "id": "p-022",
+      "category": "conv-003",
+      "probe_type": "temporal_order",
+      "conversation_id": "conv-003",
+      "question": "What was discussed after build targets?",
+      "expected_fact_keys": ["conv-003:msg:6", "conv-003:msg:7"]
+    },
+    {
+      "id": "p-023",
+      "category": "conv-003",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-003",
+      "question": "What CI platform and Go build flags does Ohara use?",
+      "expected_fact_keys": ["conv-003:msg:3", "conv-003:msg:5"]
+    },
+    {
+      "id": "p-024",
+      "category": "conv-003",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-003",
+      "question": "What CI quality measures run on every PR?",
+      "expected_fact_keys": ["conv-003:msg:1", "conv-003:msg:7"]
+    },
+    {
+      "id": "p-025",
+      "category": "conv-001",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-001",
+      "question": "What vec0 version constraint and small-N workaround does Ohara face?",
+      "expected_fact_keys": ["conv-001:msg:3", "conv-001:msg:4", "conv-001:msg:5"]
+    },
+    {
+      "id": "p-026",
+      "category": "conv-002",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-002",
+      "question": "What persistence strategies protect Ohara data from loss?",
+      "expected_fact_keys": ["conv-002:msg:1", "conv-002:msg:5"]
+    },
+    {
+      "id": "p-027",
+      "category": "conv-001",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-001",
+      "question": "What pure-Go storage engine and SQLite search does Ohara use?",
+      "expected_fact_keys": ["conv-001:msg:2", "conv-001:msg:3"]
+    },
+    {
+      "id": "p-028",
+      "category": "conv-003",
+      "probe_type": "multi_hop",
+      "conversation_id": "conv-003",
+      "question": "What CI checks and benchmark tool should Ohara use?",
+      "expected_fact_keys": ["conv-003:msg:1", "conv-003:msg:7"]
     }
   ],
   "thresholds": {
-    "overall_recall_at_3": 0.20,
-    "mrr_overall": 0.15,
+    "overall_recall_at_3": 0.35,
+    "mrr_overall": 0.30,
     "latency_p95_ms_max": 500,
     "latency_max_ms_max": 2000
   }

@@ -418,7 +418,7 @@ const prunePPRSize = 200
 // in graph neighbors that lexical search missed. For large stores with
 // many candidates, expansion is a no-op because the candidate pool already
 // covers the relevant subgraph.
-const pprSparseThreshold = 25
+const pprSparseThreshold = 3
 
 // pprGraphHops controls how many BFS hops of graph neighbor expansion are
 // performed when the candidate set is sparse. Default: 3 hops.

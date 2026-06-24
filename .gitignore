@@ -43,3 +43,9 @@ bench/longmemeval/data/
 
 # Raw benchmark run logs
 benchmark_output.txt
+
+# Build artifacts
+ohara-stripped
+
+# Large eval datasets (do not commit)
+evals/

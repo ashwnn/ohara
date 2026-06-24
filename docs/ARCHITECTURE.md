@@ -34,9 +34,10 @@ ohara/
 │   │   ├── memories.go         # Memory CRUD, conflict detection, access tracking
 │   │   ├── pack.go             # Context pack and prime pack assembly
 │   │   ├── hybrid.go           # FTS5 + embedding hybrid retrieval
+│   │   ├── ppr.go              # Personalized PageRank graph reranker
 │   │   └── graph_feedback.go   # Relation graph, entities, utility feedback
 │   ├── server/server.go        # HTTP REST API
-│   ├── mcp/mcp.go              # MCP stdio server (33 tools)
+│   ├── mcp/mcp.go              # MCP stdio server (35 tools)
 │   ├── config/config.go        # Configuration loading
 │   ├── redact/redact.go        # Secret redaction pipeline
 │   ├── maintain/maintain.go    # Archive, backup, integrity

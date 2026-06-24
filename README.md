@@ -34,7 +34,7 @@ graph TB
     subgraph Ohara["Ohara (single binary)"]
         direction TB
         CLI["CLI: search, save, prime, validate, doctor, consolidate"]
-        MCP["MCP Server: 33 tools via stdio"]
+        MCP["MCP Server: 35 tools via stdio"]
         HTTP["HTTP API: port 7331"]
     end
 
@@ -283,10 +283,11 @@ Each feature was motivated by a specific failure mode identified through compara
 - **Conflict detection and resolution** — save-time and retrieval-time contradiction surfacing with a 5-action resolver (add, merge, invalidate, relate, suppress)
 - **Relation graph** — typed directional links between memories (`caused`, `resolves`, `supersedes`, `implements`, `contradicts`) enabling traversal queries
 - **Hybrid retrieval** — FTS5 + optional Ollama embedding sidecar with Reciprocal Rank Fusion, zero LLM calls at query time
+- **PPR graph reranker** — Personalized PageRank engine that propagates relevance through the typed relation graph, boosting multi-hop recall without LLM calls (flag-gated, off by default)
 - **Consolidation** — heuristic grouping of episodic memories into candidates for promotion to semantic knowledge, with mandatory agent review
 - **Actor-aware writes** — source tracking (`user`, `agent`, `consolidation`, `import`, `system`) so agents can weight inferences lower than verified facts
 - **Secret redaction** — regex-based pre-write redaction strips tokens and keys before they touch the database
-- **33 MCP tools** — save, search, retrieve, link, consolidate, feedback, outcomes, conflict resolution, entity extraction, graph traversal, file-aware retrieval, and pack explain
+- **35 MCP tools** — save, search, retrieve, link, consolidate, feedback, outcomes, conflict resolution, entity extraction, graph traversal, file-aware retrieval, and pack explain
 - **Durable post-write pipeline** — memory writes enqueue SQLite-backed jobs (`memory_jobs`) for embedding/entity/relation/utility processing; writes stay fast and reliable
 - **True hybrid fusion** — rank-level RRF fusion for FTS + vector lanes, with deterministic FTS fallback if embeddings are unavailable
 - **Configurable passive capture** — OpenCode plugin observation capture via `OHARA_PASSIVE_CAPTURE_LEVEL=off|prompts|metadata|tools|full`
@@ -311,7 +312,7 @@ Ohara is production-oriented for local, source-built use:
 - Operational tooling: `ohara check`, `ohara validate`, `ohara doctor`, `ohara backup`, and `ohara maintain`
 - Recovery path: SQLite snapshots plus import/export and git-sync JSONL mirrors
 
-Start with the install section below, then see the [docs/](docs/) folder for runbooks and reference material: [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), [Plugins](docs/PLUGINS.md), and [Comparison vs claude-mem](docs/COMPARISON.md).
+Start with the install section below, then see the [docs/](docs/) folder for runbooks and reference material: [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md), [Plugins](docs/PLUGINS.md), [Benchmarks](docs/BENCHMARKS_RESULTS.md), and [Multi-system comparison](docs/COMPARISON.md).
 
 ## Project Notes
 

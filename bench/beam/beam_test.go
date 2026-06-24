@@ -14,11 +14,11 @@ func TestLoadFixture_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFixture: %v", err)
 	}
-	if len(fixture.Conversations) != 2 {
-		t.Errorf("expected 2 conversations, got %d", len(fixture.Conversations))
+	if len(fixture.Conversations) != 3 {
+		t.Errorf("expected 3 conversations, got %d", len(fixture.Conversations))
 	}
-	if len(fixture.Probes) != 10 {
-		t.Errorf("expected 10 probes, got %d", len(fixture.Probes))
+	if len(fixture.Probes) != 28 {
+		t.Errorf("expected 28 probes, got %d", len(fixture.Probes))
 	}
 }
 
@@ -36,14 +36,14 @@ func TestRunBenchmark_FTS5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBenchmark fts5: %v", err)
 	}
-	if report.TotalProbes != 10 {
-		t.Errorf("expected 10 probes, got %d", report.TotalProbes)
+	if report.TotalProbes != 28 {
+		t.Errorf("expected 28 probes, got %d", report.TotalProbes)
 	}
-	if report.PassedProbes < 3 {
-		t.Errorf("expected at least 3 passed, got %d", report.PassedProbes)
+	if report.PassedProbes < 12 {
+		t.Errorf("expected at least 12 passed, got %d", report.PassedProbes)
 	}
-	if report.OverallMetrics.RecallAt3 < 0.20 {
-		t.Errorf("recall@3 %.3f below threshold 0.20", report.OverallMetrics.RecallAt3)
+	if report.OverallMetrics.RecallAt3 < 0.40 {
+		t.Errorf("recall@3 %.3f below threshold 0.40", report.OverallMetrics.RecallAt3)
 	}
 }
 
@@ -61,8 +61,8 @@ func TestRunBenchmark_Hybrid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBenchmark hybrid: %v", err)
 	}
-	if report.TotalProbes != 10 {
-		t.Errorf("expected 10 probes, got %d", report.TotalProbes)
+	if report.TotalProbes != 28 {
+		t.Errorf("expected 28 probes, got %d", report.TotalProbes)
 	}
 	if report.RetrievalMode != "hybrid" {
 		t.Errorf("expected hybrid mode, got %s", report.RetrievalMode)
@@ -86,8 +86,8 @@ func TestSweep(t *testing.T) {
 		if r.Error != "" {
 			t.Errorf("sweep mode %s error: %s", r.Name, r.Error)
 		}
-		if r.Report.TotalProbes != 10 {
-			t.Errorf("sweep mode %s: expected 10 probes, got %d", r.Name, r.Report.TotalProbes)
+		if r.Report.TotalProbes != 28 {
+			t.Errorf("sweep mode %s: expected 28 probes, got %d", r.Name, r.Report.TotalProbes)
 		}
 	}
 }
@@ -250,19 +250,27 @@ func TestRunBenchmark_PPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunBenchmark PPR: %v", err)
 	}
-	if report.TotalProbes != 10 {
-		t.Errorf("expected 10 probes, got %d", report.TotalProbes)
+	if report.TotalProbes != 28 {
+		t.Errorf("expected 28 probes, got %d", report.TotalProbes)
 	}
-	// PPR should not make things worse.
-	if report.PassedProbes < 3 {
-		t.Errorf("expected at least 3 passed with PPR, got %d", report.PassedProbes)
+	// PPR must not degrade below FTS5 baseline.
+	if report.PassedProbes < 12 {
+		t.Errorf("expected at least 12 passed with PPR, got %d", report.PassedProbes)
 	}
 
-	// Print probe-type metrics for inspection.
+	// Verify multi-hop recall has improved from baseline (was 0.000).
+	mhMetrics := report.ProbeTypeMetrics["multi_hop"]
+	if mhMetrics.RecallAt3 < 0.50 {
+		t.Errorf("multi_hop recall@3 %.3f below 0.50", mhMetrics.RecallAt3)
+	}
+
+	// Verify per-probe-type metrics.
 	fmt.Printf("PPR multi_hop: recall@3=%.3f mrr=%.3f\n",
-		report.ProbeTypeMetrics["multi_hop"].RecallAt3,
-		report.ProbeTypeMetrics["multi_hop"].MRR)
+		mhMetrics.RecallAt3, mhMetrics.MRR)
 	fmt.Printf("PPR temporal_order: recall@3=%.3f mrr=%.3f\n",
 		report.ProbeTypeMetrics["temporal_order"].RecallAt3,
 		report.ProbeTypeMetrics["temporal_order"].MRR)
+	fmt.Printf("PPR fact_retrieval: recall@3=%.3f mrr=%.3f\n",
+		report.ProbeTypeMetrics["fact_retrieval"].RecallAt3,
+		report.ProbeTypeMetrics["fact_retrieval"].MRR)
 }
