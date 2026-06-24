@@ -121,7 +121,7 @@ Follow-up batch (uncommitted): BEAM fixture expanded to 28 probes / 3 conversati
 
 **Remaining work:**
 1. **T3.4 temporal walk variant** — ❌ Deferred. Temporal order probes improved from 0.500 to 0.600 via `related_to` edges. Remaining deficit is a sequence-position problem, not graph propagation.
-2. **CI gate for multi-hop** — needs p-002 fact_retrieval root-caused first (pre-existing FTS5 failure on `"How does Ohara hash content for deduplication?"`).
+2. **CI gate for multi-hop** — previously blocked on p-002 fact_retrieval. Now unblocked: p-002 passes in all retrieval modes (resolved by fixture expansion which changed the question to include "CGO", matching the target message via the OR fallback path). The actual 28-probe failures are p-012, p-014, p-020, p-022, p-026 — all term-overlap gaps in conv-003 and conv-002, unrelated to PPR or graph propagation. p-002 root-cause: its 10-probe-fixture question "What Go constraint does Ohara have?" had zero term overlap with the target message ("SQLite with FTS5 for search, pure-Go only. No CGO."); the expansion fixed this by introducing the matching term "CGO".
 3. **PR review + publish** — the uncommitted follow-up batch should be reviewed, committed, PR'd.
 4. **Docs alignment** — README tool counts, architecture maps, and phase status should be verified against live code after each release.
 

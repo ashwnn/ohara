@@ -325,7 +325,11 @@ Phase 0 first because Ohara is currently under-credited: it has strong internal 
 
 **Note.** pprSparseThreshold lowered from 25 to 3 in follow-up (uncommitted at this writing) to expand useful graph reach in the small-fixture regime. All measured results above reflect threshold=3.
 
-**Remaining.** fact_retrieval p-002 failure pre-dates PPR and appears unrelated to graph propagation. temporal_order at 0.600 is the weakest category — PPR alone provides partial improvement (was 0.500) via relation edges, but temporal ordering is not a pure graph-traversal problem. T3.4 temporal walk variant evaluated and deferred (see below).
+**Remaining.** temporal_order at 0.600 is the weakest category — PPR alone provides partial improvement (was 0.500) via relation edges, but temporal ordering is not a pure graph-traversal problem. T3.4 temporal walk variant evaluated and deferred (see below).
+
+**Note (2026-06-23 update).** The previously-flagged p-002 fact_retrieval failure (from the 10-probe fixture) is **resolved** — the 28-probe fixture expansion changed p-002's question from "What Go constraint does Ohara have?" to "What is Ohara's policy on CGO?", adding the distinctive term "CGO" which matches the target message (`conv-001:msg:2`) via the OR fallback path. p-002 passes in all retrieval modes (FTS5, hybrid, with/without PPR).
+
+**Actual 28-probe failures (5, consistent across all modes):** p-012 (fact_retrieval), p-014 (fact_retrieval), p-020 (temporal_order), p-022 (temporal_order), p-026 (multi_hop). All are term-overlap gaps in conv-003/conv-002 messages — no relation to PPR or graph propagation. The CI gate for multi-hop is no longer blocked on p-002.
 
 **Acceptance.** `go test ./bench/beam/` green. CI job reports per-probe-type metrics with multi-hop gate.
 
