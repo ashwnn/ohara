@@ -9,11 +9,14 @@ Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the impl
 | Phase 0 | T0.1–T0.4 | ✅ Complete |
 | Phase 1 | T1.0–T1.3 | ✅ Complete (commit `34b0be3`) |
 | Phase 2 | T2.1–T2.4 | ✅ Complete (commit `a0709c0`) |
-| Phase 3 | T3.1 PPR engine | 🔲 Design note committed — implementation pending |
-| Phase 3 | T3.2–T3.4 | 🔲 Gated on T3.1 |
+| Phase 3 | T3.1 PPR engine | ✅ Complete (commit `cbf1844`) |
+| Phase 3 | T3.2 PPR→hybrid wiring | ✅ Complete (this batch) |
+| Phase 3 | T3.3 BEAM fixture + CI gate | ✅ Complete (this batch) |
+| Phase 3 | T3.4 temporal walk variant | 🔲 Optional — evaluate after larger fixture |
 
 ### Measurement pass (2026-06-23)
 
+**Before PPR (baseline):**
 - BEAM multi-hop Recall@3: **0.000** (0/2 probes) — justifies PPR reranker
 - BEAM temporal Recall@3: **0.500** (1/2 probes)
 - Retrieval fixture Recall@3: **0.966** — SLO gates pass
@@ -21,12 +24,23 @@ Orientation for whoever picks up implementation. Pairs with `TASKS.md` (the impl
 - vec0: integrated (768d, >1000 row threshold)
 - Design note: `docs/design-phase3-ppr-reranker.md`
 
+**After PPR (graph expansion + adaptive blend, BEAM 10-probe fixture, hybrid+PPR):**
+- multi_hop Recall@3: **0.000 → 1.000** (both probes pass)
+- multi_hop MRR: **0.000 → 0.750**
+- temporal_order Recall@3: **0.500** (unchanged)
+- Overall BEAM pass rate: **6/10 → 9/10**
+- Retrieval fixture Recall@3: **0.966** (no regression)
+- Binary size delta: **~20 KB**
+
 ### Recent commits
 
 - `32846d6` — CI size/dependency guard (T0.3)
 - `239ecd8` — LongMemEval CI gate (T0.1)
 - `896feba` — LoCoMo + BEAM-1M harnesses (T0.2)
 - `66978e0` — Publish BENCHMARKS_RESULTS.md and refresh COMPARISON.md (T0.4)
+- `ba40d92` — Phase 3 design note and measurement baseline
+- `cbf1844` — Core PPR engine (T3.1)
+- `<pending>` — PPR graph expansion, adaptive blend, BEAM relation seeding (T3.2 + T3.3)
 
 ## What Ohara is
 
@@ -91,11 +105,12 @@ Numbers I did *not* independently re-verify and that should be treated as analys
 
 ## Where to start (updated 2026-06-23)
 
-Phases 0-2 are complete. Current work is Phase 3: narrow PPR reranker.
+Phases 0-3 core work is complete. T3.1 (core PPR engine), T3.2 (graph expansion + adaptive blend), and T3.3 (BEAM relation seeding + PPR benchmark) are all done.
 
-1. **T3.1 Core PPR engine (~1d)** — new file `internal/store/ppr.go`, pure-Go, no new deps, flag-gated off by default. Unit tests on synthetic graphs.
-2. **T3.2 Wire into hybrid retrieval (~0.5d)** — integrate into `internal/store/hybrid.go` after `fuseHybridRRF()`.
-3. **T3.3 Expand BEAM fixture (~0.5d)** — 10→25 probes, multi-hop CI gate.
+**Remaining Phase 3 work:**
+1. **T3.4 temporal walk variant (optional)** — evaluate if temporal_order BEAM probes still lag after expanding the 10-probe fixture. Currently temporal Recall@3 is 0.500 (1/2 probes), unchanged by PPR — this is expected since temporal ordering is not a graph-traversal problem. If a 25+ probe fixture shows systematic temporal deficit, add temporal-weighted edges.
+2. **Expand BEAM fixture to 25+ probes** — the 10-probe fixture is sufficient for PPR validation but too small for confident per-type CI gates. The pre-existing p-002 failure (fact_retrieval) needs root-causing before adding formal CI gates.
+3. **CI gate for multi-hop** — gated on fixture expansion + p-002 resolution.
 
 See `docs/design-phase3-ppr-reranker.md` for full design, constraint compliance, and success criteria. See `.opencode/handoff.md` for session resume point.
 

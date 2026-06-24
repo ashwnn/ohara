@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -506,3 +507,148 @@ func TestPPRRerank_SingleItem(t *testing.T) {
 		t.Error("single item should be no-op")
 	}
 }
+
+// TestPPRRerank_GraphExpansion verifies that when the initial candidate set
+// is sparse (<5 items), PPR bootstraps additional candidates via graph
+// neighbor traversal so that multi-hop answers can surface through
+// relation-graph propagation.
+func TestPPRRerank_GraphExpansion(t *testing.T) {
+	s := newTestStore(t)
+
+	// Build a small conversation chain: 5 messages, consecutive related_to edges.
+	params := []BulkSeedMemoryParams{
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "msg0", Body: "This is about database engines.", Domain: "test", SessionID: "s1"},
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "msg1", Body: "SQLite uses FTS5 for search. No stemming though.", Domain: "test", SessionID: "s1"},
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "msg2", Body: "The vec0 extension is available in modernc v1.47.0.", Domain: "test", SessionID: "s1"},
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "msg3", Body: "But we need to stay on v1.45.0 for now — version constraint.", Domain: "test", SessionID: "s1"},
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "msg4", Body: "Brute-force cosine works fine for under 1000 items.", Domain: "test", SessionID: "s1"},
+	}
+	ids, err := s.BulkSeedMemories(params)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("expected 5 seeded IDs, got %d", len(ids))
+	}
+
+	// Create relation chain: msg0→msg1→msg2→msg3→msg4.
+	for i := 0; i < len(ids)-1; i++ {
+		if err := s.AddRelation(ids[i], ids[i+1], RelationRelatedTo); err != nil {
+			t.Fatalf("add relation %d→%d: %v", ids[i], ids[i+1], err)
+		}
+	}
+
+	// Simulate a sparse retrieval: FTS5 finds only msg0 (has "database" token)
+	// but the multi-hop answer is in msg2 (vec0) and msg3 (version constraint).
+	got0, err := s.GetMemory(ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got0.RelevanceScore = 0.8
+	items := []MemoryItem{*got0} // sparse: only 1 candidate
+
+	// Run PPR with a query containing "vec0 constraint" — should expand graph.
+	result := s.pprRerank("What vec0 constraint limits the version?", items)
+
+	if len(result) < 2 {
+		t.Errorf("graph expansion should add neighbors: got %d items, expected >= 2", len(result))
+	}
+
+	// After PPR propagation, msg2 (vec0) or msg3 (constraint) should appear.
+	foundVec0 := false
+	foundConstraint := false
+	for _, item := range result {
+		if item.ID == ids[2] {
+			foundVec0 = true
+		}
+		if item.ID == ids[3] {
+			foundConstraint = true
+		}
+	}
+	if !foundVec0 {
+		t.Error("expected vec0 message (id[2]) to appear in expanded results")
+	}
+	if !foundConstraint {
+		t.Error("expected constraint message (id[3]) to appear in expanded results")
+	}
+}
+
+// TestPPRRerank_GraphExpansionNoEdges verifies that when the initial candidate
+// set is sparse but there are no relations, PPR gracefully returns items as-is.
+func TestPPRRerank_GraphExpansionNoEdges(t *testing.T) {
+	s := newTestStore(t)
+
+	params := []BulkSeedMemoryParams{
+		{ProjectID: "ppr-test", Kind: MemoryKindDiscovery, Title: "A", Body: "aaa", Domain: "test"},
+	}
+	ids, err := s.BulkSeedMemories(params)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, _ := s.GetMemory(ids[0])
+	got.RelevanceScore = 0.5
+	items := []MemoryItem{*got}
+
+	// No relations created. Expansion should be a no-op since there are no edges.
+	result := s.pprRerank("query", items)
+	if len(result) != 1 {
+		t.Errorf("expected 1 item, got %d (expansion should be no-op without edges)", len(result))
+	}
+	if result[0].ID != ids[0] {
+		t.Errorf("expected original item, got ID=%d", result[0].ID)
+	}
+}
+
+// TestPPRRerank_GraphExpansionFetchesAll verifies that with a conversation
+// chain, all neighbors within 2 hops are fetched when the seed is at one end.
+func TestPPRRerank_GraphExpansionFetchesAll(t *testing.T) {
+	s := newTestStore(t)
+
+	// Build a 6-message chain.
+	n := 6
+	params := make([]BulkSeedMemoryParams, n)
+	for i := 0; i < n; i++ {
+		params[i] = BulkSeedMemoryParams{
+			ProjectID: "ppr-test",
+			Kind:      MemoryKindDiscovery,
+			Title:     fmt.Sprintf("msg%d", i),
+			Body:      fmt.Sprintf("body %d", i),
+			Domain:    "test",
+			SessionID: "s1",
+		}
+	}
+	ids, err := s.BulkSeedMemories(params)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	for i := 0; i < len(ids)-1; i++ {
+		if err := s.AddRelation(ids[i], ids[i+1], RelationRelatedTo); err != nil {
+			t.Fatalf("add relation: %v", err)
+		}
+	}
+
+	// Seed = ids[0] (one end). With 2-hop BFS: ids[0]→ids[1]→ids[2].
+	got, _ := s.GetMemory(ids[0])
+	got.RelevanceScore = 0.8
+	items := []MemoryItem{*got}
+
+	result := s.pprRerank("search query", items)
+
+	// With 6 nodes, 2-hop BFS from ids[0] should reach at least ids[1] and ids[2].
+	// (ids[3] is 3 hops away, so not guaranteed.)
+	idSet := make(map[int64]bool)
+	for _, item := range result {
+		idSet[item.ID] = true
+	}
+	if !idSet[ids[1]] {
+		t.Error("1-hop neighbor (ids[1]) should be in expanded results")
+	}
+	if !idSet[ids[2]] {
+		t.Error("2-hop neighbor (ids[2]) should be in expanded results")
+	}
+	if len(result) < 3 {
+		t.Errorf("expected at least 3 items (seed + 2 neighbors), got %d", len(result))
+	}
+}
+

@@ -89,6 +89,7 @@ type RunOptions struct {
 	QuestionsLimit int
 	Sweep          bool
 	Workers        int
+	PPRRerank      bool // enable graph-aware PPR reranker
 }
 
 // SweepMode defines a single mode config for BEAM sweeps.
@@ -271,7 +272,7 @@ func RunBenchmark(opts RunOptions) (Report, error) {
 	}
 
 	seedStart := time.Now()
-	s, keyToID, err := seedBeamStore(facts, retrievalMode, opts.Workers)
+	s, keyToID, err := seedBeamStore(facts, retrievalMode, opts.Workers, opts.PPRRerank)
 	if err != nil {
 		return Report{}, err
 	}
@@ -492,7 +493,7 @@ func fixtureToFacts(fix Fixture) []DeriveFact {
 	return facts
 }
 
-func seedBeamStore(facts []DeriveFact, mode string, workers int) (*store.Store, map[string]int64, error) {
+func seedBeamStore(facts []DeriveFact, mode string, workers int, pprRerank bool) (*store.Store, map[string]int64, error) {
 	tmp, err := os.MkdirTemp("", "ohara-bench-beam-")
 	if err != nil {
 		return nil, nil, err
@@ -501,6 +502,9 @@ func seedBeamStore(facts []DeriveFact, mode string, workers int) (*store.Store, 
 	cfg.NoJobWorker = true
 	if workers > 0 {
 		cfg.MaxOpenConns = workers
+	}
+	if pprRerank {
+		cfg.PPRRerank = true
 	}
 	cfg.SQLiteCacheSizeKB = 200 * 1024
 	cfg.SQLiteMmapSizeBytes = 512 << 20
@@ -543,7 +547,67 @@ func seedBeamStore(facts []DeriveFact, mode string, workers int) (*store.Store, 
 	for i, id := range ids {
 		keyToID[keys[i]] = id
 	}
+
+	// Create intra-conversation relation edges and entity links
+	// so that PPR reranking has a graph to traverse.
+	if err := seedBeamRelations(s, facts, keyToID); err != nil {
+		s.Close()
+		os.RemoveAll(tmp)
+		return nil, nil, fmt.Errorf("seed beam relations: %w", err)
+	}
+
 	return s, keyToID, nil
+}
+
+// seedBeamRelations creates intra-conversation relation edges and entity links
+// between seeded facts to enable PPR graph propagation. Without these edges,
+// the PPR reranker has no graph to traverse and is a no-op.
+//
+// Relations: consecutive message facts within each conversation are linked
+// with related_to edges, forming a chain. This preserves benchmark intent
+// because within-conversation facts are naturally related, and multi-hop
+// probes test the ability to traverse these connections.
+//
+// Entities: ExtractEntitiesHeuristic is applied to each fact's title+body.
+// Extracted entities are upserted and linked to the corresponding memory ID,
+// enabling entity-aware PPR personalization.
+func seedBeamRelations(s *store.Store, facts []DeriveFact, keyToID map[string]int64) error {
+	// Group facts by conversation (SessionID).
+	convFacts := make(map[string][]DeriveFact)
+	for _, f := range facts {
+		convFacts[f.SessionID] = append(convFacts[f.SessionID], f)
+	}
+
+	// Create related_to edges between consecutive facts within each conversation.
+	for _, conv := range convFacts {
+		sort.Slice(conv, func(i, j int) bool { return conv[i].Turn < conv[j].Turn })
+		for i := 0; i < len(conv)-1; i++ {
+			fromID := keyToID[conv[i].Key]
+			toID := keyToID[conv[i+1].Key]
+			if fromID > 0 && toID > 0 && fromID != toID {
+				if err := s.AddRelation(fromID, toID, store.RelationRelatedTo); err != nil {
+					return fmt.Errorf("add relation %d→%d: %w", fromID, toID, err)
+				}
+			}
+		}
+	}
+
+	// Extract and link entities for each fact.
+	for _, f := range facts {
+		id := keyToID[f.Key]
+		if id == 0 {
+			continue
+		}
+		entities := store.ExtractEntitiesHeuristic(f.Title + "\n" + f.Body)
+		if len(entities) == 0 {
+			continue
+		}
+		if _, err := s.AttachExtractedEntities(id, "beam", entities); err != nil {
+			return fmt.Errorf("attach entities for memory %d: %w", id, err)
+		}
+	}
+
+	return nil
 }
 
 // -- shared helpers --

@@ -405,15 +405,31 @@ func lexicalMatchesForQuery(query string, items []MemoryItem) map[int64]bool {
 	return matches
 }
 
+// prunePPRSize caps how many items PPR operates on to keep matrix size bounded.
+const prunePPRSize = 200
+
+// pprSparseThreshold is the minimum candidate count before graph expansion
+// kicks in. When the initial retrieval returns fewer than this many items,
+// PPR bootstraps additional candidates via graph neighbor traversal so that
+// multi-hop questions have a usable graph to propagate through.
+//
+// Set high enough that typical K-limited retrieval lists (K=5 or K=10)
+// always trigger expansion when a usable relation graph exists, pulling
+// in graph neighbors that lexical search missed. For large stores with
+// many candidates, expansion is a no-op because the candidate pool already
+// covers the relevant subgraph.
+const pprSparseThreshold = 25
+
+// pprGraphHops controls how many BFS hops of graph neighbor expansion are
+// performed when the candidate set is sparse. Default: 3 hops.
+const pprGraphHops = 3
+
 // pprRerank runs the full PPR rerank pipeline on a candidate list.
 // It is the single entry point wired into the hybrid search path.
 // Returns reordered items. When the graph is empty or single-node,
 // returns items unchanged (no-op).
 func (s *Store) pprRerank(query string, items []MemoryItem) []MemoryItem {
-	if len(items) <= 1 {
-		return items
-	}
-	if query == "" {
+	if len(items) == 0 || query == "" {
 		return items
 	}
 
@@ -425,13 +441,40 @@ func (s *Store) pprRerank(query string, items []MemoryItem) []MemoryItem {
 
 	relations, err := s.loadRelationsForIDs(candidateIDs)
 	if err != nil || len(relations) == 0 {
-		// No edges → PPR is equivalent to personalization-only.
-		// Since personalization is weak without graph propagation,
-		// return items unchanged to avoid noise.
+		// No edges — no graph to traverse. Single-item input stays single-item.
 		return items
 	}
 
-	// Step 2: Build graph.
+	// Step 1a: Graph neighbor expansion — when the initial candidate set is
+	// too sparse for PPR to produce meaningful propagation (e.g. multi-hop
+	// probes where lexical search finds only 1-2 seeds), expand the graph
+	// by traversing memory_relations outward. This bootstrap ensures PPR
+	// can propagate lexical-match relevance through the relation graph
+	// to surface connected facts that would otherwise be invisible.
+	expanded := false
+	if len(items) < pprSparseThreshold {
+		expandedList := s.expandCandidateSet(candidateIDs, relations, items)
+		if len(expandedList) > len(items) {
+			items = expandedList
+			expanded = true
+			candidateIDs = make([]int64, len(items))
+			for i, item := range items {
+				candidateIDs[i] = item.ID
+			}
+		}
+	}
+
+	// After expansion, if we still have 1 item, PPR has nothing to reorder.
+	if len(items) <= 1 {
+		return items
+	}
+
+	// Step 2: Reload relations for the full (possibly expanded) candidate set.
+	finalRels, loadErr := s.loadRelationsForIDs(candidateIDs)
+	if loadErr == nil && len(finalRels) > 0 {
+		relations = finalRels
+	}
+
 	g := buildPPRGraph(candidateIDs, relations)
 	if g == nil {
 		return items
@@ -449,6 +492,150 @@ func (s *Store) pprRerank(query string, items []MemoryItem) []MemoryItem {
 	pprScores := personalizedPageRank(g, p, 0.15, 5)
 
 	// Step 5: Blend and re-rank.
-	const lambda = 0.15
+	// Use a higher PPR weight (λ) when graph expansion added new candidates
+	// with zero lexical relevance — otherwise their blended score is dominated
+	// by lexical items and they never surface in the top-K.
+	lambda := 0.15
+	if expanded {
+		lambda = 0.50
+	}
 	return pprBlendAndRerank(items, pprScores, g, lambda)
+}
+
+// expandCandidateSet bootstraps a sparse candidate list with graph neighbors
+// fetched via BFS traversal through memory_relations. The original items
+// retain their scores; newly-added neighbors start with a zero relevance
+// score so that PPR propagation (not lexical match) determines their rank.
+//
+// This is only called when the initial retrieval returns fewer than
+// pprSparseThreshold candidates and the relation graph has edges to traverse.
+// It does not mutate the input items slice.
+func (s *Store) expandCandidateSet(candidateIDs []int64, relations []MemoryRelation, items []MemoryItem) []MemoryItem {
+	// BFS from seed IDs through memory_relations up to pprGraphHops hops.
+	visited := make(map[int64]bool, len(candidateIDs)+32)
+	for _, id := range candidateIDs {
+		visited[id] = true
+	}
+
+	// Collect neighbor IDs from relations (1-hop).
+	// The input relations cover edges where at least one end is in candidateIDs.
+	neighborIDs := make(map[int64]bool)
+	for _, rel := range relations {
+		if !visited[rel.FromID] {
+			neighborIDs[rel.FromID] = true
+		}
+		if !visited[rel.ToID] {
+			neighborIDs[rel.ToID] = true
+		}
+	}
+	if len(neighborIDs) == 0 {
+		return items
+	}
+
+	// BFS: load relations for frontier, repeat.
+	visitedNow := make(map[int64]bool)
+	for id := range neighborIDs {
+		visitedNow[id] = true
+		visited[id] = true
+	}
+
+	// Queue-based BFS up to pprGraphHops-1 more hops (1st hop already done above).
+	for hop := 1; hop < pprGraphHops; hop++ {
+		if len(visited) >= prunePPRSize {
+			break
+		}
+		// Gather frontier: IDs visited in the last round.
+		frontier := make([]int64, 0, len(visitedNow))
+		for id := range visitedNow {
+			frontier = append(frontier, id)
+		}
+		if len(frontier) == 0 {
+			break
+		}
+		relFrontier, err := s.loadRelationsForIDs(frontier)
+		if err != nil || len(relFrontier) == 0 {
+			break
+		}
+		nextNow := make(map[int64]bool)
+		for _, rel := range relFrontier {
+			if !visited[rel.FromID] {
+				visited[rel.FromID] = true
+				nextNow[rel.FromID] = true
+			}
+			if !visited[rel.ToID] {
+				visited[rel.ToID] = true
+				nextNow[rel.ToID] = true
+			}
+		}
+		visitedNow = nextNow
+	}
+
+	// Collect newly-discovered IDs (not already in items).
+	newIDs := make([]int64, 0, len(visited))
+	origSet := make(map[int64]bool, len(items))
+	for _, item := range items {
+		origSet[item.ID] = true
+	}
+	for id := range visited {
+		if !origSet[id] {
+			newIDs = append(newIDs, id)
+		}
+	}
+	if len(newIDs) == 0 {
+		return items
+	}
+
+	// Fetch full MemoryItems for new IDs.
+	newItems, err := s.fetchMemoryItems(newIDs)
+	if err != nil || len(newItems) == 0 {
+		return items
+	}
+
+	// Append new items with zero relevance score.
+	out := make([]MemoryItem, 0, len(items)+len(newItems))
+	out = append(out, items...)
+	for _, ni := range newItems {
+		ni.RelevanceScore = 0
+		out = append(out, ni)
+	}
+	return out
+}
+
+// fetchMemoryItems loads full MemoryItem structs for the given IDs.
+// Returns items in arbitrary order. Non-existent IDs are silently skipped.
+func (s *Store) fetchMemoryItems(ids []int64) ([]MemoryItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+	q := `SELECT id, created_at, updated_at, project_id, actor_id, kind, scope,
+	             title, body, tags, source, status, superseded_by, expires_at,
+	             domain, evidence_json, applies_to_json, related_json, classification,
+	             access_count, last_accessed, valid_from, valid_to, superseded_at, session_id, trust_level,
+	             ingested_at, written_by,
+	             trigger_condition, utility_weight, consolidated_from,
+	             0 AS relevance_score
+	      FROM memory_items
+	      WHERE id IN (` + strings.Join(ph, ",") + `)`
+
+	rows, err := s.queryItHook(s.db, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MemoryItem
+	for rows.Next() {
+		item, scanErr := s.scanMemoryRow(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, *item)
+	}
+	return out, rows.Err()
 }
